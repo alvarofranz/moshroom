@@ -1,0 +1,479 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+// M O S H R O O M
+//
+// Copyright (C) 2026 Moshroom
+//
+// This file is part of Moshroom.
+//
+// Moshroom is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// Moshroom is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with Moshroom. If not, see <http://www.gnu.org/licenses/>.
+//
+////////////////////////////////////////////////////////////////////////////////
+
+import Foundation
+import Combine
+
+// Use as generic error for Translators.
+public struct LocalFileError: Error {
+  public let msg: String
+  public var description: String {
+    return msg
+  }
+}
+
+public class Local : Translator {
+  public var isDirectory: Bool { fileType == .typeDirectory }
+  public var isConnected: Bool { true }
+
+  static let files = FileManager()
+  static let queue = DispatchQueue(label: "LocalFS")
+
+  // isDirectory if it can be traversed. Note it can be a symbolic link pointing to a directory.
+  public private(set) var fileType: FileAttributeType = .typeUnknown
+  let root: String
+  public private(set) var current: String
+
+  public init() {
+    // Default local path
+    self.root    = NSSearchPathForDirectoriesInDomains(.documentDirectory, .userDomainMask, true)[0]
+    self.fileType = .typeDirectory
+    self.current = root
+  }
+
+  public func clone() -> Translator {
+    let cl = Local()
+    cl.current  = self.current
+    cl.fileType = self.fileType
+
+    return cl
+  }
+
+  func publisher() -> AnyPublisher<Translator, Error> {
+    return .just(self)
+  }
+
+  func fail<T>(msg: String) -> AnyPublisher<T, Error> {
+    return .fail(error: LocalFileError(msg: msg))
+  }
+
+  func fileManager() -> AnyPublisher<FileManager, Error> {
+    return .just(Local.files)
+  }
+
+  public func walkTo(_ path: String) -> AnyPublisher<Translator, Error> {
+    var absPath = (path as NSString).standardizingPath
+    if !path.starts(with: "/") {
+      absPath = (current as NSString).appendingPathComponent(absPath)
+    }
+
+    return fileManager().flatMap { fm -> AnyPublisher<Translator, Error> in
+      if !fm.fileExists(atPath: absPath) {
+        return self.fail(msg: "No such file or directory.")
+      }
+
+      do {
+        let attrs = try fm.attributesOfItem(atPath: (absPath as NSString).resolvingSymlinksInPath)
+        self.fileType = attrs[.type] as! FileAttributeType
+      } catch {
+        return self.fail(msg: "Could not obtain attributes of file.")
+      }
+
+      if self.fileType == .typeDirectory {
+        if !fm.isReadableFile(atPath: absPath) {
+          return self.fail(msg: "Permission denied.")
+        }
+        self.current = absPath
+        return self.publisher()
+      } else {
+        self.current = absPath
+        return self.publisher()
+      }
+    }.eraseToAnyPublisher()
+  }
+
+  public func join(_ path: String) throws -> Translator {
+    var absPath = (path as NSString).standardizingPath
+    if !path.starts(with: "/") {
+      absPath = (current as NSString).appendingPathComponent(absPath)
+    }
+    self.fileType = .typeUnknown
+    self.current = absPath
+
+    return self
+  }
+
+  func fileAttributes(atPath path: String) -> AnyPublisher<FileAttributes, Error> {
+    return fileManager().tryMap { fm -> FileAttributes in
+      let nsPath = (path as NSString)
+      var attrs = try fm.attributesOfItem(atPath: nsPath.resolvingSymlinksInPath)
+      attrs[.name] = nsPath.lastPathComponent
+      return attrs
+    }.mapError { _ in LocalFileError(msg: "Could not get attributes of item.") }
+    .eraseToAnyPublisher()
+  }
+
+  public func directoryFilesAndAttributes() -> AnyPublisher<[FileAttributes], Error> {
+    if fileType != .typeDirectory {
+      return fileAttributes(atPath: current).map { [$0] }.eraseToAnyPublisher()
+    }
+
+    return fileManager().tryMap { try $0.contentsOfDirectory(atPath: self.current) }
+      .mapError { _ in LocalFileError(msg: "Could not get contents of directory") }
+      .flatMap { fileNames -> AnyPublisher<[FileAttributes], Error> in
+        return fileNames.publisher.flatMap {
+          self.fileAttributes(atPath: (self.current as NSString).appendingPathComponent($0))
+        }.collect().eraseToAnyPublisher()
+      }.eraseToAnyPublisher()
+  }
+
+  public func create(name: String, mode: mode_t = S_IRWXU) -> AnyPublisher<File, Error> {
+    if fileType != .typeDirectory {
+      return fail(msg: "Not a directory.")
+    }
+
+    return fileManager().tryMap { fm -> File in
+      let absPath = (self.current as NSString).appendingPathComponent(name)
+      let attrs: FileAttributes = [.posixPermissions: mode]
+
+      if !fm.createFile(atPath: absPath, contents: nil, attributes: attrs) {
+        throw LocalFileError(msg: "Could not create file.")
+      }
+
+      return try LocalFile(at: absPath, flags: O_WRONLY|O_CREAT|O_TRUNC)
+    }.eraseToAnyPublisher()
+  }
+
+  public func mkdir(name: String, mode: mode_t = S_IRWXU | S_IRWXG | S_IRWXO) -> AnyPublisher<Translator, Error> {
+    if fileType != .typeDirectory {
+      return fail(msg: "Not a directory")
+    }
+
+    return fileManager().tryMap { fm -> Translator in
+      let absPath = (self.current as NSString).appendingPathComponent(name)
+
+      let attrs = [FileAttributeKey.posixPermissions: mode]
+
+      try fm.createDirectory(atPath: absPath, withIntermediateDirectories: false,
+                             attributes: attrs)
+
+      self.current = absPath
+      return self
+    }
+    .mapError { error in LocalFileError(msg: "Could not create directory. \(error.localizedDescription)") }
+    .eraseToAnyPublisher()
+  }
+
+  public func open(flags: Int32) -> AnyPublisher<File, Error> {
+    if fileType != .typeRegular {
+      return fail(msg: "Is a directory.")
+    }
+
+    return Just(current).tryMap { path in
+      return try LocalFile(at: path, flags: flags)
+    }.eraseToAnyPublisher()
+  }
+
+  public func remove() -> AnyPublisher<Bool, Error> {
+    if fileType == .typeDirectory {
+      return fail(msg: "Is a directory")
+    }
+
+    return fileManager().tryMap { fm -> Bool in
+      try fm.removeItem(atPath: self.current)
+      return true
+    }
+    .mapError { LocalFileError(msg: "Could not delete file. \($0.localizedDescription)") }
+    .eraseToAnyPublisher()
+  }
+
+  public func rmdir() -> AnyPublisher<Bool, Error> {
+    if fileType != .typeDirectory {
+      return fail(msg: "Not a directory")
+    }
+
+    return self.directoryFilesAndAttributes().flatMap { items -> AnyPublisher<Bool, Error> in
+      if items.count > 0 {
+        return self.fail(msg: "Directory is not empty")
+      }
+
+      return self.fileManager().tryMap { fm in
+        try fm.removeItem(atPath: self.current)
+        return true
+      }
+      .mapError { LocalFileError(msg: "Could not remove directory. \($0.localizedDescription)") }
+      .eraseToAnyPublisher()
+    }.eraseToAnyPublisher()
+  }
+
+  public func stat() -> AnyPublisher<FileAttributes, Error> {
+    return fileAttributes(atPath: current)
+  }
+
+  public func wstat(_ attrs: FileAttributes) -> AnyPublisher<Bool, Error> {
+    return fileManager().tryMap { fm -> FileManager in
+      try fm.setAttributes(attrs, ofItemAtPath: self.current)
+      return fm
+    }.mapError { LocalFileError(msg: "Cannot change attributes of file. \($0.localizedDescription)") }
+    .flatMap { fm -> AnyPublisher<Bool, Error> in
+      // Relative path or from root
+      guard let newName = attrs[.name] as? String else {
+        return .just(true)
+      }
+      // We do this 9p style
+      // https://github.com/kubernetes/minikube/pull/3047/commits/a37faa7c7868ca49b4e8abf92985ab2de3c85cf3
+      var newPath = ""
+      if newName.starts(with: "/") {
+        // Full new path
+        newPath = newName
+      } else {
+        // Relative to CWD
+        // Change name
+        newPath = (self.current as NSString).deletingLastPathComponent
+        newPath = (newPath as NSString).appendingPathComponent(newName)
+      }
+
+      return self.moveItem(atPath: self.current, toPath: newPath)
+    }
+    .eraseToAnyPublisher()
+  }
+
+  func moveItem(atPath src: String, toPath dst: String) -> AnyPublisher<Bool, Error> {
+    return fileManager().tryMap { fm in
+      try fm.moveItem(atPath:src, toPath: dst)
+      self.current = dst
+      return true
+    }.mapError { LocalFileError(msg: "Could not move item. \($0.localizedDescription)") }
+    .eraseToAnyPublisher()
+  }
+}
+
+public class LocalFile : File {
+  let channel: DispatchIO
+  let fd: Int32
+  let blockSize = 1024 * 1024
+  var offset: Int64 = 0
+  let queue: DispatchQueue
+
+  init(at path: String, flags: Int32) throws {
+    // Not sure if this can be nil, while errno is not
+    let queue = DispatchQueue(label: "LocalFile-\(path)")
+    let fd = open(path, flags)
+    guard fd >= 0 else {
+      throw LocalFileError(msg: "Could not initialize channel")
+    }
+    let channel = DispatchIO(type: .random,
+                             fileDescriptor: fd,
+                             queue: queue,
+                             cleanupHandler: { _ in })
+
+    self.fd = fd
+    self.channel = channel
+    self.queue = queue
+
+    // Avoid small local reads or writes.
+    self.channel.setLimit(lowWater: blockSize)
+    // Setting a high watermark has no effect in memory.
+    // self.channel.setLimit(highWater: blockSize * 10)
+  }
+
+  public func close() -> AnyPublisher<Bool, Error> {
+    // TODO We should pass the errors from cleanupHandler
+    self.channel.close(flags: .stop)
+    Darwin.close(fd)
+    return .just(true)
+  }
+
+  deinit {
+    self.channel.close(flags: .stop)
+    Darwin.close(fd)
+  }
+}
+
+extension LocalFile: Reader, WriterTo {
+  // Lock once the demand has been satistied, and unlock once there is new demand
+  // If demand is unlimited, you will never lock.
+  public func read(max length: Int) -> AnyPublisher<DispatchData, Error> {
+    return readLoop(max: length)
+      .reduce(DispatchData.empty) { prevValue, newValue -> DispatchData in
+        var n = prevValue
+        n.append(newValue)
+        return n
+      }.eraseToAnyPublisher()
+  }
+
+  public func writeTo(_ w: Writer) -> AnyPublisher<Int, Error> {
+    // TODO It blocks with big files, and it may block with the Dispatch streams too
+    // A new block may be received, before the readLoop goes to send downstream.
+    // The new block will block the queue, and hence it will never go down.
+    // We cannot just simply remove the semaphore, because then the EOF may be received before all other
+    // operations are even processed.
+    return readLoop(max: SSIZE_MAX)
+      .print("writing to...")
+      .flatMap(maxPublishers: .max(1)) { data in
+        return w.write(data, max: data.count)
+      }.eraseToAnyPublisher()
+  }
+
+  func readLoop(max length: Int) -> AnyPublisher<DispatchData, Error> {
+    let io = self.channel
+    let subj = PassthroughSubject<DispatchData, Error>()
+
+    var sema: DispatchSemaphore? = nil
+
+    func wakeThread() {
+      // .signal() returns non-zero if a thread is woken. Otherwise, zero is returned.
+      while sema?.signal() == 0 { }
+    }
+
+    var canceled = false
+    func onCancel() {
+      canceled = true
+      io.close(flags: .stop)
+      wakeThread()
+    }
+
+    func ioHandler(_ done: Bool, data: DispatchData?, err: Int32) {
+      // termination events are sent without demand
+      // https://developer.apple.com/documentation/dispatch/dispatchio/1780666-close
+      if err == POSIXErrorCode.ECANCELED.rawValue {
+        return
+      }
+
+      if err != 0 {
+        let e = NSError(domain: NSPOSIXErrorDomain, code: Int(err), userInfo: nil)
+        subj.send(completion: .failure(LocalFileError(msg: "Error reading file: \(e.localizedDescription)")))
+        return
+      }
+
+      // guard err == noErr else {
+      //     if err != POSIXErrorCode.ECANCELED.rawValue  {
+      //         subj.send(completion: .failure(.unknown))
+      //     }
+      //     return
+      // }
+
+      guard let data = data else {
+        return assertionFailure()
+      }
+
+      offset += Int64(data.count)
+      // done and data.count == 0 is indicator of EOF with no more data, so finish.
+      let eof = done && data.count == 0
+      guard !eof else {
+        return subj.send(completion: .finished)
+      }
+
+      subj.send(data)
+
+      if done && offset == length {
+        return subj.send(completion: .finished)
+      }
+
+      sema?.wait()
+      guard !canceled else {
+        return
+      }
+    }
+
+    func applyDemand(demand: Subscribers.Demand) {
+      if demand == Subscribers.Demand.unlimited {
+        sema = nil
+        return
+      }
+
+      let limit = demand.max!
+
+      if sema == nil {
+        // If we initiate the semaphore with a specific value, it has to be balanced to that value, and that is complicated.
+        // So start with 0 and work from there.
+        // https://lists.apple.com/archives/cocoa-dev/2014/Apr/msg00484.html
+        sema = DispatchSemaphore(value: limit - 1)
+      } else {
+        // increment currentSema by new limit
+        for _ in 0..<limit  {
+          sema!.signal()
+        }
+      }
+    }
+
+    var offset: off_t = 0
+    func onRequest(_ demand: Subscribers.Demand) {
+      // Create a semaphore if necessary for the specified demand
+      // No demand, no scheduling.
+      // Switch between max and defined, defined to max.
+      if demand == Subscribers.Demand.none {
+        return
+      }
+
+      applyDemand(demand: demand)
+
+      if demand == Subscribers.Demand.unlimited {
+        // NOTE Unlimited read is memory heavy. Dispatch will load as much as it can in memory,
+        // independently of high - low water marks.
+        io.read(offset: 0, length: length, queue: self.queue, ioHandler: ioHandler)
+      } else {
+        // blockSize is coincidental with the demand, as we have set that value as the lower water mark.
+        io.read(offset: offset, length: blockSize, queue: self.queue, ioHandler: ioHandler)
+      }
+    }
+
+    // Put a buffer just in case the semaphore lifts the thread before the subject has received the demand.
+    return subj.buffer(size: 1, prefetch: .byRequest, whenFull: .customError({LocalFileError(msg: "Buffer full")})).handleEvents(
+      receiveCancel: onCancel,
+      receiveRequest: onRequest
+    ).eraseToAnyPublisher()
+  }
+}
+
+extension LocalFile: Writer {
+  public func write(_ buf: DispatchData, max length: Int) -> AnyPublisher<Int, Error> {
+    let subj = PassthroughSubject<Int, Error>()
+
+    let writeOffset = offset
+    offset += Int64(length)
+
+    return subj.handleEvents(
+      receiveCancel: {
+        self.channel.close(flags: .stop)
+      }, receiveRequest: { _ in
+        self.channel.write(offset: writeOffset,
+                           data: buf,
+                           queue: self.queue) { (done, bytes, error) -> Void in
+          if error == POSIXErrorCode.ECANCELED.rawValue {
+            return
+          }
+
+          if error != 0 {
+            let e = NSError(domain: NSPOSIXErrorDomain, code: Int(error), userInfo: nil)
+            subj.send(completion: .failure(LocalFileError(msg: "Error writing to file: \(e.localizedDescription)")))
+
+            return
+          }
+
+          if done {
+            subj.send(length)
+            subj.send(completion: .finished)
+            return
+          }
+
+          // bytes is nil if there is no data remaining
+          //                    guard let remainingData = bytes else {
+          //                        subj.send(completion: .failure(FileError.IO(msg: "Nothing written to file")))
+          //                        return
+          //                    }
+
+        }
+      }).eraseToAnyPublisher()
+  }
+}

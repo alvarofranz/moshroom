@@ -1,0 +1,55 @@
+
+!default.mode1v3
+!default.mode2v3
+!default.pbxuser
+!default.perspectivev3
+# Moshroom build logs
+# make and build files
+## Build generated
+## Fonts
+## Obj-C/Swift specific
+## Other
+## Precompiled frameworks
+## Various settings
+## libs
+#*#
+*.dSYM
+*.dSYM.zip
+*.dylib
+*.eep
+*.hmap
+*.ipa
+*.la
+*.lo
+*.lss
+*.lst
+*.map
+*.mode1v3
+*.mode2v3
+*.moved-aside
+*.o
+*.pbxuser
+*.perspectivev3
+*.sym
+*.xcuserstate
+*~
+.DS_Store
+.build
+.mosh*.log
+.swiftpm
+DerivedData/
+Frameworks/include/*
+Frameworks/lib/*
+Frameworks/libmoshios.framework
+Frameworks/libssh2.framework
+Frameworks/openssl.framework
+Moshroom.xcodeproj/project.xcworkspace/xcshareddata
+Resources/AppFont/
+Resources/Fonts/Pragmata*
+build/
+developer_setup.xcconfig
+main.m
+xcuserdata/
+
+# SPM lock (arg-parser is pinned .exact in Package.swift)
+xcfs/Package.resolved

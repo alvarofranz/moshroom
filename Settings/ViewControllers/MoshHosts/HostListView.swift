@@ -1,0 +1,227 @@
+////////////////////////////////////////////////////////////////////////////////
+//
+// M O S H R O O M
+//
+// Copyright (C) 2026 Moshroom
+//
+// This file is part of Moshroom.
+//
+// Moshroom is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// Moshroom is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with Moshroom. If not, see <http://www.gnu.org/licenses/>.
+//
+////////////////////////////////////////////////////////////////////////////////
+
+import SwiftUI
+
+fileprivate struct HostCard: Equatable {
+  let host: MoshHosts
+  let alias: String
+  let hostName: String
+  init(host: MoshHosts) {
+    self.host = host
+    self.alias = host.host
+    self.hostName = host.hostName
+  }
+}
+
+struct HostRow: View {
+  fileprivate let card: HostCard
+  
+  var reloadList: () -> ()
+  
+  var body: some View {
+    Row(
+      content: {
+        HStack {
+          Text(card.alias)
+          Spacer()
+          Text(card.hostName)
+            .font(.system(.subheadline)).foregroundColor(.secondary)
+        }
+      },
+      details: {
+        HostView(host: card.host, reloadList: reloadList)
+      }
+    )
+  }
+}
+
+struct SortButton<T>: View where T: Equatable {
+  let label: String
+  @Binding var sortType: T
+  let asc, desc: T
+  
+  var body: some View {
+    Button {
+      self.sortType = self.sortType == asc ? desc : asc
+    } label: {
+      HStack {
+        Text(label)
+        Spacer()
+        if self.sortType == asc {
+          Image(systemName: "chevron.up")
+        } else if self.sortType == desc {
+          Image(systemName: "chevron.down")
+        }
+      }
+    }
+  }
+}
+
+struct HostListView: View {
+  @StateObject private var _state = HostsObservable()
+  @EnvironmentObject private var _nav: Nav
+  @State private var query = ""
+  
+  var body: some View {
+    Group {
+      if _state.list.isEmpty {
+        EmptyStateView(
+          action:Button(
+            action: _addHost,
+            label: { Label("Add new Host", systemImage: "plus") }
+          ),
+          systemIconName: "server.rack"
+        )
+      } else {
+        Group {
+          if _state.filteredList.isEmpty {
+            EmptyStateView(
+              action:Button(
+                action: _addHost,
+                label: { Label("Add new Host", systemImage: "plus") }
+              ),
+              systemIconName: "server.rack"
+            )
+          } else {
+              List {
+                ForEach(Array(_state.filteredList.enumerated()), id: \.element.alias) { index, card in
+                  HostRow(card: card, reloadList: _state.reloadHosts)
+                    .contextMenu(menuItems: {
+                      Button(action: {
+                        _duplicateHost(card: card)
+                      }, label: { Label("Duplicate", systemImage: "plus.square.on.square")})
+                      Divider()
+                      Button(role: .destructive, action: {
+                        _state.deleteHosts(indexSet: IndexSet([index]))
+                      }, label: { Label("Delete", systemImage: "trash") })
+                    })
+                }.onDelete(perform: _state.deleteHosts)
+              }
+              .listStyle(InsetGroupedListStyle())
+              .navigationBarItems(
+                trailing: HStack {
+                  Menu {
+                    Section(header: Text("Order")) {
+                      SortButton(label: "Alias",    sortType: $_state.sortType, asc: .aliasAsc, desc: .aliasDesc)
+                      SortButton(label: "HostName", sortType: $_state.sortType, asc: .hostNameAsc, desc: .hostNameDesc)
+                    }
+                  } label: { Image(systemName: "list.bullet").frame(width: 38, height: 38, alignment: .center) }
+                  Button(
+                    action: _addHost,
+                    label: { Image(systemName: "plus").frame(width: 38, height: 38, alignment: .center) }
+                  )
+                }
+              )
+          }
+        }
+        .searchable(text: $_state.filterQuery)
+      }
+    }
+    .navigationBarTitle("Hosts")
+    
+  }
+  
+  private func _addHost() {
+    let rootView = HostView(host: nil, reloadList: _state.reloadHosts).environmentObject(_nav)
+    let vc = UIHostingController(rootView: rootView)
+    _nav.navController.pushViewController(vc, animated: true)
+  }
+  
+  private func _duplicateHost(card: HostCard) {
+    let rootView = HostView(duplicatingHost: card.host, reloadList:  _state.reloadHosts).environmentObject(_nav)
+    let vc = UIHostingController(rootView: rootView)
+    _nav.navController.pushViewController(vc, animated: true)
+  }
+}
+
+
+fileprivate class HostsObservable: ObservableObject {
+  enum HostSortType {
+    case aliasAsc, aliasDesc, hostNameAsc, hostNameDesc
+    
+    var sortFn: (_ a: HostCard, _ b: HostCard) -> Bool {
+      switch self {
+      case .aliasAsc:     return { a, b in a.alias < b.alias }
+      case .aliasDesc:    return { a, b in b.alias < a.alias }
+      case .hostNameAsc:  return { a, b in a.hostName < b.hostName }
+      case .hostNameDesc: return { a, b in b.hostName < a.hostName }
+      }
+    }
+  }
+  
+  init() {
+    filterIfNeeded()
+  }
+  
+  @Published var filterQuery: String = "" {
+    didSet {
+      filterIfNeeded()
+    }
+  }
+  
+  @Published var sortType: HostSortType = .aliasAsc {
+    didSet {
+      list = list.sorted(by: sortType.sortFn)
+      filterIfNeeded()
+    }
+  }
+  
+  @Published var filteredList: [HostCard] = []
+  
+  func filterIfNeeded() {
+    let trimmedQuery = filterQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+    if trimmedQuery.isEmpty {
+      filteredList = list
+      return
+    }
+    
+    filteredList = list.filter({ h in
+      h.hostName.localizedCaseInsensitiveContains(trimmedQuery) ||
+      h.alias.localizedCaseInsensitiveContains(trimmedQuery)
+    })
+  }
+  
+  var list: [HostCard] = MoshHosts.allHosts()
+    .map(HostCard.init(host:))
+    .sorted(by: HostSortType.aliasAsc.sortFn)
+  
+  func reloadHosts() {
+    self.list = MoshHosts.allHosts()
+      .map(HostCard.init(host:))
+      .sorted(by: sortType.sortFn)
+    filterIfNeeded()
+  }
+  
+  func deleteHosts(indexSet: IndexSet) {
+    let hostsToDelete = indexSet.map { filteredList[$0] }
+
+    let allHosts = MoshHosts.all()
+    for h in hostsToDelete {
+      allHosts?.remove(h.host)
+    }
+    MoshHosts.forceSave()
+    filteredList.remove(atOffsets: indexSet)
+    reloadHosts()
+  }
+}

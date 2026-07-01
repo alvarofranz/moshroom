@@ -1,0 +1,20 @@
+MaxAuthTries 3
+
+UsePAM yes
+ChallengeResponseAuthentication yes
+PermitEmptyPasswords yes
+GatewayPorts yes
+AllowTcpForwarding yes
+PasswordAuthentication yes
+AcceptEnv LANG LC_* TEST
+ClientAliveInterval 300
+Subsystem sftp internal-sftp
+
+TrustedUserCAKeys /etc/ssh/user_ca.pub
+
+Match User partial
+	AuthenticationMethods publickey,password
+
+Match User admin
+	ChrootDirectory /home/admin
+	ForceCommand internal-sftp
