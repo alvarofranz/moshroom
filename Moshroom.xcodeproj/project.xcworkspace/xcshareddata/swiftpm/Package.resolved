@@ -1,0 +1,88 @@
+{
+  "object": {
+    "pins": [
+      {
+        "package": "Base32Kit",
+        "repositoryURL": "https://github.com/jenslauterbach/Base32Kit.git",
+        "state": {
+          "branch": null,
+          "revision": "34e7e2796cb8d791df6f9a275a858048fcf52700",
+          "version": "0.2.1"
+        }
+      },
+      {
+        "package": "ConfettiSwiftUI",
+        "repositoryURL": "https://github.com/simibac/ConfettiSwiftUI.git",
+        "state": {
+          "branch": null,
+          "revision": "79666d42b882bf7921b1941fa7c636d681d77980",
+          "version": "2.0.3"
+        }
+      },
+      {
+        "package": "Runestone",
+        "repositoryURL": "https://github.com/simonbs/Runestone",
+        "state": {
+          "branch": null,
+          "revision": "592434a103a4d1ab83e14f87ac6eef569dd7a99d",
+          "version": "0.5.2"
+        }
+      },
+      {
+        "package": "SQLite.swift",
+        "repositoryURL": "https://github.com/stephencelis/SQLite.swift",
+        "state": {
+          "branch": null,
+          "revision": "0c08856385fe24f7b76d8c51842d78a196e8e817",
+          "version": "0.15.5"
+        }
+      },
+      {
+        "package": "SwiftCBOR",
+        "repositoryURL": "https://github.com/unrelentingtech/SwiftCBOR",
+        "state": {
+          "branch": "master",
+          "revision": "fd929a6d8f7651ce0f63fc99397fd5762358cc29",
+          "version": null
+        }
+      },
+      {
+        "package": "CachedAsyncImage",
+        "repositoryURL": "https://github.com/lorenzofiamingo/swiftui-cached-async-image",
+        "state": {
+          "branch": null,
+          "revision": "58d9324354f8b321f0aad906f0abdaa4ded9243f",
+          "version": "1.11.0"
+        }
+      },
+      {
+        "package": "TreeSitter",
+        "repositoryURL": "https://github.com/tree-sitter/tree-sitter",
+        "state": {
+          "branch": null,
+          "revision": "98be227227af10cc7a269cb3ffb23686c0610b17",
+          "version": "0.20.9"
+        }
+      },
+      {
+        "package": "TreeSitterLanguages",
+        "repositoryURL": "https://github.com/simonbs/treesitterlanguages",
+        "state": {
+          "branch": null,
+          "revision": "15cf3a9ec3ab95e0d058b7df9f35619123c9e02d",
+          "version": "0.1.10"
+        }
+      },
+      {
+        "package": "ZIPFoundation",
+        "repositoryURL": "https://github.com/weichsel/ZIPFoundation.git",
+        "state": {
+          "branch": null,
+          "revision": "22787ffb59de99e5dc1fbfe80b19c97a904ad48d",
+          "version": "0.9.20"
+        }
+      }
+    ]
+  },
+  "version": 1
+}
