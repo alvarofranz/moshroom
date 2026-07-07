@@ -498,9 +498,9 @@ private final class MoshxploreDetailView: UIView {
   private let placeholderLabel = UILabel()
   private let placeholder = UIStackView()
   private let spinner = UIActivityIndicatorView(style: .medium)
-  private let saveButton = UIButton(type: .system)     // top-right, next to the file name — edit mode only
-  private let editButton = UIButton(type: .system)
-  private let downloadButton = UIButton(type: .system)
+  private let saveButton = moshButton()     // top-right, next to the file name — edit mode only
+  private let editButton = moshButton()
+  private let downloadButton = moshButton()
   private let actionRow = UIStackView()                // the bottom Edit/Download pair; hidden while editing
 
   // Moshlight: the code surface (Mushroom soil, the one and only theme), its line-number gutter,
@@ -522,7 +522,7 @@ private final class MoshxploreDetailView: UIView {
   init() {
     super.init(frame: .zero)
 
-    let back = UIButton(type: .system)
+    let back = moshButton()
     back.setImage(UIImage(systemName: "chevron.backward"), for: .normal)
     back.setPreferredSymbolConfiguration(UIImage.SymbolConfiguration(pointSize: 15, weight: .semibold), forImageIn: .normal)
     back.tintColor = MoshxploreStyle.dark
@@ -885,8 +885,8 @@ final class MoshxploreView: UIView {
   private let hostsEmpty = UILabel()
 
   private let browserStep = UIStackView()
-  private let upButton = UIButton(type: .system)
-  private let hostsButton = UIButton(type: .system)
+  private let upButton = moshButton()
+  private let hostsButton = moshButton()
   private let pathLabel = UILabel()
   private let entriesStack = UIStackView()
   private let entriesScroll = UIScrollView()
@@ -899,9 +899,9 @@ final class MoshxploreView: UIView {
   private let progressOverlay = UIView()
   private let progressTitle = UILabel()
   private let progressBar = UIProgressView(progressViewStyle: .default)
-  private let cancelButton = UIButton(type: .system)
-  private let openButton = UIButton(type: .system)
-  private let doneButton = UIButton(type: .system)
+  private let cancelButton = moshButton()
+  private let openButton = moshButton()
+  private let doneButton = moshButton()
 
   private var session: MoshxploreSession?
   private var hostAlias: String?

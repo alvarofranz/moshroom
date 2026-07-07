@@ -101,8 +101,19 @@ enum Moshkeys {
 
 // Shared style for the floating round buttons — the Moshroom house style, reused by the
 // Moshkitor control bar so everything matches.
+/// A UIButton that renders the same on iOS and Mac Catalyst. On Mac, a `.system` button adopts
+/// the native Mac chrome (a bordered capsule + washed-out icons) that clashes with our iOS-style
+/// custom buttons; `.custom` keeps the app looking like its iPhone/iPad self.
+func moshButton() -> UIButton {
+  #if targetEnvironment(macCatalyst)
+  return UIButton(type: .custom)
+  #else
+  return UIButton(type: .system)
+  #endif
+}
+
 func moshkeyRoundButton(diameter: CGFloat = 42) -> UIButton {
-  let b = UIButton(type: .system)
+  let b = moshButton()
   b.tintColor = UIColor(white: 0.12, alpha: 1)
   b.setTitleColor(UIColor(white: 0.12, alpha: 1), for: .normal)
   b.titleLabel?.font = .systemFont(ofSize: 15, weight: .semibold)
@@ -407,7 +418,7 @@ final class MoshkeysPad: UIView {
   }
 
   private func _key(_ label: String, _ bytes: String) -> UIButton {
-    let b = UIButton(type: .system)
+    let b = moshButton()
     b.setTitle(label, for: .normal)
     b.titleLabel?.font = .systemFont(ofSize: 17, weight: .medium)
     b.titleLabel?.adjustsFontSizeToFitWidth = true
@@ -495,7 +506,7 @@ final class MoshtabsController: UIViewController {
     row.translatesAutoresizingMaskIntoConstraints = false
     row.heightAnchor.constraint(greaterThanOrEqualToConstant: 48).isActive = true
 
-    let title = UIButton(type: .system)
+    let title = moshButton()
     var cfg = UIButton.Configuration.plain()
     var attr = AttributeContainer()
     attr.font = .systemFont(ofSize: 15, weight: active ? .semibold : .regular)
@@ -509,7 +520,7 @@ final class MoshtabsController: UIViewController {
     title.translatesAutoresizingMaskIntoConstraints = false
     title.addAction(UIAction { [weak self] _ in self?._switch(to: tab.key) }, for: .touchUpInside)
 
-    let close = UIButton(type: .system)
+    let close = moshButton()
     close.setImage(UIImage(systemName: "xmark", withConfiguration: UIImage.SymbolConfiguration(pointSize: 13, weight: .semibold)), for: .normal)
     close.tintColor = active ? UIColor(white: 1, alpha: 0.85) : MoshxploreStyle.gray
     close.translatesAutoresizingMaskIntoConstraints = false
@@ -535,7 +546,7 @@ final class MoshtabsController: UIViewController {
   }
 
   private func _newRow() -> UIView {
-    let b = UIButton(type: .system)
+    let b = moshButton()
     var cfg = UIButton.Configuration.plain()
     cfg.image = UIImage(systemName: "plus", withConfiguration: UIImage.SymbolConfiguration(pointSize: 13, weight: .semibold))
     cfg.imagePadding = 8

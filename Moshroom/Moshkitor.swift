@@ -420,7 +420,7 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
     bar.progress = 0
 
     // Top-right ✕ — cancel the upload and drop straight back into the editor with everything intact.
-    let cancel = UIButton(type: .system)
+    let cancel = moshButton()
     cancel.translatesAutoresizingMaskIntoConstraints = false
     cancel.setImage(UIImage(systemName: "xmark.circle.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: 22)), for: .normal)
     cancel.tintColor = .tertiaryLabel
@@ -586,7 +586,7 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
 
   private func _chip(_ suggestion: Suggestion) -> UIButton {
     let isSnip: Bool = { if case .snip = suggestion { return true } else { return false } }()
-    let b = UIButton(type: .system)
+    let b = moshButton()
     b.setTitle(suggestion.label, for: .normal)
     b.titleLabel?.font = .monospacedSystemFont(ofSize: 15, weight: .medium)
     b.setTitleColor(.label, for: .normal)
