@@ -19,7 +19,7 @@ var binaryTargets: [PackageDescription.Target] = [
   ("mosh",        "e0427f8a953370070b3d9b715ab802b7a4154b9ac3172a193decf92df8775f8a"),
   ("LibSSH",      "bf8a25844ce4c854de9c8fd58caf90930aea3ba90ebd4ab7181d46b4cb00dab9"),
   ("OpenSSH",     "55dcc7ec84767aa968241c817f9df74e977f8d47249ea92ddcc2571062899faf"),
-  ("openssl",     "8a6d78a9891312f4311db90e052ce7d4649d42dba363287642545f0269333246"),
+  ("openssl",     "a0cf72cc5bab66dc15781ef398bfebb9f657933c87e73dc6349bc098b0265edc"),
   ("libssh2",     "ea4ed7517743928f4fe82ff7401e6562c63d1d5f7be272bc7fc7d72f9cbe11b4"),
   ("ios_system",  "e8f5f5965384af82912017d716f3c56a40a45eb9cee475ce0cf4e6124e933c61"),
 ].map { name, checksum in
