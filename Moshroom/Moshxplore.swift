@@ -498,9 +498,9 @@ private final class MoshxploreDetailView: UIView {
   private let placeholderLabel = UILabel()
   private let placeholder = UIStackView()
   private let spinner = UIActivityIndicatorView(style: .medium)
-  private let saveButton = moshButton()     // top-right, next to the file name — edit mode only
-  private let editButton = moshButton()
-  private let downloadButton = moshButton()
+  private let saveButton = UIButton(type: .system)     // top-right, next to the file name — edit mode only
+  private let editButton = UIButton(type: .system)
+  private let downloadButton = UIButton(type: .system)
   private let actionRow = UIStackView()                // the bottom Edit/Download pair; hidden while editing
 
   // Moshlight: the code surface (Mushroom soil, the one and only theme), its line-number gutter,
@@ -898,7 +898,7 @@ final class MoshxploreView: UIView {
   private let progressTitle = UILabel()
   private let progressBar = UIProgressView(progressViewStyle: .default)
   private let cancelButton = moshButton()
-  private let openButton = moshButton()
+  private let openButton = UIButton(type: .system)
   private let doneButton = moshButton()
 
   private var session: MoshxploreSession?

@@ -514,7 +514,7 @@ final class MoshtabsController: UIViewController {
     row.translatesAutoresizingMaskIntoConstraints = false
     row.heightAnchor.constraint(greaterThanOrEqualToConstant: 48).isActive = true
 
-    let title = moshButton()
+    let title = UIButton(type: .system)
     var cfg = UIButton.Configuration.plain()
     var attr = AttributeContainer()
     attr.font = .systemFont(ofSize: 15, weight: active ? .semibold : .regular)
@@ -553,7 +553,7 @@ final class MoshtabsController: UIViewController {
   }
 
   private func _newRow() -> UIView {
-    let b = moshButton()
+    let b = UIButton(type: .system)
     var cfg = UIButton.Configuration.plain()
     cfg.image = UIImage(systemName: "plus", withConfiguration: UIImage.SymbolConfiguration(pointSize: 13, weight: .semibold))
     cfg.imagePadding = 8

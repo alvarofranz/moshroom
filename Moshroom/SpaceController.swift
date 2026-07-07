@@ -1022,7 +1022,7 @@ extension SpaceController {
       // Title priority: a forced custom name, then the connected host's alias (a tab that is an
       // ssh/mosh session to "awesomehost" IS awesomehost to the user), then the program's own OSC
       // title (claude / vim / ssh). Unloaded, unconnected tabs have no live title, so "shell".
-      let connected = (term.moshroomConnectedHost ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+      let connected = (term.meta.connectedHost ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
       let osc = (term.termView.title ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
       let name = !custom.isEmpty ? custom
                : !connected.isEmpty ? connected

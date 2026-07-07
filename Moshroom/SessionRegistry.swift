@@ -30,6 +30,9 @@ class SessionMeta: Codable {
   fileprivate(set) var isSuspended: Bool = false
   // A user-forced tab name; when set it overrides the program's own terminal title.
   var customName: String? = nil
+  // The saved host this tab last connected to (Quick Connect). Persisted so a named tab keeps
+  // its name across an app relaunch, until the user renames or closes it.
+  var connectedHost: String? = nil
 }
 
 protocol SuspendableSession: AnyObject {
@@ -90,6 +93,9 @@ protocol SuspendableSession: AnyObject {
     _metaIndex[key]?.customName = (trimmed?.isEmpty == false) ? trimmed : nil
     _fsWriteMetaIndex()
   }
+
+  // Persist the meta index now (used when a tab records the host it connected to).
+  func persistMetaIndex() { _fsWriteMetaIndex() }
   
   func sessionFromIndexWith<T: SuspendableSession>(key: UUID) -> T? {
     _sessionsIndex[key] as? T

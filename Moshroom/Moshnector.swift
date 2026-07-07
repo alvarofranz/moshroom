@@ -252,7 +252,12 @@ extension SpaceController {
   // The single place a connection's host is recorded as Moshdrop's upload target. Only saved hosts
   // qualify (an upload reuses the host's keys/config); an unknown host is ignored, never an error.
   func noteConnection(toHost alias: String) {
-    if moshroomSavedHostAliases.contains(alias) { currentTerm()?.moshroomConnectedHost = alias }
+    if moshroomSavedHostAliases.contains(alias) {
+      let term = currentTerm()
+      term?.moshroomConnectedHost = alias
+      term?.meta.connectedHost = alias          // persisted → the tab name survives an app relaunch
+      SessionRegistry.shared.persistMetaIndex()
+    }
   }
 
   // A command sent from the local prompt may be an `ssh <host>` / `mosh <host>` connect — if so,
