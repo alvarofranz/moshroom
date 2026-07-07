@@ -63,6 +63,11 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
       return
     }
 
+    #if targetEnvironment(macCatalyst)
+    // Native Mac window: keep a sane floor so the terminal grid never collapses.
+    windowScene.sizeRestrictions?.minimumSize = CGSize(width: 480, height: 360)
+    #endif
+
     defer {
     }
 

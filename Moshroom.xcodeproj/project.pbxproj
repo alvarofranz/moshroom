@@ -74,9 +74,6 @@
 		BD55D6A02F8D000100EE80EA /* StyleCustomizationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD55D69E2F8D000100EE80EA /* StyleCustomizationView.swift */; };
 		BD55D6DC2F7F2F5A00EE80EA /* DeviceInfo.m in Sources */ = {isa = PBXBuildFile; fileRef = BD55D6DB2F7F2F5A00EE80EA /* DeviceInfo.m */; };
 		BD7810A52640C36100114700 /* NWConnection+WriterTo.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD7810A42640C36100114700 /* NWConnection+WriterTo.swift */; };
-		BD792A4F2A3BDAAA009EE35F /* ZIPFoundation in Frameworks */ = {isa = PBXBuildFile; productRef = BD792A4E2A3BDAAA009EE35F /* ZIPFoundation */; };
-		BD792A512A3BDAC4009EE35F /* ZIPFoundation in Frameworks */ = {isa = PBXBuildFile; productRef = BD792A502A3BDAC4009EE35F /* ZIPFoundation */; };
-		BD7AFC4128E8E98C004BCDA4 /* Base32Kit in Frameworks */ = {isa = PBXBuildFile; productRef = BD7AFC4028E8E98C004BCDA4 /* Base32Kit */; };
 		BD818A052AAFC18400956488 /* mosh.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD818A042AAFC18400956488 /* mosh.swift */; };
 		BD818A0C2AB120B800956488 /* MoshServerParams.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD818A0B2AB120B800956488 /* MoshServerParams.swift */; };
 		BD818A132AB3865F00956488 /* MoshCommand.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD818A122AB3865F00956488 /* MoshCommand.swift */; };
@@ -116,7 +113,6 @@
 		BDF2B8DD2BC48D2800B9C7EA /* LibSSH.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = D2334EC425C1C04700385378 /* LibSSH.xcframework */; };
 		BDF2B8DF2BC48D2D00B9C7EA /* libssh2.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = D2F64C9525CA99AD00F2225D /* libssh2.xcframework */; };
 		BDF40FEB2C14A6CE00DF41C1 /* AgentSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BDF40FE92C14A6CE00DF41C1 /* AgentSettingsView.swift */; };
-		BDFA97322D7F49EF0020BBF2 /* ConfettiSwiftUI in Frameworks */ = {isa = PBXBuildFile; productRef = BDFA97312D7F49EF0020BBF2 /* ConfettiSwiftUI */; };
 		C94437571D8311960096F84E /* MoshResource.m in Sources */ = {isa = PBXBuildFile; fileRef = C94437561D8311960096F84E /* MoshResource.m */; };
 		C94437601D831CD30096F84E /* Themes in Resources */ = {isa = PBXBuildFile; fileRef = C944375F1D831CD30096F84E /* Themes */; };
 		C94437651D838ABF0096F84E /* Fonts in Resources */ = {isa = PBXBuildFile; fileRef = C94437641D838ABF0096F84E /* Fonts */; };
@@ -165,8 +161,6 @@
 		D2334EF425C1C28F00385378 /* ios_system.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = D2334ED025C1C04700385378 /* ios_system.xcframework */; };
 		D2334EF525C1C28F00385378 /* ios_system.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = D2334ED025C1C04700385378 /* ios_system.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		D2334EF825C1C28F00385378 /* mosh.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = D2334EC525C1C04700385378 /* mosh.xcframework */; };
-		D2334EFA25C1C28F00385378 /* network_ios.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = D2334EC625C1C04700385378 /* network_ios.xcframework */; };
-		D2334EFB25C1C28F00385378 /* network_ios.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = D2334EC625C1C04700385378 /* network_ios.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		D2334F0C25C1C3C600385378 /* OpenSSH.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = D2334F0A25C1C3A000385378 /* OpenSSH.xcframework */; };
 		D23A7B25233C934900B3B66D /* UIColor+isLight.swift in Sources */ = {isa = PBXBuildFile; fileRef = D23A7B24233C934900B3B66D /* UIColor+isLight.swift */; };
 		D23B4C6E2A6FCAC2002E689B /* SearchTextInput.swift in Sources */ = {isa = PBXBuildFile; fileRef = D22277F92A26204900D4C708 /* SearchTextInput.swift */; };
@@ -201,10 +195,7 @@
 		D28DB3AC210B110C008A1139 /* libcompression.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = D28DB3AB210B110B008A1139 /* libcompression.tbd */; };
 		D2903F3C239BBF5D005F991B /* KeyShortcut.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2903F3B239BBF5D005F991B /* KeyShortcut.swift */; };
 		D29392B72004D785001FB2AA /* hterm_all.patches.js in Resources */ = {isa = PBXBuildFile; fileRef = D29392B62004D785001FB2AA /* hterm_all.patches.js */; };
-		D297F00F29012FDB002A24F9 /* CachedAsyncImage in Frameworks */ = {isa = PBXBuildFile; productRef = D297F00E29012FDB002A24F9 /* CachedAsyncImage */; };
 		D29D6C3122DB9CA700A84173 /* TermController.swift in Sources */ = {isa = PBXBuildFile; fileRef = D29D6C3022DB9CA700A84173 /* TermController.swift */; };
-		D29FE54A208DC860004679D0 /* commandDictionary.plist in Resources */ = {isa = PBXBuildFile; fileRef = D29FE548208DC860004679D0 /* commandDictionary.plist */; };
-		D29FE54B208DC860004679D0 /* extraCommandsDictionary.plist in Resources */ = {isa = PBXBuildFile; fileRef = D29FE549208DC860004679D0 /* extraCommandsDictionary.plist */; };
 		D2A0C2162600D16300F0DF97 /* Protobuf_C_.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = D2334ECB25C1C04700385378 /* Protobuf_C_.xcframework */; };
 		D2A0C2172600D16300F0DF97 /* Protobuf_C_.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = D2334ECB25C1C04700385378 /* Protobuf_C_.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		D2A5221E230D279B0010AC04 /* SmarterTermInput.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2A5221D230D279B0010AC04 /* SmarterTermInput.swift */; };
@@ -323,7 +314,6 @@
 				D2334EF525C1C28F00385378 /* ios_system.xcframework in Embed Frameworks */,
 				D22277E22A26115300D4C708 /* MoshroomSnippets.framework in Embed Frameworks */,
 				D2A0C2172600D16300F0DF97 /* Protobuf_C_.xcframework in Embed Frameworks */,
-				D2334EFB25C1C28F00385378 /* network_ios.xcframework in Embed Frameworks */,
 				07FABBC525C9AECF00E1CC2C /* MoshroomFiles.framework in Embed Frameworks */,
 			);
 			name = "Embed Frameworks";
@@ -498,7 +488,6 @@
 		D22B16D728CF6ED20004EEC1 /* NewPasskeyView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewPasskeyView.swift; sourceTree = "<group>"; };
 		D2334EC425C1C04700385378 /* LibSSH.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = LibSSH.xcframework; path = xcfs/.build/artifacts/xcfs/LibSSH/LibSSH.xcframework; sourceTree = SOURCE_ROOT; };
 		D2334EC525C1C04700385378 /* mosh.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = mosh.xcframework; path = xcfs/.build/artifacts/xcfs/mosh/mosh.xcframework; sourceTree = SOURCE_ROOT; };
-		D2334EC625C1C04700385378 /* network_ios.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = network_ios.xcframework; path = xcfs/.build/artifacts/xcfs/network_ios/network_ios.xcframework; sourceTree = SOURCE_ROOT; };
 		D2334ECB25C1C04700385378 /* Protobuf_C_.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = Protobuf_C_.xcframework; path = xcfs/.build/artifacts/xcfs/Protobuf_C_/Protobuf_C_.xcframework; sourceTree = SOURCE_ROOT; };
 		D2334ED025C1C04700385378 /* ios_system.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = ios_system.xcframework; path = xcfs/.build/artifacts/xcfs/ios_system/ios_system.xcframework; sourceTree = SOURCE_ROOT; };
 		D2334F0A25C1C3A000385378 /* OpenSSH.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = OpenSSH.xcframework; path = xcfs/.build/artifacts/xcfs/OpenSSH/OpenSSH.xcframework; sourceTree = SOURCE_ROOT; };
@@ -538,8 +527,6 @@
 		D2903F3B239BBF5D005F991B /* KeyShortcut.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyShortcut.swift; sourceTree = "<group>"; };
 		D29392B62004D785001FB2AA /* hterm_all.patches.js */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.javascript; path = hterm_all.patches.js; sourceTree = "<group>"; };
 		D29D6C3022DB9CA700A84173 /* TermController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TermController.swift; sourceTree = "<group>"; };
-		D29FE548208DC860004679D0 /* commandDictionary.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; path = commandDictionary.plist; sourceTree = "<group>"; };
-		D29FE549208DC860004679D0 /* extraCommandsDictionary.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; path = extraCommandsDictionary.plist; sourceTree = "<group>"; };
 		D2A0C63E20AAD98D001CF38F /* ios_error.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ios_error.h; sourceTree = "<group>"; };
 		D2A5221D230D279B0010AC04 /* SmarterTermInput.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SmarterTermInput.swift; sourceTree = "<group>"; };
 		D2A52226231304FE0010AC04 /* UIGestureRecognizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UIGestureRecognizer.swift; sourceTree = "<group>"; };
@@ -661,7 +648,6 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				BD792A512A3BDAC4009EE35F /* ZIPFoundation in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -672,7 +658,6 @@
 				D222780A2A26216900D4C708 /* TreeSitterBashQueries in Frameworks */,
 				D28DB3AC210B110C008A1139 /* libcompression.tbd in Frameworks */,
 				BDF2B8DF2BC48D2D00B9C7EA /* libssh2.xcframework in Frameworks */,
-				BDFA97322D7F49EF0020BBF2 /* ConfettiSwiftUI in Frameworks */,
 				07FABB9925C9AEC100E1CC2C /* SSH.framework in Frameworks */,
 				D222780F2A26217A00D4C708 /* Runestone in Frameworks */,
 				BDCB7165268E1577007D7047 /* MoshroomConfig.framework in Frameworks */,
@@ -683,17 +668,13 @@
 				D222780C2A26216900D4C708 /* TreeSitterBashRunestone in Frameworks */,
 				D2334EF425C1C28F00385378 /* ios_system.xcframework in Frameworks */,
 				07FABBC425C9AECF00E1CC2C /* MoshroomFiles.framework in Frameworks */,
-				BD7AFC4128E8E98C004BCDA4 /* Base32Kit in Frameworks */,
 				0732F1291D06324200AB5438 /* libcurses.tbd in Frameworks */,
 				0732F1271D06323A00AB5438 /* libz.tbd in Frameworks */,
-				D297F00F29012FDB002A24F9 /* CachedAsyncImage in Frameworks */,
 				D22278082A26216900D4C708 /* TreeSitterBash in Frameworks */,
 				07FAB90F25C8E94E00E1CC2C /* ArgumentParser in Frameworks */,
 				BDF2B8DD2BC48D2800B9C7EA /* LibSSH.xcframework in Frameworks */,
-				D2334EFA25C1C28F00385378 /* network_ios.xcframework in Frameworks */,
 				D2A6398928CFA0B90066FD18 /* SwiftCBOR in Frameworks */,
 				D22277E12A26115300D4C708 /* MoshroomSnippets.framework in Frameworks */,
-				BD792A4F2A3BDAAA009EE35F /* ZIPFoundation in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -745,9 +726,7 @@
 			isa = PBXGroup;
 			children = (
 				D2E670112A2DB83200DEC4ED /* AppFont */,
-				D29FE548208DC860004679D0 /* commandDictionary.plist */,
 				D2C21F3220FCD6CD00F125E0 /* moshroomCommandsDictionary.plist */,
-				D29FE549208DC860004679D0 /* extraCommandsDictionary.plist */,
 				D209465B204D3FC5003C4F72 /* cacert.pem */,
 				D2F30EAC205009CD008C5F35 /* base64js.min.js */,
 				85A34303200A837A009324F1 /* webfontloader.js */,
@@ -771,7 +750,6 @@
 				D2334ED025C1C04700385378 /* ios_system.xcframework */,
 				D2334EC425C1C04700385378 /* LibSSH.xcframework */,
 				D2334EC525C1C04700385378 /* mosh.xcframework */,
-				D2334EC625C1C04700385378 /* network_ios.xcframework */,
 				D2334ECB25C1C04700385378 /* Protobuf_C_.xcframework */,
 				D2F64C9525CA99AD00F2225D /* libssh2.xcframework */,
 				D2F64C9425CA99AD00F2225D /* openssl.xcframework */,
@@ -1417,7 +1395,6 @@
 			);
 			name = MoshroomSnippets;
 			packageProductDependencies = (
-				BD792A502A3BDAC4009EE35F /* ZIPFoundation */,
 			);
 			productName = MoshroomSnippets;
 			productReference = D22277CE2A26115300D4C708 /* MoshroomSnippets.framework */;
@@ -1444,14 +1421,10 @@
 			packageProductDependencies = (
 				07FAB90E25C8E94E00E1CC2C /* ArgumentParser */,
 				D2A6398828CFA0B90066FD18 /* SwiftCBOR */,
-				BD7AFC4028E8E98C004BCDA4 /* Base32Kit */,
-				D297F00E29012FDB002A24F9 /* CachedAsyncImage */,
 				D22278072A26216900D4C708 /* TreeSitterBash */,
 				D22278092A26216900D4C708 /* TreeSitterBashQueries */,
 				D222780B2A26216900D4C708 /* TreeSitterBashRunestone */,
 				D222780E2A26217A00D4C708 /* Runestone */,
-				BD792A4E2A3BDAAA009EE35F /* ZIPFoundation */,
-				BDFA97312D7F49EF0020BBF2 /* ConfettiSwiftUI */,
 			);
 			productName = Moshroom;
 			productReference = EA0BA18B1C0CC57B00719C1A /* Moshroom.app */;
@@ -1528,13 +1501,8 @@
 			mainGroup = EA0BA1821C0CC57B00719C1A;
 			packageReferences = (
 				D2A6398728CFA0B90066FD18 /* XCRemoteSwiftPackageReference "SwiftCBOR" */,
-				BD7AFC3F28E8E98C004BCDA4 /* XCRemoteSwiftPackageReference "Base32Kit" */,
-				D297F00D29012FDB002A24F9 /* XCRemoteSwiftPackageReference "swiftui-cached-async-image" */,
 				D22278062A26216900D4C708 /* XCRemoteSwiftPackageReference "treesitterlanguages" */,
 				D222780D2A26217A00D4C708 /* XCRemoteSwiftPackageReference "Runestone" */,
-				BD792A4D2A3BDAAA009EE35F /* XCRemoteSwiftPackageReference "ZIPFoundation" */,
-				BD4DBAF82CADA82700538194 /* XCRemoteSwiftPackageReference "SQLite.swift" */,
-				BDA35C972D7F4955004CD75C /* XCRemoteSwiftPackageReference "ConfettiSwiftUI" */,
 			);
 			productRefGroup = EA0BA18C1C0CC57B00719C1A /* Products */;
 			projectDirPath = "";
@@ -1585,10 +1553,8 @@
 				D27D01272615F1BD00128C23 /* developer_setup.xcconfig in Resources */,
 				07E3AED31D919272007BC086 /* css in Resources */,
 				D2F30EAD205009CD008C5F35 /* base64js.min.js in Resources */,
-				D29FE54A208DC860004679D0 /* commandDictionary.plist in Resources */,
 				D2BB5E142A1F718300BB0520 /* app-font-bold.ttf in Resources */,
 				C94437601D831CD30096F84E /* Themes in Resources */,
-				D29FE54B208DC860004679D0 /* extraCommandsDictionary.plist in Resources */,
 				07E4C5211C935E28000C571A /* Media.xcassets in Resources */,
 				0732F04D1D062B9A00AB5438 /* locales.bundle in Resources */,
 				07E3AECD1D9191B4007BC086 /* about.html in Resources */,
@@ -1927,6 +1893,8 @@
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
+				SUPPORTS_MACCATALYST = YES;
+				DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER = NO;
 				VERSIONING_SYSTEM = "apple-generic";
 				VERSION_INFO_PREFIX = "";
 			};
@@ -1969,6 +1937,8 @@
 				SKIP_INSTALL = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
+				SUPPORTS_MACCATALYST = YES;
+				DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER = NO;
 				VERSIONING_SYSTEM = "apple-generic";
 				VERSION_INFO_PREFIX = "";
 			};
@@ -2014,8 +1984,9 @@
 				PRODUCT_BUNDLE_IDENTIFIER = "$(BUNDLE_ID).MoshroomFiles";
 				PRODUCT_NAME = "$(TARGET_NAME:c99extidentifier)";
 				SKIP_INSTALL = YES;
-				SUPPORTS_MACCATALYST = NO;
-				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = YES;
+				SUPPORTS_MACCATALYST = YES;
+				DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_VERSION = 5.0;
@@ -2060,8 +2031,9 @@
 				PRODUCT_BUNDLE_IDENTIFIER = "$(BUNDLE_ID).MoshroomFiles";
 				PRODUCT_NAME = "$(TARGET_NAME:c99extidentifier)";
 				SKIP_INSTALL = YES;
-				SUPPORTS_MACCATALYST = NO;
-				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = YES;
+				SUPPORTS_MACCATALYST = YES;
+				DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2,6";
 				VERSIONING_SYSTEM = "apple-generic";
@@ -2117,6 +2089,8 @@
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
+				SUPPORTS_MACCATALYST = YES;
+				DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER = NO;
 				VERSIONING_SYSTEM = "apple-generic";
 				VERSION_INFO_PREFIX = "";
 			};
@@ -2163,6 +2137,8 @@
 				SKIP_INSTALL = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
+				SUPPORTS_MACCATALYST = YES;
+				DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER = NO;
 				VERSIONING_SYSTEM = "apple-generic";
 				VERSION_INFO_PREFIX = "";
 			};
@@ -2218,6 +2194,8 @@
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
+				SUPPORTS_MACCATALYST = YES;
+				DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER = NO;
 				VERSIONING_SYSTEM = "apple-generic";
 				VERSION_INFO_PREFIX = "";
 			};
@@ -2266,6 +2244,8 @@
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
+				SUPPORTS_MACCATALYST = YES;
+				DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER = NO;
 				VERSIONING_SYSTEM = "apple-generic";
 				VERSION_INFO_PREFIX = "";
 			};
@@ -2425,8 +2405,9 @@
 				RUN_CLANG_STATIC_ANALYZER = YES;
 				STRIP_STYLE = "non-global";
 				STRIP_SWIFT_SYMBOLS = NO;
-				SUPPORTS_MACCATALYST = NO;
-				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = YES;
+				SUPPORTS_MACCATALYST = YES;
+				DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
 				SWIFT_OBJC_BRIDGING_HEADER = "Moshroom/Moshroom-bridge.h";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				TARGETED_DEVICE_FAMILY = "1,2,6";
@@ -2472,8 +2453,9 @@
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				STRIP_STYLE = "non-global";
 				STRIP_SWIFT_SYMBOLS = NO;
-				SUPPORTS_MACCATALYST = NO;
-				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = YES;
+				SUPPORTS_MACCATALYST = YES;
+				DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
 				SWIFT_OBJC_BRIDGING_HEADER = "Moshroom/Moshroom-bridge.h";
 				TARGETED_DEVICE_FAMILY = "1,2,6";
 			};
@@ -2539,38 +2521,6 @@
 /* End XCConfigurationList section */
 
 /* Begin XCRemoteSwiftPackageReference section */
-		BD4DBAF82CADA82700538194 /* XCRemoteSwiftPackageReference "SQLite.swift" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/stephencelis/SQLite.swift";
-			requirement = {
-				kind = upToNextMinorVersion;
-				minimumVersion = 0.15.3;
-			};
-		};
-		BD792A4D2A3BDAAA009EE35F /* XCRemoteSwiftPackageReference "ZIPFoundation" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/weichsel/ZIPFoundation.git";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 0.9.16;
-			};
-		};
-		BD7AFC3F28E8E98C004BCDA4 /* XCRemoteSwiftPackageReference "Base32Kit" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/jenslauterbach/Base32Kit.git";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 0.2.0;
-			};
-		};
-		BDA35C972D7F4955004CD75C /* XCRemoteSwiftPackageReference "ConfettiSwiftUI" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/simibac/ConfettiSwiftUI.git";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 2.0.2;
-			};
-		};
 		D22278062A26216900D4C708 /* XCRemoteSwiftPackageReference "treesitterlanguages" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/simonbs/treesitterlanguages";
@@ -2585,14 +2535,6 @@
 			requirement = {
 				kind = upToNextMajorVersion;
 				minimumVersion = 0.3.0;
-			};
-		};
-		D297F00D29012FDB002A24F9 /* XCRemoteSwiftPackageReference "swiftui-cached-async-image" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/lorenzofiamingo/swiftui-cached-async-image";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 1.0.0;
 			};
 		};
 		D2A6398728CFA0B90066FD18 /* XCRemoteSwiftPackageReference "SwiftCBOR" */ = {
@@ -2610,29 +2552,9 @@
 			isa = XCSwiftPackageProductDependency;
 			productName = ArgumentParser;
 		};
-		BD792A4E2A3BDAAA009EE35F /* ZIPFoundation */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = BD792A4D2A3BDAAA009EE35F /* XCRemoteSwiftPackageReference "ZIPFoundation" */;
-			productName = ZIPFoundation;
-		};
-		BD792A502A3BDAC4009EE35F /* ZIPFoundation */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = BD792A4D2A3BDAAA009EE35F /* XCRemoteSwiftPackageReference "ZIPFoundation" */;
-			productName = ZIPFoundation;
-		};
-		BD7AFC4028E8E98C004BCDA4 /* Base32Kit */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = BD7AFC3F28E8E98C004BCDA4 /* XCRemoteSwiftPackageReference "Base32Kit" */;
-			productName = Base32Kit;
-		};
 		BDCB7193268E175A007D7047 /* SSHConfig */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = SSHConfig;
-		};
-		BDFA97312D7F49EF0020BBF2 /* ConfettiSwiftUI */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = BDA35C972D7F4955004CD75C /* XCRemoteSwiftPackageReference "ConfettiSwiftUI" */;
-			productName = ConfettiSwiftUI;
 		};
 		D22278072A26216900D4C708 /* TreeSitterBash */ = {
 			isa = XCSwiftPackageProductDependency;
@@ -2653,11 +2575,6 @@
 			isa = XCSwiftPackageProductDependency;
 			package = D222780D2A26217A00D4C708 /* XCRemoteSwiftPackageReference "Runestone" */;
 			productName = Runestone;
-		};
-		D297F00E29012FDB002A24F9 /* CachedAsyncImage */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = D297F00D29012FDB002A24F9 /* XCRemoteSwiftPackageReference "swiftui-cached-async-image" */;
-			productName = CachedAsyncImage;
 		};
 		D2A6398828CFA0B90066FD18 /* SwiftCBOR */ = {
 			isa = XCSwiftPackageProductDependency;
