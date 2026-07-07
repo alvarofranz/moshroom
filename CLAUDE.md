@@ -200,10 +200,12 @@ uses **adaptive semantic colors** (`MoshxploreStyle`), lists run the full height
 bleeds edge-to-edge, images render centered at max 60% of the viewer per dimension, and the
 explorer's bottom rides `keyboardLayoutGuide`. The Quick Connect card keeps its fixed light card
 look over the terminal, filling the phone width and capping at a centered 640pt column on iPad.
-`TARGETED_DEVICE_FAMILY = 1,2` (one universal binary); **Catalyst is OFF** (it can never link
-against the device-slice-only frameworks) and **Designed for iPad is ON** — that's how to test iPad
-layout without an iPad: Xcode → "My Mac (Designed for iPad)" → ⌘R (the Simulator can't be used; the
-frameworks carry no simulator slice by design).
+`TARGETED_DEVICE_FAMILY = 1,2,6` (one universal binary; `6` = Mac); **Designed for iPad is ON** —
+that's how to test iPad layout without an iPad: Xcode → "My Mac (Designed for iPad)" → ⌘R (the
+Simulator can't be used; the frameworks carry no simulator slice by design). **Mac Catalyst is OFF but
+PLANNED** — the "can never link the device-only frameworks" claim was **self-imposed**: our slimming
+step deletes `maccatalyst` slices that upstream already ships (5 of 8) or can rebuild (3 of 8). See
+"Mac Catalyst — roadmap" below + `FRAMEWORKS.md → Roadmap A`.
 
 **Running the app on the Mac from the CLI** (used for iPad-size App Store screenshots): build with
 `xcodebuild -scheme Moshroom -destination 'id=<mac-device-id>'` (the id from `-showdestinations`;
@@ -295,15 +297,49 @@ The app links **exactly 8** prebuilt xcframeworks (the SSH/Mosh/crypto engine + 
 declared in `xcfs/Package.swift` and fetched by `./get_frameworks.sh` (`swift package resolve`) into the
 git-ignored `xcfs/.build/artifacts/`. **All self-hosted on this repo's own `deps-v1` GitHub release**
 (no third-party hosting) and **slimmed to the iOS-device slice only** (no simulator/tvOS/watchOS/
-macOS/Catalyst, no dSYMs → ~886 MB down to ~104 MB). Source deps: **swift-argument-parser** is Apple's
-own (`.exact("0.5.0")`); **SSHConfig** is vendored in-tree at `xcfs/SSHConfig/`. There is no
-build-from-source step. Every ios_system command *module* the app never used (`awk`, `bc`,
+macOS/Catalyst, no dSYMs → ~886 MB down to ~104 MB). **SwiftPM source deps** (corrected 2026-07-07): **swift-argument-parser** (`.exact("0.5.0")`),
+**SSHConfig** (vendored in-tree at `xcfs/SSHConfig/`), **Runestone** (+ TreeSitter stack — the Snips
+editor) and **SwiftCBOR** (WebAuthn/FIDO2 keys). Five dead Blink-heritage packages were **removed
+2026-07-07** (0 code imports, build verified clean): ConfettiSwiftUI, CachedAsyncImage, Base32Kit,
+ZIPFoundation, SQLite.swift. There is no build-from-source step. Every ios_system command *module* the app never used (`awk`, `bc`,
 `tar`, `text`, `files`, `shell`, `curl_ios`, `xxd`, `ssh_cmd`) was removed — no local iPhone shell by
 design; the working commands (`ssh`/`scp`/`sftp`/`mosh`/`config`/…) are Moshroom's own in-executable
 `*_main`s. To update a framework (only ever needed for a security bump — watch `openssl 1.1.1w`, which
 is EOL), follow the recipe in `FRAMEWORKS.md`. Versions in the current slices: libssh 0.9.8
 (interactive ssh — **verified compatible with OpenSSH 9.9/RHEL9 servers**, full trace-proven
-handshake), libssh2 1.9.0 (SFTP paths).
+handshake) **and SFTP**, libssh2 1.9.0 (**vestigial** — no direct calls; SFTP runs on libssh; drop candidate).
+
+### Mac Catalyst — roadmap (planned; not yet enabled)
+
+Turn Moshroom into a **real native Mac app** (Catalyst `-macabi`, Intel + Apple Silicon), replacing the
+"Designed for iPad on Mac" path — the two are **mutually exclusive** on the Mac App Store (a Catalyst
+macOS-platform build *replaces* the iPad-on-Mac listing and migrates those users; Universal Purchase, same
+bundle id). Sequenced AFTER the framework slices (`FRAMEWORKS.md → Roadmap A`) and **independent of the
+OpenSSL-3 bump** (Roadmap B) — Catalyst works at current framework versions, so it needs **no libssh migration**.
+
+- **Frameworks (the gate):** produce `maccatalyst` slices — 5 re-extract, 3 rebuild (`FRAMEWORKS.md → Roadmap A`).
+- **Project config** (app + all 4 embedded targets `SSH`/`MoshroomConfig`/`MoshroomFiles`/`MoshroomSnippets`):
+  `SUPPORTS_MACCATALYST = YES`, `SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO`,
+  `DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER = NO` (same `com.alvarofranz.moshroom` → Universal Purchase +
+  fixes the "embedded bundle id not prefixed" signing error), idiom **"Optimize Interface for Mac"** (native
+  1:1 render, not the 77% scaled look), macOS min **12.0**.
+- **Verify first:** the `dlsym(RTLD_MAIN_ONLY, *_main)` command dispatch (+ `-export_dynamic`,
+  `ENABLE_DEBUG_DYLIB = NO`) under Catalyst — the highest-risk seam — and that `~/.moshroom`, `known_hosts`,
+  and ios_system's `HOME` resolve inside the sandbox container.
+- **Entitlements** are already Mac-sandbox-aware (app-sandbox, network client/server, app-groups, keychain,
+  iCloud). **Pruned 2026-07-07**: removed unused `device.camera`/`device.bluetooth`/
+  `personal-information.location` (+ the dead `NSBluetoothPeripheralUsageDescription`) — a terminal doesn't
+  use them and they draw App-Review/TCC questions.
+- **Feels-native layer:** real menu bar (`UIMenuBuilder` + `UIKeyCommand`: ⌘T/⌘W tabs, ⌘K clear, ⌘± font,
+  ⌘, Settings), window min-size (`windowScene.sizeRestrictions`), pointer/trackpad (`UIPointerInteraction`),
+  unified title bar/toolbar.
+- **Hardware keyboard is FINE under Catalyst** (real `pressesBegan`/`UIKey` via the responder chain; the old
+  "synthetic keystrokes don't reach the terminal" note was a CGEvent artifact of the Designed-for-iPad build).
+  One known Catalyst bug — a first-responder `WKWebView` swallows keys (Ventura+) — Moshroom is **immune by
+  design** (`SmarterTermInput.becomeFirstResponder` returns `false` under `scratchOnly`; typing goes to the
+  Moshkitor `UITextView`). Keep that invariant ironclad on Mac.
+- **Distribution:** MAS Catalyst archive (hardened runtime + notarization intrinsic to MAS); needs its own
+  Mac Catalyst App Store provisioning profile for the same bundle id.
 
 ## Debugging connectivity — read this before blaming the app
 

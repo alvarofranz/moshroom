@@ -2,24 +2,6 @@
   "object": {
     "pins": [
       {
-        "package": "Base32Kit",
-        "repositoryURL": "https://github.com/jenslauterbach/Base32Kit.git",
-        "state": {
-          "branch": null,
-          "revision": "34e7e2796cb8d791df6f9a275a858048fcf52700",
-          "version": "0.2.1"
-        }
-      },
-      {
-        "package": "ConfettiSwiftUI",
-        "repositoryURL": "https://github.com/simibac/ConfettiSwiftUI.git",
-        "state": {
-          "branch": null,
-          "revision": "79666d42b882bf7921b1941fa7c636d681d77980",
-          "version": "2.0.3"
-        }
-      },
-      {
         "package": "Runestone",
         "repositoryURL": "https://github.com/simonbs/Runestone",
         "state": {
@@ -29,30 +11,12 @@
         }
       },
       {
-        "package": "SQLite.swift",
-        "repositoryURL": "https://github.com/stephencelis/SQLite.swift",
-        "state": {
-          "branch": null,
-          "revision": "0c08856385fe24f7b76d8c51842d78a196e8e817",
-          "version": "0.15.5"
-        }
-      },
-      {
         "package": "SwiftCBOR",
         "repositoryURL": "https://github.com/unrelentingtech/SwiftCBOR",
         "state": {
           "branch": "master",
           "revision": "fd929a6d8f7651ce0f63fc99397fd5762358cc29",
           "version": null
-        }
-      },
-      {
-        "package": "CachedAsyncImage",
-        "repositoryURL": "https://github.com/lorenzofiamingo/swiftui-cached-async-image",
-        "state": {
-          "branch": null,
-          "revision": "58d9324354f8b321f0aad906f0abdaa4ded9243f",
-          "version": "1.11.0"
         }
       },
       {
@@ -71,15 +35,6 @@
           "branch": null,
           "revision": "15cf3a9ec3ab95e0d058b7df9f35619123c9e02d",
           "version": "0.1.10"
-        }
-      },
-      {
-        "package": "ZIPFoundation",
-        "repositoryURL": "https://github.com/weichsel/ZIPFoundation.git",
-        "state": {
-          "branch": null,
-          "revision": "22787ffb59de99e5dc1fbfe80b19c97a904ad48d",
-          "version": "0.9.20"
         }
       }
     ]
