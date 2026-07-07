@@ -200,10 +200,13 @@ uses **adaptive semantic colors** (`MoshxploreStyle`), lists run the full height
 bleeds edge-to-edge, images render centered at max 60% of the viewer per dimension, and the
 explorer's bottom rides `keyboardLayoutGuide`. The Quick Connect card keeps its fixed light card
 look over the terminal, filling the phone width and capping at a centered 640pt column on iPad.
-`TARGETED_DEVICE_FAMILY = 1,2` (one universal binary); **Catalyst is OFF** (it can never link
-against the device-slice-only frameworks) and **Designed for iPad is ON** — that's how to test iPad
-layout without an iPad: Xcode → "My Mac (Designed for iPad)" → ⌘R (the Simulator can't be used; the
-frameworks carry no simulator slice by design).
+`TARGETED_DEVICE_FAMILY = 1,2,6` (one universal binary; `6` = Mac). **Mac Catalyst is ON** (enabled
+2026-07-07 — `SUPPORTS_MACCATALYST = YES` on all 5 targets, `SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO`):
+Moshroom builds, links, and **runs as a real native Mac app** on Apple Silicon. Test it: Xcode → "My Mac
+(Mac Catalyst)" → ⌘R, or `xcodebuild -destination 'platform=macOS,variant=Mac Catalyst'` (the Simulator
+still can't be used — no simulator slice by design). The old premise that the device-only frameworks "can
+never link" Catalyst was **self-imposed**: the `deps-v2` frameworks now carry `maccatalyst` slices. See
+"Mac Catalyst" below + `FRAMEWORKS.md`.
 
 **Running the app on the Mac from the CLI** (used for iPad-size App Store screenshots): build with
 `xcodebuild -scheme Moshroom -destination 'id=<mac-device-id>'` (the id from `-showdestinations`;
@@ -295,15 +298,61 @@ The app links **exactly 8** prebuilt xcframeworks (the SSH/Mosh/crypto engine + 
 declared in `xcfs/Package.swift` and fetched by `./get_frameworks.sh` (`swift package resolve`) into the
 git-ignored `xcfs/.build/artifacts/`. **All self-hosted on this repo's own `deps-v1` GitHub release**
 (no third-party hosting) and **slimmed to the iOS-device slice only** (no simulator/tvOS/watchOS/
-macOS/Catalyst, no dSYMs → ~886 MB down to ~104 MB). Source deps: **swift-argument-parser** is Apple's
-own (`.exact("0.5.0")`); **SSHConfig** is vendored in-tree at `xcfs/SSHConfig/`. There is no
-build-from-source step. Every ios_system command *module* the app never used (`awk`, `bc`,
+macOS/Catalyst, no dSYMs → ~886 MB down to ~104 MB). **SwiftPM source deps** (corrected 2026-07-07): **swift-argument-parser** (`.exact("0.5.0")`),
+**SSHConfig** (vendored in-tree at `xcfs/SSHConfig/`), **Runestone** (+ TreeSitter stack — the Snips
+editor) and **SwiftCBOR** (WebAuthn/FIDO2 keys). Five dead Blink-heritage packages were **removed
+2026-07-07** (0 code imports, build verified clean): ConfettiSwiftUI, CachedAsyncImage, Base32Kit,
+ZIPFoundation, SQLite.swift. There is no build-from-source step. Every ios_system command *module* the app never used (`awk`, `bc`,
 `tar`, `text`, `files`, `shell`, `curl_ios`, `xxd`, `ssh_cmd`) was removed — no local iPhone shell by
 design; the working commands (`ssh`/`scp`/`sftp`/`mosh`/`config`/…) are Moshroom's own in-executable
 `*_main`s. To update a framework (only ever needed for a security bump — watch `openssl 1.1.1w`, which
 is EOL), follow the recipe in `FRAMEWORKS.md`. Versions in the current slices: libssh 0.9.8
 (interactive ssh — **verified compatible with OpenSSH 9.9/RHEL9 servers**, full trace-proven
-handshake), libssh2 1.9.0 (SFTP paths).
+handshake) **and SFTP**, libssh2 1.9.0 (**vestigial** — no direct calls; SFTP runs on libssh; drop candidate).
+
+### Mac Catalyst (ENABLED 2026-07-07)
+
+Moshroom is a **real native Mac Catalyst app** (`-macabi`) — **build, link, and launch verified** on Apple
+Silicon. Catalyst replaces the "Designed for iPad on Mac" path; the two are **mutually exclusive** on the Mac
+App Store (a Catalyst macOS-platform build *replaces* the iPad-on-Mac listing and migrates those users;
+Universal Purchase, same bundle id). It works at the **current** framework versions — **no libssh migration**
+(that's the separate OpenSSL-3 bump, `FRAMEWORKS.md → Roadmap B`).
+
+**DONE:**
+- **Frameworks:** all 7 carry `maccatalyst` slices, hosted on `deps-v2` (openssl + OpenSSH rebuilt
+  arm64-macabi; the 5 upstream carry fat macabi; **network_ios dropped**). Full recipe in
+  `FRAMEWORKS.md → Mac Catalyst`.
+- **Project config:** `SUPPORTS_MACCATALYST = YES` on all 5 targets; `SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO`.
+- **Verified:** the `dlsym(RTLD_MAIN_ONLY, *_main)` dispatch (+ `-export_dynamic`, `ENABLE_DEBUG_DYLIB = NO`)
+  works under macabi — the `.app` (platform 6, Mac-style `Contents/`) launches + runs. The **iOS build is
+  still green** from the same `deps-v2` frameworks.
+- **Entitlements** were already Mac-sandbox-aware; **pruned 2026-07-07** the unused `device.camera`/
+  `device.bluetooth`/`personal-information.location` (+ dead `NSBluetoothPeripheralUsageDescription`).
+
+- **Native menu bar** (already wired, Blink heritage): `AppDelegate buildMenuWithBuilder:` → `MenuController`
+  builds Shell/Edit/View/Window menus, dispatched by `SpaceController._onCommand` (New/Close Tab, Show Config,
+  zoom in/out/reset, copy/paste). Works under Catalyst.
+- **`DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER = NO`** on all 10 configs (same `com.alvarofranz.moshroom`
+  id → Universal Purchase + fixes the "embedded bundle id not prefixed" signing error) + a Catalyst-guarded
+  **window min-size** (`windowScene.sizeRestrictions`, `SceneDelegate`).
+- **Dead code removed:** the never-loaded, bundled `commandDictionary.plist` + `extraCommandsDictionary.plist`
+  (they referenced only removed frameworks incl. network_ios); the real registry is
+  `moshroomCommandsDictionary.plist` (maps Moshroom's own `*_main`s to the main executable).
+
+**REMAINING (do WITH Mac/device testing):**
+- **Idiom "Optimize Interface for Mac"** (native 1:1 render vs the 77% scaled look) — per Apple this is a
+  target-editor toggle ([choosing-a-user-interface-idiom](https://developer.apple.com/documentation/uikit/choosing-a-user-interface-idiom-for-your-mac-app)),
+  **not a reliably CLI-scriptable build setting**, so it's the one visual refinement left (the verified build
+  uses the default scaled idiom). Optional polish: pointer/trackpad I-beam (`UIPointerInteraction`), unified toolbar.
+- **Hardware keyboard is FINE under Catalyst** (real `pressesBegan`/`UIKey` via the responder chain; the old
+  "synthetic keystrokes don't reach the terminal" note was a CGEvent artifact of the Designed-for-iPad build).
+  One known Catalyst bug — a first-responder `WKWebView` swallows keys (Ventura+) — Moshroom is **immune by
+  design** (`SmarterTermInput.becomeFirstResponder` returns `false` under `scratchOnly`; typing goes to the
+  Moshkitor `UITextView`). Keep that invariant ironclad on Mac.
+- **Distribution + real verification (Apple-side — needs your Apple ID, not git/gh):** a Mac Catalyst App Store
+  workflow/archive + provisioning profile for the same bundle id in App Store Connect; and verify a real
+  SSH/SFTP/mosh session on a Catalyst run + entitlement-backed features (keychain, app-group, iCloud) + that
+  `~/.moshroom`/`known_hosts`/ios_system `HOME` resolve inside the sandbox container.
 
 ## Debugging connectivity — read this before blaming the app
 
