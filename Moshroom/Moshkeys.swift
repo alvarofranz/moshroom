@@ -32,8 +32,7 @@ enum Moshkeys {
 
     // Standalone compose button — bottom-right, on its own, same size as every other quick-key.
     let compose = moshkeyRoundButton()
-    compose.setImage(UIImage(systemName: "square.and.pencil"), for: .normal)
-    compose.setPreferredSymbolConfiguration(UIImage.SymbolConfiguration(pointSize: 18), forImageIn: .normal)
+    compose.setMoshIcon("square.and.pencil")
     compose.translatesAutoresizingMaskIntoConstraints = false
     compose.addAction(UIAction { [weak sc] _ in sc?.openMoshkitor() }, for: .touchUpInside)
     sc.view.addSubview(compose)
@@ -51,23 +50,20 @@ enum Moshkeys {
     // Top bar — mirrors the bottom one (no background, just round buttons): Tabs on the
     // left, Settings on the right.
     let tabs = moshkeyRoundButton()
-    tabs.setImage(UIImage(systemName: "rectangle.stack"), for: .normal)
-    tabs.setPreferredSymbolConfiguration(UIImage.SymbolConfiguration(pointSize: 18), forImageIn: .normal)
+    tabs.setMoshIcon("rectangle.stack")
     tabs.translatesAutoresizingMaskIntoConstraints = false
     tabs.addAction(UIAction { [weak sc] _ in sc?.openMoshtabs() }, for: .touchUpInside)
     sc.view.addSubview(tabs)
 
     let settings = moshkeyRoundButton()
-    settings.setImage(UIImage(systemName: "gearshape"), for: .normal)
-    settings.setPreferredSymbolConfiguration(UIImage.SymbolConfiguration(pointSize: 18), forImageIn: .normal)
+    settings.setMoshIcon("gearshape")
     settings.translatesAutoresizingMaskIntoConstraints = false
     settings.addAction(UIAction { [weak sc] _ in sc?.openSettings() }, for: .touchUpInside)
     sc.view.addSubview(settings)
 
     // Moshxplore — the remote file explorer. Sits just left of Settings, opens over any tab.
     let xplore = moshkeyRoundButton()
-    xplore.setImage(UIImage(systemName: "folder"), for: .normal)
-    xplore.setPreferredSymbolConfiguration(UIImage.SymbolConfiguration(pointSize: 18), forImageIn: .normal)
+    xplore.setMoshIcon("folder")
     xplore.translatesAutoresizingMaskIntoConstraints = false
     xplore.addAction(UIAction { [weak sc] _ in sc?.openMoshxplore() }, for: .touchUpInside)
     sc.view.addSubview(xplore)
@@ -110,6 +106,20 @@ func moshButton() -> UIButton {
   #else
   return UIButton(type: .system)
   #endif
+}
+
+extension UIButton {
+  /// Sets an SF Symbol with the tint BAKED into the image. On Mac Catalyst a `.custom` button
+  /// doesn't reliably apply its `tintColor` to the image (it falls back to the app accent — red),
+  /// so `.alwaysOriginal` guarantees the colour we want (dark by default, white when active) on
+  /// every platform.
+  func setMoshIcon(_ name: String, pointSize: CGFloat = 18,
+                   weight: UIImage.SymbolWeight = .regular,
+                   color: UIColor = UIColor(white: 0.12, alpha: 1)) {
+    let cfg = UIImage.SymbolConfiguration(pointSize: pointSize, weight: weight)
+    setImage(UIImage(systemName: name, withConfiguration: cfg)?
+      .withTintColor(color, renderingMode: .alwaysOriginal), for: .normal)
+  }
 }
 
 func moshkeyRoundButton(diameter: CGFloat = 42) -> UIButton {
@@ -171,8 +181,7 @@ final class MoshkeysBar: UIStackView {
     lettersBtn = _padButton(.letters, title: "abc", systemImage: nil)
     enterBtn   = _enterButton()
     arrowsBtn  = moshkeyRoundButton()
-    arrowsBtn.setImage(UIImage(systemName: "dpad"), for: .normal)
-    arrowsBtn.setPreferredSymbolConfiguration(UIImage.SymbolConfiguration(pointSize: 18), forImageIn: .normal)
+    arrowsBtn.setMoshIcon("dpad")
     arrowsBtn.addAction(UIAction { [weak self] _ in self?._toggleArrowMode() }, for: .touchUpInside)
     arrowLeftBtn  = _arrowKeyButton("arrow.left",  "\u{1B}[D")
     arrowRightBtn = _arrowKeyButton("arrow.right", "\u{1B}[C")
@@ -223,8 +232,7 @@ final class MoshkeysBar: UIStackView {
   // and stays put.
   private func _arrowKeyButton(_ symbol: String, _ bytes: String) -> UIButton {
     let b = moshkeyRoundButton()
-    b.setImage(UIImage(systemName: symbol), for: .normal)
-    b.setPreferredSymbolConfiguration(UIImage.SymbolConfiguration(pointSize: 16, weight: .semibold), forImageIn: .normal)
+    b.setMoshIcon(symbol, pointSize: 16, weight: .semibold)
     b.addAction(UIAction { [weak self] _ in
       self?.spaceController?.dismissMoshnector()
       self?.spaceController?.currentDevice?.write(bytes)
@@ -234,7 +242,7 @@ final class MoshkeysBar: UIStackView {
 
   private func _setArrowsActive(_ active: Bool) {
     arrowsBtn.backgroundColor = active ? .moshroomTint : UIColor(white: 0.97, alpha: 0.92)
-    arrowsBtn.tintColor = active ? .white : UIColor(white: 0.12, alpha: 1)
+    arrowsBtn.setMoshIcon("dpad", color: active ? .white : UIColor(white: 0.12, alpha: 1))
   }
 
   // The ↕ button toggles a focused arrow-keys mode: the rest of the bottom bar (and the compose button)
@@ -521,8 +529,7 @@ final class MoshtabsController: UIViewController {
     title.addAction(UIAction { [weak self] _ in self?._switch(to: tab.key) }, for: .touchUpInside)
 
     let close = moshButton()
-    close.setImage(UIImage(systemName: "xmark", withConfiguration: UIImage.SymbolConfiguration(pointSize: 13, weight: .semibold)), for: .normal)
-    close.tintColor = active ? UIColor(white: 1, alpha: 0.85) : MoshxploreStyle.gray
+    close.setMoshIcon("xmark", pointSize: 13, weight: .semibold, color: active ? UIColor(white: 1, alpha: 0.85) : MoshxploreStyle.gray)
     close.translatesAutoresizingMaskIntoConstraints = false
     close.widthAnchor.constraint(equalToConstant: 44).isActive = true
     close.addAction(UIAction { [weak self] _ in self?._close(tab: tab.key) }, for: .touchUpInside)

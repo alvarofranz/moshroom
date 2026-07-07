@@ -219,7 +219,7 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
 
   private func _barButton(systemImage: String, action: Selector) -> UIButton {
     let b = moshkeyRoundButton()
-    b.setImage(UIImage(systemName: systemImage), for: .normal)
+    b.setMoshIcon(systemImage)
     b.setContentHuggingPriority(.required, for: .horizontal)
     b.addTarget(self, action: action, for: .touchUpInside)
     return b
@@ -422,8 +422,7 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
     // Top-right ✕ — cancel the upload and drop straight back into the editor with everything intact.
     let cancel = moshButton()
     cancel.translatesAutoresizingMaskIntoConstraints = false
-    cancel.setImage(UIImage(systemName: "xmark.circle.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: 22)), for: .normal)
-    cancel.tintColor = .tertiaryLabel
+    cancel.setMoshIcon("xmark.circle.fill", pointSize: 22, color: .tertiaryLabel)
     cancel.addTarget(self, action: #selector(_cancelUpload), for: .touchUpInside)
 
     card.addSubview(spinner)

@@ -523,9 +523,7 @@ private final class MoshxploreDetailView: UIView {
     super.init(frame: .zero)
 
     let back = moshButton()
-    back.setImage(UIImage(systemName: "chevron.backward"), for: .normal)
-    back.setPreferredSymbolConfiguration(UIImage.SymbolConfiguration(pointSize: 15, weight: .semibold), forImageIn: .normal)
-    back.tintColor = MoshxploreStyle.dark
+    back.setMoshIcon("chevron.backward", pointSize: 15, weight: .semibold, color: MoshxploreStyle.dark)
     back.setContentHuggingPriority(.required, for: .horizontal)
     back.widthAnchor.constraint(equalToConstant: 30).isActive = true
     back.heightAnchor.constraint(equalToConstant: 30).isActive = true
@@ -1535,9 +1533,7 @@ final class MoshxploreView: UIView {
   }
 
   private static func style(iconButton b: UIButton, systemName: String) {
-    b.setImage(UIImage(systemName: systemName), for: .normal)
-    b.setPreferredSymbolConfiguration(UIImage.SymbolConfiguration(pointSize: 15, weight: .semibold), forImageIn: .normal)
-    b.tintColor = dark
+    b.setMoshIcon(systemName, pointSize: 15, weight: .semibold, color: dark)
     b.translatesAutoresizingMaskIntoConstraints = false
     b.setContentHuggingPriority(.required, for: .horizontal)
     b.widthAnchor.constraint(equalToConstant: 30).isActive = true
