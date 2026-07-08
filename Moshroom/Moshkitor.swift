@@ -333,17 +333,15 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
     didSend = true
     onSend?(text)
     let device = self.device
-    // Multi-line prose goes through the terminal's paste path, which frames it as a bracketed paste
-    // (ESC[200~ … ESC[201~) whenever the remote program has bracketed-paste mode on — so a TUI like
-    // opencode inserts the whole block literally into its prompt instead of reading each embedded
-    // newline as an Enter (which made it run the text as shell commands: "line 5: le: command not
-    // found"). Single-line input keeps the direct write — the proven connect path (`mosh host`,
-    // `claude`, …) and the local `moshroom>` prompt, neither of which wants paste framing.
-    if text.contains("\n") {
-      device?.sendBracketedPaste(text)
-    } else {
-      device?.write(text)
-    }
+    // Deliver the whole composed message through the terminal's paste path, which frames it as a
+    // bracketed paste (ESC[200~ … ESC[201~) whenever the remote program has bracketed-paste mode on.
+    // This is exactly what a real paste does — and what agent TUIs expect: opencode / Claude Code
+    // drop the framed text straight into their prompt as literal input. A raw keystroke burst instead
+    // gets misread (opencode ran even a SINGLE line as a shell command — "line 5: … command not
+    // found", the well-known unframed-paste failure), so we must frame every send, not just
+    // multi-line ones. hterm only adds the markers when the program actually turned bracketed paste
+    // on, so the local `moshroom>` prompt and plain shells still receive it raw (unchanged).
+    device?.sendBracketedPaste(text)
     // Trail the Enter so it lands after the paste (outside the bracketed-paste end marker) and the
     // agent doesn't read it as part of the same burst.
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { device?.write("\r") }
