@@ -30,11 +30,14 @@ struct NavButton<Details: View>: View {
   
   var body: some View {
     Button(action: {
-      let rootView = self.details().environmentObject(self.nav).moshCatalystPlainButtons()
+      let rootView = self.details().environmentObject(self.nav)
       let vc = UIHostingController(rootView: rootView)
       self.nav.navController.pushViewController(vc, animated: true)
       }, label: { EmptyView() })
-      .moshCatalystPlainButtons()   // the invisible row-tap button must not draw Mac's bordered capsule
+    // NB: never apply a button style here NOR wrap the pushed rootView in one. This row-tap button
+    // has an EmptyView label, and so do the nested Row/NavButtons inside detail screens — a
+    // .borderless style collapses their hit target and kills navigation on Catalyst. Screens that
+    // need the iOS-flat look style their specific (visible-label) nav-bar buttons directly instead.
   }
 }
 struct StoryBoardNavButton: View {
