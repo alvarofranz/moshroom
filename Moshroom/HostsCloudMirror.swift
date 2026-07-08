@@ -107,6 +107,12 @@ import MoshroomConfig
   @objc static func install() {
     guard !installed else { return }
     installed = true
+    // The connect path reads the generated ssh_config, not the hosts blob. Regenerate it once at
+    // launch so it always matches the persisted hosts — this covers a host that arrived via an
+    // iCloud pull (or state restoration) on a device that never saved one locally, whose
+    // ssh_config would otherwise be stale/empty and make the connection die with
+    // "Socket error: No such file or directory" (hostName falls back to the alias).
+    MoshHosts.saveAllToSSHConfig()
     let nc = NotificationCenter.default
     nc.addObserver(forName: didSaveNotification, object: nil, queue: nil) { _ in reconcile() }
     nc.addObserver(forName: UIScene.willEnterForegroundNotification, object: nil, queue: nil) { _ in
@@ -230,6 +236,10 @@ import MoshroomConfig
           _markSynced(localDate: now, cloudDate: now)
           DispatchQueue.main.async {
             MoshHosts.loadHosts()
+            // The connect path reads the generated ssh_config, NOT the hosts blob — regenerate it
+            // from the freshly-merged list or a synced host can't be reached (hostName falls back
+            // to the alias → getaddrinfo fails with "Socket error: No such file or directory").
+            MoshHosts.saveAllToSSHConfig()
             NotificationCenter.default.post(name: didChangeNotification, object: nil)
           }
         } else if cloudChanged {
@@ -312,6 +322,12 @@ import MoshroomConfig
     }
     DispatchQueue.main.async {
       MoshHosts.loadHosts()
+      // The connect path reads the generated ssh_config, NOT the hosts blob — regenerate it from
+      // the just-adopted list. Without this a device that only ever RECEIVED hosts over iCloud (and
+      // never saved one locally) has a stale/empty ssh_config, so `mosh <alias>`/`ssh <alias>`
+      // resolves nothing and hostName falls back to the alias → "Socket error: No such file or
+      // directory". (saveHost regenerates it locally; a pull never went through saveHost.)
+      MoshHosts.saveAllToSSHConfig()
       NotificationCenter.default.post(name: didChangeNotification, object: nil)
     }
   }
