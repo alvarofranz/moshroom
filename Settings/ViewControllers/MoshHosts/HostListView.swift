@@ -145,13 +145,13 @@ struct HostListView: View {
   }
   
   private func _addHost() {
-    let rootView = HostView(host: nil, reloadList: _state.reloadHosts).environmentObject(_nav)
+    let rootView = HostView(host: nil, reloadList: _state.reloadHosts).environmentObject(_nav).moshCatalystPlainButtons()
     let vc = UIHostingController(rootView: rootView)
     _nav.navController.pushViewController(vc, animated: true)
   }
-  
+
   private func _duplicateHost(card: HostCard) {
-    let rootView = HostView(duplicatingHost: card.host, reloadList:  _state.reloadHosts).environmentObject(_nav)
+    let rootView = HostView(duplicatingHost: card.host, reloadList:  _state.reloadHosts).environmentObject(_nav).moshCatalystPlainButtons()
     let vc = UIHostingController(rootView: rootView)
     _nav.navController.pushViewController(vc, animated: true)
   }

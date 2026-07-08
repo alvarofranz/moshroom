@@ -390,7 +390,8 @@ struct HostView: View {
         Button("Discard", action: {
           _nav.navController.popViewController(animated: true)
         })
-      },
+      }
+      .moshCatalystPlainButtons(),   // plain tinted text on Mac, not the native bordered capsule
       trailing: Group {
         Button("Save", action: {
           // A validation failure shows the alert and keeps the editor open — never save a bad host.
@@ -400,6 +401,7 @@ struct HostView: View {
           _nav.navController.popViewController(animated: true)
         })
       }
+      .moshCatalystPlainButtons()
     )
     .navigationBarBackButtonHidden(true)
     .navigationBarTitle(_host == nil ? "New Host" : "Host")

@@ -36,14 +36,29 @@ class Nav: ObservableObject {
 struct NavView<Content: View>: View {
   var content: () -> Content
   let nav: Nav
-  
+
   init(navController: UINavigationController, content: @escaping () -> Content) {
     self.content = content
     self.nav = Nav(navController: navController)
   }
-  
+
   var body: some View {
     content().environmentObject(nav)
+  }
+}
+
+extension View {
+  /// On Mac Catalyst a SwiftUI `Button`/`Menu` adopts the native macOS bordered chrome — a gray
+  /// capsule with extra padding — that clashes with the flat, tinted glyphs the app uses on
+  /// iPhone/iPad (see the Settings ▸ Keys / Host screens). `.borderless` restores the iOS look.
+  /// No-op on iOS, where buttons are already borderless. Set on containers (it propagates through
+  /// the environment) and directly on nav-bar buttons, which don't inherit it.
+  @ViewBuilder func moshCatalystPlainButtons() -> some View {
+    #if targetEnvironment(macCatalyst)
+    self.buttonStyle(BorderlessButtonStyle())
+    #else
+    self
+    #endif
   }
 }
 

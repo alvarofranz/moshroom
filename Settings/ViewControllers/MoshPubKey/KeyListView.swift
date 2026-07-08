@@ -344,6 +344,7 @@ struct KeyListView: View {
           }
         }
       }
+      .moshCatalystPlainButtons()   // iOS-flat glyphs on Mac, not the native bordered capsule
     )
     .navigationBarTitle("Keys")
     .fileImporter(
