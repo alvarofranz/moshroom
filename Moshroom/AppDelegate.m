@@ -80,9 +80,15 @@ void __setupProcessEnv(void) {
 
   sideLoading = false; // Turn off extra commands from iOS system
   initializeEnvironment(); // initialize environment variables for iOS system
+  // Register Moshroom's commands and initialise libssh/env SYNCHRONOUSLY — they gate connecting:
+  // addCommandList registers ssh/mosh/config/sftp/scp, and __setupProcessEnv runs ssh_init() + sets
+  // the SSL cert/locale. These used to run on the lowest-priority background queue, which a busy
+  // launch can starve for seconds — so a host tapped right after launch printed
+  // "ssh: command not found". The work is cheap (plist parse + setenv + ssh_init), so run it inline;
+  // only the profile-file read (least critical) stays on the background queue.
+  addCommandList([[NSBundle mainBundle] pathForResource:@"moshroomCommandsDictionary" ofType:@"plist"]); // Load Moshroom commands into ios_system
+  __setupProcessEnv(); // must run after ios_system initializeEnvironment to override its defaults.
   dispatch_async(bgQueue, ^{
-    addCommandList([[NSBundle mainBundle] pathForResource:@"moshroomCommandsDictionary" ofType:@"plist"]); // Load Moshroom commands into ios_system
-    __setupProcessEnv(); // we should call this after ios_system initializeEnvironment to override its defaults.
     [AppDelegate _loadProfileVars];
   });
   
