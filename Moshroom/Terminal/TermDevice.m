@@ -239,6 +239,11 @@ static int __sizeOfIncompleteSequenceAtTheEnd(const char *buffer, size_t len) {
   write(_pinput[1], input.UTF8String, len);
 }
 
+- (void)sendBracketedPaste:(NSString *)input
+{
+  [self.view pasteString:input];
+}
+
 - (void)writeIn:(NSString *)input
 {
   [self write:input];

@@ -155,6 +155,31 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
   override func viewWillAppear(_ animated: Bool) {
     super.viewWillAppear(animated)
     navigationController?.setNavigationBarHidden(true, animated: false)
+    // Grab focus as early as possible (before viewDidAppear, which for an animated present only
+    // fires after the slide). For the hardware-keyboard hand-off — presented un-animated — this
+    // makes the text view first responder synchronously, so the next keystroke lands in the editor
+    // instead of falling through to an empty responder chain (the Mac Catalyst beep).
+    textView.becomeFirstResponder()
+  }
+
+  // Called by SpaceController when a hardware keystroke arrives while this composer is presented but
+  // its text view isn't first responder yet (the present hand-off). Takes focus and routes the key
+  // in, so Mac Catalyst never beeps on — or drops — the key that lands mid-transition. Returns
+  // false (let the normal path run) once the text view is already first responder.
+  @discardableResult
+  func acceptHardwareKeyInTransition(_ presses: Set<UIPress>) -> Bool {
+    // Only act while WE are the frontmost VC and don't yet hold focus. If a snips/Moshdrop picker
+    // is presented over us (presentedViewController != nil) it owns the keyboard — never steal it.
+    if presentedViewController != nil { return false }
+    if textView.isFirstResponder { return false }
+    guard let key = presses.first(where: { $0.key != nil })?.key,
+          !key.modifierFlags.contains(.command) else { return false }
+    textView.becomeFirstResponder()
+    let text = key.characters
+    if !text.isEmpty, !(text.first?.isNewline ?? true) {
+      textView.insertText(text)
+    }
+    return true
   }
 
   override func viewDidAppear(_ animated: Bool) {
@@ -308,8 +333,19 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
     didSend = true
     onSend?(text)
     let device = self.device
-    device?.write(text)
-    // Trail the Enter so the agent doesn't read it as part of the same paste burst.
+    // Multi-line prose goes through the terminal's paste path, which frames it as a bracketed paste
+    // (ESC[200~ … ESC[201~) whenever the remote program has bracketed-paste mode on — so a TUI like
+    // opencode inserts the whole block literally into its prompt instead of reading each embedded
+    // newline as an Enter (which made it run the text as shell commands: "line 5: le: command not
+    // found"). Single-line input keeps the direct write — the proven connect path (`mosh host`,
+    // `claude`, …) and the local `moshroom>` prompt, neither of which wants paste framing.
+    if text.contains("\n") {
+      device?.sendBracketedPaste(text)
+    } else {
+      device?.write(text)
+    }
+    // Trail the Enter so it lands after the paste (outside the bracketed-paste end marker) and the
+    // agent doesn't read it as part of the same burst.
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { device?.write("\r") }
     dismiss(animated: true)
   }
@@ -959,7 +995,10 @@ extension SpaceController {
     // The composer owns the whole screen, on every device — writing to the agent is the main
     // event, and a sheet (iPhone) or centered card (iPad) wastes canvas. Close is the ✕ up top.
     nav.modalPresentationStyle = .fullScreen
-    present(nav, animated: true)
+    // When the hardware keyboard opened it (seed present), skip the present animation so the editor
+    // is on screen and first responder immediately — the ~0.3s slide otherwise leaves a window where
+    // the next keystroke lands with no responder and Mac Catalyst beeps (and drops the key).
+    present(nav, animated: seed.isEmpty)
   }
 
   // Settings = the built-in config screen (same as the `config` command), so everything

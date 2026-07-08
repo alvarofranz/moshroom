@@ -125,6 +125,14 @@ class SpaceController: UIViewController {
     // Moshroom: any hardware keystroke means the user is using the terminal — clear the
     // quick-connect card out of the way.
     if Moshroom.scratchOnly { dismissMoshnector() }
+    // Moshroom: the composer may be presented but its text view not yet first responder (the
+    // present hand-off). Route the keystroke straight into it so Mac Catalyst never beeps on the
+    // key that lands mid-transition.
+    if Moshroom.scratchOnly,
+       let composer = (presentedViewController as? UINavigationController)?.viewControllers.first as? MoshkitorComposer,
+       composer.acceptHardwareKeyInTransition(presses) {
+      return
+    }
     // Moshroom: route hardware-keyboard input — a probe keystroke goes live to the agent,
     // typing more opens Moshkitor seeded with what's been typed.
     if Moshroom.scratchOnly, presentedViewController == nil,
