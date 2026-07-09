@@ -499,14 +499,14 @@ final class MoshtabsController: UIViewController {
   private func reload() {
     guard let sc = space else { return }
     stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
-    for (i, tab) in sc.moshroomTabs().enumerated() {
-      stack.addArrangedSubview(_tabRow(tab, number: i + 1))
+    for tab in sc.moshroomTabs() {
+      stack.addArrangedSubview(_tabRow(tab))
     }
     stack.addArrangedSubview(_newRow())
   }
 
-  // One session row: number + full (wrapping) title, the active tab filled mushroom, × per row.
-  private func _tabRow(_ tab: SpaceController.MoshroomTabInfo, number: Int) -> UIView {
+  // One session row: the full (wrapping) title, the active tab filled mushroom, × per row.
+  private func _tabRow(_ tab: SpaceController.MoshroomTabInfo) -> UIView {
     let active = tab.isActive
     let row = UIView()
     row.backgroundColor = active ? .moshroomTint : MoshxploreStyle.row
@@ -518,7 +518,7 @@ final class MoshtabsController: UIViewController {
     var cfg = UIButton.Configuration.plain()
     var attr = AttributeContainer()
     attr.font = .systemFont(ofSize: 15, weight: active ? .semibold : .regular)
-    cfg.attributedTitle = AttributedString("\(number)  \(tab.title)", attributes: attr)
+    cfg.attributedTitle = AttributedString(tab.title, attributes: attr)
     cfg.titleLineBreakMode = .byWordWrapping   // the whole title, however long
     cfg.baseForegroundColor = active ? .white : MoshxploreStyle.dark
     // Leading space comes from the layout constraint below, NOT from these insets — Mac Catalyst
