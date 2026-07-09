@@ -62,6 +62,7 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
   UIView *_parentScrollView;
 
   UIEditMenuInteraction *_editMenuIteraction;
+  NSTimer *_selectionMenuDebounceTimer;
 
   // The program's own terminal title (OSC 0/2), captured live from JS on every change and stored
   // here so the tab name survives even if WKWebView.title lags behind document.title. See -title.
@@ -484,20 +485,40 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
   _gestureInteraction.hasSelection = _hasSelection;
 
   [_device viewSelectionChanged];
-  
+
+  [_selectionMenuDebounceTimer invalidate];
+  _selectionMenuDebounceTimer = nil;
+
   if (!_hasSelection) {
     [_editMenuIteraction dismissMenu];
+    // Selection is gone — give first responder back so hardware keys route normally again.
+    [_webView deactivateSelectionUI];
     return;
   }
+
+  // Activate the native selection UI (red highlight + grab handles on iOS) — without this the
+  // selection paints as WebKit's deactivated look: a black, handle-less box. On Mac Catalyst this
+  // is deliberately a no-op (the page paints the red itself). See activateSelectionUI.
+  [_webView activateSelectionUI];
 
   _selectionRect = CGRectFromString(data[@"rect"]);
 
   // Present the edit menu anchored at the selection — the delegate supplies the single Copy item.
-  UIEditMenuConfiguration *cfg =
-    [UIEditMenuConfiguration configurationWithIdentifier:nil
-                                             sourcePoint:CGPointMake(CGRectGetMidX(_selectionRect),
-                                                                     CGRectGetMinY(_selectionRect))];
-  [_editMenuIteraction presentEditMenuWithConfiguration:cfg];
+  // Debounced: a mouse drag / handle drag fires selectionchange continuously, and the menu must
+  // appear once the selection settles, not flicker along the way.
+  __weak TermView *weakSelf = self;
+  _selectionMenuDebounceTimer =
+    [NSTimer scheduledTimerWithTimeInterval:0.35 repeats:NO block:^(NSTimer *timer) {
+      TermView *sself = weakSelf;
+      if (!sself || !sself->_hasSelection) {
+        return;
+      }
+      UIEditMenuConfiguration *cfg =
+        [UIEditMenuConfiguration configurationWithIdentifier:nil
+                                                 sourcePoint:CGPointMake(CGRectGetMidX(sself->_selectionRect),
+                                                                         CGRectGetMinY(sself->_selectionRect))];
+      [sself->_editMenuIteraction presentEditMenuWithConfiguration:cfg];
+    }];
 }
 
 - (void)modifySideOfSelection

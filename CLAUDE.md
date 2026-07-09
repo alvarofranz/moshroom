@@ -200,6 +200,15 @@ uses **adaptive semantic colors** (`MoshxploreStyle`), lists run the full height
 bleeds edge-to-edge, images render centered at max 60% of the viewer per dimension, and the
 explorer's bottom rides `keyboardLayoutGuide`. The Quick Connect card keeps its fixed light card
 look over the terminal, filling the phone width and capping at a centered 640pt column on iPad.
+**Settings nav-bar buttons use the house chips** (`MoshNavGlyph`/`MoshNavLabel`/`MoshNavBarItem` in
+`KB/Native/Views/General/NavView.swift`): white circle/capsule + near-black ink, same look as the
+floating quick keys, on every screen (Keys/Hosts sort + "+", Discard/Save, Cancel/Create/Import,
+Reset, shortcuts editor). `MoshNavBarItem` hides the iOS 26 shared glass platter (mis-padded pill on
+Catalyst) and applies the Catalyst borderless fix; a `Menu`'s chip must be OUR view with the Menu
+overlaid on a CLEAR label (Catalyst re-renders visible Menu labels washed-out and off-centre — see
+`KeySortView`). The app also ships a global **AccentColor** (= MoshroomColor red,
+`ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME`) so Catalyst controls/selection default to
+Moshroom red instead of system blue.
 `TARGETED_DEVICE_FAMILY = 1,2,6` (one universal binary; `6` = Mac). **Mac Catalyst is ON** (enabled
 2026-07-07 — `SUPPORTS_MACCATALYST = YES` on all 5 targets, `SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO`):
 Moshroom builds, links, and **runs as a real native Mac app** on Apple Silicon. Test it: Xcode → "My Mac
@@ -240,11 +249,11 @@ input via `TermDevice.write` (→ `writeInDirectly`, the session's stdin pipe th
 
 | File | Seam |
 |------|------|
-| `Moshroom/SmarterKeys/SmarterTermInput.swift` | `becomeFirstResponder` returns `false` under `Moshroom.scratchOnly` (terminal never shows a keyboard) |
+| `Moshroom/SmarterKeys/SmarterTermInput.swift` | `becomeFirstResponder` returns `false` under `Moshroom.scratchOnly` (terminal never shows a keyboard). `activateSelectionUI`/`deactivateSelectionUI` (iOS only): the WKContentView is made first responder for exactly the lifetime of a selection — the ONLY state in which WKWebView paints the ACTIVE selection look (red tint + grab handles); without it the selection is a black handle-less box, which is why it used to work "sometimes". No keyboard can appear (the page's editable element was focused programmatically — WebKit starts no input session). On Catalyst these are deliberate no-ops: no handles on Mac, FR would swallow keys AND repaint the selection in the system accent |
 | `Moshroom/SpaceController.swift` | `Moshkeys.install` + `Moshnector.install`; the viewport is pinned inside the safe area with a strip reserved for the floating bars (**76pt top / 56pt bottom**); first-responder handling; `pressesBegan` → `MoshroomKeyboard`; `moshroomTabs()` builds the tab list + titles |
 | `Moshroom/Terminal/LayoutConstraintManager.m` | one fixed terminal layout: a small uniform inset (the SpaceController pinning already handles safe area + bars). No user-facing layout modes |
-| `Moshroom/WebKit/WKWebView.swift` | exactly two gesture sources survive — the two scroll pans and one **long-press** (enabled); long-press runs `term_selectWordAt` (word under the finger → single Copy menu). Alt-screen swipe reports the mouse wheel at the **live finger position** (not a fixed origin). All tap / 1-finger-pan / pinch / hover / cmd-click-drag recognizers were removed |
-| `Resources/term.js` | leave-altscreen mouse reset; native text selection off (a swipe must scroll / report wheel to TUIs, not select); the wheel event is stamped with the terminal row/col (`_setTermCoordinates`) so a swipe scrolls the cell under the finger; `term_selectWordAt(x,y)` is the only path to a selection (long-press → select word → `selectionchange` → single Copy); both `<html>` and `<body>` get the terminal background (and `TermView.setBackgroundColor:` syncs the webview's `scrollView.backgroundColor` too) so a fast TUI scroll can't flash a black strip at the top; OSC 52 clipboard write on |
+| `Moshroom/WebKit/WKWebView.swift` | on iOS exactly two gesture sources survive — the two scroll pans and one **long-press** (enabled); long-press runs `term_selectWordAt` (word under the finger → single Copy menu). Alt-screen swipe reports the mouse wheel at the **live finger position** (not a fixed origin). All tap / 1-finger-pan / pinch / hover / cmd-click-drag recognizers were removed. **Mac Catalyst adds mouse selection**: the scroll pans ignore the pointer (`allowedTouchTypes = []` — Mac scrolling is DOM wheel events hterm handles itself, so nothing is lost) and a dedicated pan (`_onMouseSelectDrag`) turns a left-drag into a live JS selection (`term_startSelectionAt`/`term_extendSelectionTo`/`term_endSelection`); dblclick word-select comes free from WebCore. The `hasSelection` touch-drop is iOS-only (it would cancel the Mac drag mid-flight) |
+| `Resources/term.js` | leave-altscreen mouse reset; the wheel event is stamped with the terminal row/col (`_setTermCoordinates`) so a swipe scrolls the cell under the finger; both `<html>` and `<body>` get the terminal background (and `TermView.setBackgroundColor:` syncs the webview's `scrollView.backgroundColor` too) so a fast TUI scroll can't flash a black strip at the top; OSC 52 clipboard write on. **Selection**: on touch, `user-select` is OFF (a swipe must scroll / report wheel to TUIs, not select) and `term_selectWordAt(x,y)` (long-press) is the only way in — it briefly re-enables selectability via the `.moshroom-selecting` class so the red `::selection` CSS applies (WebKit refuses ::selection styling on user-select:none content). On the Mac text stays selectable full-time (drag + dblclick select, wheel scrolls). The highlight is always Moshroom red `rgba(224,51,58,0.8)` via `::selection` + `::selection:window-inactive`; whitespace-only ghosts are cleared (empty-cell long-press bail + dblclick-on-blank mouseup listener); every selection flows `selectionchange` → native (debounced single-Copy edit menu) |
 
 ## iCloud sync — iCloud Drive mirror with conflict merge (off by default)
 

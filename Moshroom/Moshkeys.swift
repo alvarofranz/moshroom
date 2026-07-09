@@ -521,7 +521,9 @@ final class MoshtabsController: UIViewController {
     cfg.attributedTitle = AttributedString("\(number)  \(tab.title)", attributes: attr)
     cfg.titleLineBreakMode = .byWordWrapping   // the whole title, however long
     cfg.baseForegroundColor = active ? .white : MoshxploreStyle.dark
-    cfg.contentInsets = NSDirectionalEdgeInsets(top: 12, leading: 14, bottom: 12, trailing: 4)
+    // Leading space comes from the layout constraint below, NOT from these insets — Mac Catalyst
+    // ignores configuration contentInsets on .system buttons and the title sat glued to the edge.
+    cfg.contentInsets = NSDirectionalEdgeInsets(top: 12, leading: 2, bottom: 12, trailing: 4)
     title.configuration = cfg
     title.titleLabel?.numberOfLines = 0
     title.contentHorizontalAlignment = .leading
@@ -537,7 +539,7 @@ final class MoshtabsController: UIViewController {
     row.addSubview(title)
     row.addSubview(close)
     NSLayoutConstraint.activate([
-      title.leadingAnchor.constraint(equalTo: row.leadingAnchor),
+      title.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 12),
       title.topAnchor.constraint(equalTo: row.topAnchor),
       title.bottomAnchor.constraint(equalTo: row.bottomAnchor),
       close.leadingAnchor.constraint(equalTo: title.trailingAnchor),
@@ -561,7 +563,9 @@ final class MoshtabsController: UIViewController {
     attr.font = .systemFont(ofSize: 15, weight: .medium)
     cfg.attributedTitle = AttributedString("New tab", attributes: attr)
     cfg.baseForegroundColor = MoshxploreStyle.dark
-    cfg.contentInsets = NSDirectionalEdgeInsets(top: 14, leading: 14, bottom: 14, trailing: 14)
+    // Same Catalyst quirk as the tab rows: contentInsets are ignored there, so the leading space
+    // is a real constraint on a wrapper.
+    cfg.contentInsets = NSDirectionalEdgeInsets(top: 14, leading: 2, bottom: 14, trailing: 14)
     b.configuration = cfg
     b.contentHorizontalAlignment = .leading
     b.translatesAutoresizingMaskIntoConstraints = false
@@ -569,7 +573,16 @@ final class MoshtabsController: UIViewController {
       self?.space?.moshroomNewTab()
       self?._dismiss()
     }, for: .touchUpInside)
-    return b
+    let wrap = UIView()
+    wrap.translatesAutoresizingMaskIntoConstraints = false
+    wrap.addSubview(b)
+    NSLayoutConstraint.activate([
+      b.leadingAnchor.constraint(equalTo: wrap.leadingAnchor, constant: 12),
+      b.trailingAnchor.constraint(lessThanOrEqualTo: wrap.trailingAnchor),
+      b.topAnchor.constraint(equalTo: wrap.topAnchor),
+      b.bottomAnchor.constraint(equalTo: wrap.bottomAnchor),
+    ])
+    return wrap
   }
 
   // MARK: Actions

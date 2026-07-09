@@ -87,6 +87,9 @@ class UIScrollViewWithoutHitTest: UIScrollView {
   private let _jsScrollerPath: String
   private let _handlerName: String
   private let _longPressRecognizer = UILongPressGestureRecognizer()
+  #if targetEnvironment(macCatalyst)
+  private let _mouseSelectRecognizer = UIPanGestureRecognizer()
+  #endif
   private var _pointerInteraction: Any? = nil
   private var _characterSize: CGSize? = nil
   private var _scrollPoint: CGPoint? = nil
@@ -94,12 +97,16 @@ class UIScrollViewWithoutHitTest: UIScrollView {
   @objc var focused: Bool = false;
   @objc var hasSelection: Bool = false {
     didSet {
-      // While text is selected, a drag must not also scroll the terminal.
+      // While text is selected, a drag must not also scroll the terminal. On the Mac the scroll
+      // pans ignore the pointer entirely (see init) and the selection IS a live drag — dropping
+      // touches would cancel it mid-flight — so this guard is touch-only.
+      #if !targetEnvironment(macCatalyst)
       if hasSelection {
         _scrollView.panGestureRecognizer.dropTouches()
         _termScrollView.panGestureRecognizer.dropTouches()
         view?.dropSuperViewTouches()
       }
+      #endif
     }
   }
   
@@ -111,11 +118,23 @@ class UIScrollViewWithoutHitTest: UIScrollView {
   var allRecognizers:[UIGestureRecognizer] {
     // Moshroom: the only custom gesture is long-press (select word → Copy); the rest is the
     // two scroll-view pans that drive terminal scroll. Every other gesture was removed.
+    // On the Mac a pan translates the mouse drag into a live text selection (see
+    // _onMouseSelectDrag) — WebKit-on-Catalyst never turns click-drags into WebCore drag
+    // selection by itself (only dblclick word-select comes for free).
+    #if targetEnvironment(macCatalyst)
+    return [
+      _longPressRecognizer,
+      _mouseSelectRecognizer,
+      _scrollView.panGestureRecognizer,
+      _termScrollView.panGestureRecognizer,
+    ]
+    #else
     return [
       _longPressRecognizer,
       _scrollView.panGestureRecognizer,
       _termScrollView.panGestureRecognizer,
     ]
+    #endif
   }
   
   func willMove(to view: UIView?) {
@@ -196,7 +215,43 @@ class UIScrollViewWithoutHitTest: UIScrollView {
     _longPressRecognizer.delegate = self
     _longPressRecognizer.addTarget(self, action: #selector(_onLongPress(_:)))
     _longPressRecognizer.isEnabled = true   // Moshroom: long-press = select word → Copy
+
+    #if targetEnvironment(macCatalyst)
+    // On the Mac a left-button DRAG selects text, like any terminal. The two scroll pans exist
+    // for touch scrolling — on Catalyst they'd claim the click-drag — while actual Mac scrolling
+    // (wheel / trackpad) arrives as DOM wheel events that hterm handles itself, never through
+    // these pans. So the pans ignore the pointer entirely here (iOS behaviour untouched), and a
+    // dedicated pan turns the drag into a live JS selection.
+    _scrollView.panGestureRecognizer.allowedTouchTypes = []
+    _termScrollView.panGestureRecognizer.allowedTouchTypes = []
+    _mouseSelectRecognizer.maximumNumberOfTouches = 1
+    _mouseSelectRecognizer.delegate = self
+    _mouseSelectRecognizer.addTarget(self, action: #selector(_onMouseSelectDrag(_:)))
+    #endif
   }
+
+  #if targetEnvironment(macCatalyst)
+  @objc func _onMouseSelectDrag(_ recognizer: UIPanGestureRecognizer) {
+    guard focused else { return }
+    let p = recognizer.location(in: recognizer.view)
+    switch recognizer.state {
+    case .began:
+      // Anchor at the true mouse-down point — by .began the pointer already moved past the
+      // recognizer's hysteresis, so walk the translation back to the origin.
+      let t = recognizer.translation(in: recognizer.view)
+      let start = CGPoint(x: p.x - t.x, y: p.y - t.y)
+      _wkWebView?.evaluateJavaScript(
+        "term_startSelectionAt(\(start.x), \(start.y)); term_extendSelectionTo(\(p.x), \(p.y));",
+        completionHandler: nil)
+    case .changed:
+      _wkWebView?.evaluateJavaScript("term_extendSelectionTo(\(p.x), \(p.y));", completionHandler: nil)
+    case .ended, .cancelled, .failed:
+      _wkWebView?.evaluateJavaScript("term_endSelection();", completionHandler: nil)
+    default:
+      break
+    }
+  }
+  #endif
   
   @objc func _onLongPress(_ recognizer: UILongPressGestureRecognizer) {
     guard focused, recognizer.state == .began else {

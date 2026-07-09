@@ -158,6 +158,38 @@ import Combine
   var isRealFirstResponder: Bool {
     contentView()?.isFirstResponder == true
   }
+
+  // Moshroom: on iOS, WKWebView only paints the ACTIVE selection look — the tinted (red)
+  // highlight plus the grab handles — while its inner content view is first responder. Otherwise
+  // UIKit shows the deactivated appearance: a dull dark box, no handles. That's why long-press
+  // selections came up "sometimes red and draggable, sometimes black and dead" — it depended on
+  // whether WebKit had happened to make the content view first responder earlier. Making it first
+  // responder exactly while a selection exists (and resigning when it clears) makes the good case
+  // THE case.
+  //
+  // This does NOT break the scratchOnly invariant (typing goes to Moshkitor, the terminal never
+  // shows a keyboard): `becomeFirstResponder` on this view stays blocked; the content view is
+  // targeted directly, and no keyboard can come up because the page's editable element was
+  // focused programmatically — WebKit never starts an input session for it (same reason the
+  // pre-existing "good" selections never raised one).
+  //
+  // Mac Catalyst deliberately does NOT take first responder: there are no grab handles on the
+  // Mac anyway, a first-responder WKWebView swallows hardware keys (the known Ventura+ bug), and
+  // the activated overlay paints with the SYSTEM accent (blue) instead of Moshroom red. Left
+  // unfocused, the selection is painted by the page itself — where the injected
+  // ::selection/:window-inactive CSS keeps it Moshroom red (term.js scopes user-select to the
+  // selection's lifetime so that styling applies).
+  @objc func activateSelectionUI() {
+    #if !targetEnvironment(macCatalyst)
+    guard let cv = contentView(), !cv.isFirstResponder else { return }
+    cv.becomeFirstResponder()
+    #endif
+  }
+
+  @objc func deactivateSelectionUI() {
+    guard let cv = contentView(), cv.isFirstResponder else { return }
+    cv.resignFirstResponder()
+  }
   
   func reportStateReset() {
     reportStateReset(false)

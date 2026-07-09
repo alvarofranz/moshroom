@@ -49,7 +49,25 @@ hterm.Terminal.prototype.setWindowTitle = function(title) {
 };
 
 document.addEventListener('selectionchange', function() {
-  _postMessage('selectionchange', term_getCurrentSelection());
+  var current = term_getCurrentSelection();
+  // Selection gone (copied, cleaned, or the TUI redrew the rows under it) — drop the
+  // selectability override so the terminal is back to its scroll-not-select default.
+  if (!current.text) {
+    _moshroomSetSelecting(false);
+  }
+  _postMessage('selectionchange', current);
+});
+
+// A double/triple-click on a BLANK region makes WebCore select the whole whitespace run — a huge
+// ghost rectangle over empty rows. Kill exactly that after the click settles (a drag's mouseup
+// arrives with detail 1 and single clicks carry no selection, so neither is touched).
+document.addEventListener('mouseup', function(e) {
+  if (e.detail >= 2) {
+    var sel = document.getSelection();
+    if (sel && sel.toString() && !sel.toString().trim()) {
+      sel.removeAllRanges();
+    }
+  }
 });
 
 hterm.Terminal.IO.prototype.sendString = function(string) {
@@ -129,24 +147,35 @@ function term_setup(accessibilityEnabled) {
     // wanted thing — that's the contentEditable caret tinted with the Moshroom accent.)
     t.setCursorColor('rgba(0, 0, 0, 0)');
 
-    // Moshroom: the terminal is a scroll + keys surface, not a document. Native text
-    // selection hijacks the pan gesture (a swipe selects instead of scrolling, and the
-    // selection cancels the scroll), so turn it off — a swipe scrolls / reports wheel to TUIs.
+    // Moshroom: on touch devices the terminal is a scroll + keys surface, not a document —
+    // native text selection hijacks the pan gesture (a swipe selects instead of scrolling, and
+    // the selection cancels the scroll), so user-select is OFF there; the long-press word-select
+    // (term_selectWordAt) briefly re-enables it via .moshroom-selecting so the red ::selection
+    // styling applies (WebKit refuses ::selection on user-select:none content and paints the
+    // platform theme colour instead). On the Mac (Catalyst) it's the opposite: scrolling comes
+    // from the wheel/trackpad (DOM wheel events hterm handles itself), and a mouse drag or
+    // double-click is EXPECTED to select — so text stays selectable there all the time.
+    var _moshroomIsMac = /Mac/.test(navigator.platform);
+    var _moshroomSelectRules = _moshroomIsMac
+      ? '*{-webkit-user-select:text!important;-webkit-touch-callout:none!important;caret-color:transparent!important;}'
+      : '*{-webkit-user-select:none!important;-webkit-touch-callout:none!important;caret-color:transparent!important;}.moshroom-selecting *{-webkit-user-select:text!important;}';
+    // …plus a translucent Moshroom-red selection highlight (on iOS the grab handles follow the
+    // web view's tintColor, also Moshroom red). The :window-inactive variant keeps it red when
+    // WebKit paints the selection while the page is unfocused — the normal state on the Mac,
+    // where the terminal web view deliberately never becomes first responder.
+    var _moshroomSelectionCss = '::selection{background-color:rgba(224,51,58,0.8)!important;color:inherit!important;}::selection:window-inactive{background-color:rgba(224,51,58,0.8)!important;color:inherit!important;}';
     var _moshroomScreen = t.scrollPort_.screen_;
     if (_moshroomScreen) {
       var _moshroomDoc = _moshroomScreen.ownerDocument;
       var _moshroomStyle = _moshroomDoc.createElement('style');
-      // …plus a translucent Moshroom-red selection highlight (the grab handles follow the web
-      // view's tintColor, also Moshroom red; this makes the highlight fill match instead of the
-      // default black WebKit renders during a handle drag).
-      _moshroomStyle.textContent = '*{-webkit-user-select:none!important;-webkit-touch-callout:none!important;caret-color:transparent!important;}::selection{background-color:rgba(203,31,41,0.45)!important;color:inherit!important;}';
+      _moshroomStyle.textContent = _moshroomSelectRules + _moshroomSelectionCss;
       (_moshroomDoc.head || _moshroomDoc.documentElement).appendChild(_moshroomStyle);
     }
 
     // No text caret anywhere in the terminal — input happens in Moshkitor, so the blinking
     // insertion bar at the top-left is just a stray vestige. Hide it on the main document too.
     var _moshroomCaretStyle = document.createElement('style');
-    _moshroomCaretStyle.textContent = '*{caret-color:transparent!important;}::selection{background-color:rgba(203,31,41,0.45)!important;color:inherit!important;}';
+    _moshroomCaretStyle.textContent = '*{caret-color:transparent!important;}' + (_moshroomIsMac ? '' : '.moshroom-selecting *{-webkit-user-select:text!important;}') + _moshroomSelectionCss;
     (document.head || document.documentElement).appendChild(_moshroomCaretStyle);
     document.body.style.caretColor = 'transparent';
 
@@ -315,6 +344,16 @@ function term_reportWheelEvent(name, x, y, deltaX, deltaY) {
   t.onMouse_Moshroom(event);
 }
 
+// While a selection is alive, the selected text must be *selectable* in CSS terms: WebKit skips
+// `::selection` styling for `user-select: none` content and falls back to the platform theme
+// colour — on Mac Catalyst that's the system accent (blue), on an unfocused page a dull gray.
+// The blanket user-select:none (a swipe must scroll, never select) stays; this class scopes
+// text-selectability to exactly the lifetime of a Moshroom-made selection so the highlight is
+// always the Moshroom red.
+function _moshroomSetSelecting(on) {
+  document.documentElement.classList.toggle('moshroom-selecting', !!on);
+}
+
 // Select the whole terminal word under (x, y) — used by the native long-press to offer Copy.
 // Works for any TUI because it just selects the rendered on-screen text. A `selectionchange`
 // then fires and the native side shows a single Copy item.
@@ -327,11 +366,56 @@ function term_selectWordAt(x, y) {
   if (!range) {
     return;
   }
+  _moshroomSetSelecting(true);
   sel.removeAllRanges();
   sel.addRange(range);
   if (sel.modify) {
     sel.modify('move', 'backward', 'word');
     sel.modify('extend', 'forward', 'word');
+  }
+  // A long-press on an empty cell must select NOTHING: extending a caret in blank rows grabs a
+  // ghost whitespace selection spanning the whole screen (painted as a full-viewport highlight).
+  if (!sel.toString().trim()) {
+    sel.removeAllRanges();
+    _moshroomSetSelecting(false);
+  }
+}
+
+// Live mouse drag-selection (Mac Catalyst): WebKit there never turns a click-drag into a WebCore
+// drag selection on its own, so the native side drives one — anchor at mouse-down, extend on
+// every drag step, and settle on mouse-up (a drag that grabbed nothing but whitespace clears,
+// same rule as term_selectWordAt).
+function term_startSelectionAt(x, y) {
+  var sel = document.getSelection();
+  if (!sel) {
+    return;
+  }
+  var range = document.caretRangeFromPoint(x, y);
+  if (!range) {
+    return;
+  }
+  _moshroomSetSelecting(true);
+  sel.removeAllRanges();
+  sel.addRange(range);
+}
+
+function term_extendSelectionTo(x, y) {
+  var sel = document.getSelection();
+  if (!sel || sel.rangeCount === 0) {
+    return;
+  }
+  var range = document.caretRangeFromPoint(x, y);
+  if (!range) {
+    return;
+  }
+  sel.extend(range.startContainer, range.startOffset);
+}
+
+function term_endSelection() {
+  var sel = document.getSelection();
+  if (sel && !sel.toString().trim()) {
+    sel.removeAllRanges();
+    _moshroomSetSelecting(false);
   }
 }
 
