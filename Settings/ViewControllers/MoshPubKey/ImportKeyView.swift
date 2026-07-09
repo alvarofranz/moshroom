@@ -69,15 +69,19 @@ struct ImportKeyView: View {
       ) { }
     }
     .listStyle(GroupedListStyle())
-    .navigationBarItems(
-      leading: Button("Cancel", action: onCancel),
-      trailing: Button("Import") {
-        if state.saveKey() {
-          onSuccess()
-        }
+    .toolbar {
+      MoshNavBarItem(placement: .navigationBarLeading) {
+        Button(action: onCancel) { MoshNavLabel(title: "Cancel") }
       }
-      .disabled(!state.isValid)
-    )
+      MoshNavBarItem(placement: .navigationBarTrailing) {
+        Button(action: {
+          if state.saveKey() {
+            onSuccess()
+          }
+        }) { MoshNavLabel(title: "Import") }
+          .disabled(!state.isValid)
+      }
+    }
     .navigationBarTitle("Import \(state.keyType) Key")
     .alert(errorMessage: $state.errorMessage)
   }

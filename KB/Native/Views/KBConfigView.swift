@@ -96,17 +96,19 @@ struct KBConfigView: View {
     }
     .listStyle(GroupedListStyle())
     .navigationBarTitle("Keyboard")
-    .navigationBarItems(trailing:
-      Button(
-        action: {
-          MoshroomDefaults.setDisableCustomKeyboards(false)
-          MoshroomDefaults.save()
-          self._enableCustomKeyboards = !MoshroomDefaults.disableCustomKeyboards()
-          self.config.reset()
-        },
-        label: { Text("Reset") }
-      )
-    )
+    .toolbar {
+      MoshNavBarItem(placement: .navigationBarTrailing) {
+        Button(
+          action: {
+            MoshroomDefaults.setDisableCustomKeyboards(false)
+            MoshroomDefaults.save()
+            self._enableCustomKeyboards = !MoshroomDefaults.disableCustomKeyboards()
+            self.config.reset()
+          },
+          label: { MoshNavLabel(title: "Reset") }
+        )
+      }
+    }
     .onReceive(config.objectWillChange.debounce(for: 0.5, scheduler: RunLoop.main)) {
       KBTracker.shared.save(config: self.config)
     }

@@ -62,3 +62,64 @@ extension View {
   }
 }
 
+// MARK: - Moshroom nav-bar house style
+
+/// The house style for every SwiftUI nav-bar button: a white round chip with near-black ink —
+/// the same look as the floating quick keys (`moshkeyRoundButton` in Moshkeys.swift), so buttons
+/// read identically on iOS and Mac.
+enum MoshNavChip {
+  static let fill = Color(UIColor(white: 0.97, alpha: 0.92))
+  static let ink = Color(UIColor(white: 0.12, alpha: 1))
+  static let diameter: CGFloat = 34
+}
+
+/// Circular white chip around a dark SF Symbol — for glyph nav-bar buttons (+, sort, ✕).
+struct MoshNavGlyph: View {
+  let systemName: String
+  @Environment(\.isEnabled) private var isEnabled
+
+  var body: some View {
+    Image(systemName: systemName)
+      .font(.system(size: 15, weight: .semibold))
+      .foregroundColor(MoshNavChip.ink)
+      .frame(width: MoshNavChip.diameter, height: MoshNavChip.diameter)
+      .background(Circle().fill(MoshNavChip.fill))
+      .opacity(isEnabled ? 1 : 0.4)
+  }
+}
+
+/// White capsule around dark text — for text nav-bar buttons (Save, Cancel, Create…).
+struct MoshNavLabel: View {
+  let title: String
+  @Environment(\.isEnabled) private var isEnabled
+
+  var body: some View {
+    Text(title)
+      .font(.system(size: 15, weight: .semibold))
+      .foregroundColor(MoshNavChip.ink)
+      .padding(.horizontal, 14)
+      .frame(height: MoshNavChip.diameter)
+      .background(Capsule().fill(MoshNavChip.fill))
+      .opacity(isEnabled ? 1 : 0.4)
+  }
+}
+
+/// One nav-bar toolbar item that never gets the system's shared glass platter. Since the iOS 26
+/// SDK, bare bar items are wrapped in a system capsule that renders mis-padded on Mac Catalyst
+/// (glyphs pinned high inside a taller pill) — the house chips above carry their own background,
+/// so the platter is hidden and the buttons draw the same everywhere. Also applies the Catalyst
+/// borderless fix so Mac never adds its own bordered chrome on top.
+struct MoshNavBarItem<Content: View>: ToolbarContent {
+  let placement: ToolbarItemPlacement
+  @ViewBuilder let content: () -> Content
+
+  var body: some ToolbarContent {
+    if #available(iOS 26.0, *) {
+      ToolbarItem(placement: placement) { content().moshCatalystPlainButtons() }
+        .sharedBackgroundVisibility(.hidden)
+    } else {
+      ToolbarItem(placement: placement) { content().moshCatalystPlainButtons() }
+    }
+  }
+}
+

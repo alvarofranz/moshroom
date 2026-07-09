@@ -271,42 +271,44 @@ struct ShortcutConfigView: View {
         }
       }
     .navigationBarBackButtonHidden(true)
-    .navigationBarItems(
-      leading:
-        Button(isComplete ? "Done" : "Cancel") {
+    .toolbar {
+      MoshNavBarItem(placement: .navigationBarLeading) {
+        Button(action: {
           _done()
-        },
-      trailing:
+        }) { MoshNavLabel(title: isComplete ? "Done" : "Cancel") }
+      }
+      MoshNavBarItem(placement: .navigationBarTrailing) {
         Group {
           if !isNew {
             if draft.isInDefaultCommandList {
               if draft.isCleared {
-                Button("Set Default") {
+                Button(action: {
                   if let original = KeyShortcut.defaultFor(self.draft) {
                     self.shortcut?.modifiers = original.modifiers
                     self.shortcut?.input = original.input
                   }
                   self.nav.navController.popViewController(animated: true)
                   self.config.touch()
-                }
+                }) { MoshNavLabel(title: "Set Default") }
               } else {
-                Button("Clear") {
+                Button(action: {
                   self.shortcut?.input = ""
                   self.shortcut?.modifiers = []
                   self.nav.navController.popViewController(animated: true)
                   self.config.touch()
-                }
+                }) { MoshNavLabel(title: "Clear") }
               }
             } else {
-              Button("Delete") {
+              Button(action: {
                 self.config.shortcuts.removeAll(where: { $0 === self.shortcut })
                 self.nav.navController.popViewController(animated: true)
                 self.config.touch()
-              }
+              }) { MoshNavLabel(title: "Delete") }
             }
           }
         }
-    )
+      }
+    }
     .listStyle(GroupedListStyle())
     .background(KeyCaptureView(shortcut: draft))
   }
@@ -381,9 +383,11 @@ struct ShortcutsConfigView: View {
       }
     }
     .listStyle(GroupedListStyle())
-    .navigationBarItems(
-      trailing: Button("Add", action: _addAction)
-    )
+    .toolbar {
+      MoshNavBarItem(placement: .navigationBarTrailing) {
+        Button(action: _addAction) { MoshNavLabel(title: "Add") }
+      }
+    }
   }
 
   private func _addAction() {

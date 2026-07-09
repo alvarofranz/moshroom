@@ -71,9 +71,11 @@ struct PassphraseView: View {
       .navigationBarBackButtonHidden(true)
       .navigatePush(whenPresent: $_importKeyObservable)
     }
-    .navigationBarItems(
-      leading: Button("Cancel", action: onCancel)
-    )
+    .toolbar {
+      MoshNavBarItem(placement: .navigationBarLeading) {
+        Button(action: onCancel) { MoshNavLabel(title: "Cancel") }
+      }
+    }
     .onAppear() {
       FixedTextField.becomeFirstReponder(id: "passphrase")
     }

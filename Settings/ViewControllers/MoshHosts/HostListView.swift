@@ -118,20 +118,31 @@ struct HostListView: View {
                 }.onDelete(perform: _state.deleteHosts)
               }
               .listStyle(InsetGroupedListStyle())
-              .navigationBarItems(
-                trailing: HStack {
-                  Menu {
-                    Section(header: Text("Order")) {
-                      SortButton(label: "Alias",    sortType: $_state.sortType, asc: .aliasAsc, desc: .aliasDesc)
-                      SortButton(label: "HostName", sortType: $_state.sortType, asc: .hostNameAsc, desc: .hostNameDesc)
-                    }
-                  } label: { Image(systemName: "list.bullet").frame(width: 38, height: 38, alignment: .center) }
-                  Button(
-                    action: _addHost,
-                    label: { Image(systemName: "plus").frame(width: 38, height: 38, alignment: .center) }
-                  )
+              .toolbar {
+                MoshNavBarItem(placement: .navigationBarTrailing) {
+                  HStack(spacing: 8) {
+                    // Chip below, Menu on top with a clear label — Catalyst re-renders visible
+                    // Menu labels (see KeySortView).
+                    MoshNavGlyph(systemName: "list.bullet")
+                      .overlay(
+                        Menu {
+                          Section(header: Text("Order")) {
+                            SortButton(label: "Alias",    sortType: $_state.sortType, asc: .aliasAsc, desc: .aliasDesc)
+                            SortButton(label: "HostName", sortType: $_state.sortType, asc: .hostNameAsc, desc: .hostNameDesc)
+                          }
+                        } label: {
+                          Color.clear
+                            .frame(width: MoshNavChip.diameter, height: MoshNavChip.diameter)
+                            .contentShape(Rectangle())
+                        }
+                      )
+                    Button(
+                      action: _addHost,
+                      label: { MoshNavGlyph(systemName: "plus") }
+                    )
+                  }
                 }
-              )
+              }
           }
         }
         .searchable(text: $_state.filterQuery)

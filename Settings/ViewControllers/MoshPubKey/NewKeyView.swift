@@ -92,11 +92,15 @@ struct NewKeyView: View {
       ) { }
     }
     .listStyle(GroupedListStyle())
-    .navigationBarItems(
-      leading: Button("Cancel", action: onCancel),
-      trailing: Button("Create", action: _createKey)
-      .disabled(!_state.isValid)
-    )
+    .toolbar {
+      MoshNavBarItem(placement: .navigationBarLeading) {
+        Button(action: onCancel) { MoshNavLabel(title: "Cancel") }
+      }
+      MoshNavBarItem(placement: .navigationBarTrailing) {
+        Button(action: _createKey) { MoshNavLabel(title: "Create") }
+          .disabled(!_state.isValid)
+      }
+    }
     .navigationBarTitle("New \(_state.keyType.shortName) Key")
     .alert(errorMessage: $_state.errorMessage)
     .onAppear(perform: {

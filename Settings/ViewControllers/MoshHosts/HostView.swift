@@ -385,24 +385,22 @@ struct HostView: View {
     }
     .listStyle(GroupedListStyle())
     .alert(errorMessage: $_errorMessage)
-    .navigationBarItems(
-      leading: Group {
-        Button("Discard", action: {
+    .toolbar {
+      MoshNavBarItem(placement: .navigationBarLeading) {
+        Button(action: {
           _nav.navController.popViewController(animated: true)
-        })
+        }) { MoshNavLabel(title: "Discard") }
       }
-      .moshCatalystPlainButtons(),   // plain tinted text on Mac, not the native bordered capsule
-      trailing: Group {
-        Button("Save", action: {
+      MoshNavBarItem(placement: .navigationBarTrailing) {
+        Button(action: {
           // A validation failure shows the alert and keeps the editor open — never save a bad host.
           guard _validate() else { return }
           _saveHost()
           _reloadList()
           _nav.navController.popViewController(animated: true)
-        })
+        }) { MoshNavLabel(title: "Save") }
       }
-      .moshCatalystPlainButtons()
-    )
+    }
     .navigationBarBackButtonHidden(true)
     .navigationBarTitle(_host == nil ? "New Host" : "Host")
     .onAppear {

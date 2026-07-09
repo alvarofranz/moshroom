@@ -80,14 +80,24 @@ struct KeySortView: View {
   @Binding fileprivate var sortType: KeysObservable.KeySortType
 
   var body: some View {
-    Menu {
-      Section(header: Text("Order")) {
-        SortButton(label: "Name",    sortType: $sortType, asc: .nameAsc, desc: .nameDesc)
-        SortButton(label: "Type",    sortType: $sortType, asc: .typeAsc, desc: .typeDesc)
-        SortButton(label: "Storage", sortType: $sortType, asc: .storageAsc, desc: .storageDesc)
-      }
-    } label: { Image(systemName: "list.bullet").frame(width: 38, height: 38, alignment: .center) }
-
+    // The chip is OUR view and the Menu rides on top with a clear label: the Mac Catalyst
+    // toolbar re-renders a Menu's label with its own template colour and metrics (washed-out,
+    // off-centre glyph), so nothing visible may live inside the label — the system can restyle
+    // a transparent square all it wants.
+    MoshNavGlyph(systemName: "list.bullet")
+      .overlay(
+        Menu {
+          Section(header: Text("Order")) {
+            SortButton(label: "Name",    sortType: $sortType, asc: .nameAsc, desc: .nameDesc)
+            SortButton(label: "Type",    sortType: $sortType, asc: .typeAsc, desc: .typeDesc)
+            SortButton(label: "Storage", sortType: $sortType, asc: .storageAsc, desc: .storageDesc)
+          }
+        } label: {
+          Color.clear
+            .frame(width: MoshNavChip.diameter, height: MoshNavChip.diameter)
+            .contentShape(Rectangle())
+        }
+      )
   }
 }
 
@@ -111,19 +121,15 @@ struct NewKeyMenuContentView: View {
       }
       .navigationTitle("New Key")
       .navigationBarTitleDisplayMode(.large)
-      .navigationBarItems(
-        trailing:
-          HStack {
-            Button {
-              dismissView()
-            } label: {
-              Image(systemName: "multiply.circle.fill")
-                .font(.title3)
-                .symbolRenderingMode(.hierarchical)
-                .foregroundStyle(Color.gray)
-            }
+      .toolbar {
+        MoshNavBarItem(placement: .navigationBarTrailing) {
+          Button {
+            dismissView()
+          } label: {
+            MoshNavGlyph(systemName: "xmark")
           }
-      )
+        }
+      }
     }
     //.alert(errorMessage: $state.errorMessage)
   }
@@ -330,22 +336,21 @@ struct KeyListView: View {
       }
     }
     .listStyle(InsetGroupedListStyle())
-    .navigationBarItems(
-      trailing: HStack {
-        if !_state.list.isEmpty {
-          KeySortView(sortType: $_state.sortType)
+    .toolbar {
+      MoshNavBarItem(placement: .navigationBarTrailing) {
+        HStack(spacing: 8) {
+          if !_state.list.isEmpty {
+            KeySortView(sortType: $_state.sortType)
 
-          Button(action: {
-            toggleNewKeyView()
-          }) {
-            Image(systemName: "plus")
-              .imageScale(.large)
-              .frame(width: 44, height: 44)
+            Button(action: {
+              toggleNewKeyView()
+            }) {
+              MoshNavGlyph(systemName: "plus")
+            }
           }
         }
       }
-      .moshCatalystPlainButtons()   // iOS-flat glyphs on Mac, not the native bordered capsule
-    )
+    }
     .navigationBarTitle("Keys")
     .fileImporter(
       isPresented: $_state.filePickerIsPresented,

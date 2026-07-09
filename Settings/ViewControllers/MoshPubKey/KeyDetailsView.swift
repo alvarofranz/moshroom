@@ -308,10 +308,12 @@ struct KeyDetailsView: View {
     }
     .listStyle(GroupedListStyle())
     .navigationTitle("Key Info")
-    .navigationBarItems(
-      trailing: Button("Save", action: _saveCard)
-      .disabled(_saveIsDisabled)
-    )
+    .toolbar {
+      MoshNavBarItem(placement: .navigationBarTrailing) {
+        Button(action: _saveCard) { MoshNavLabel(title: "Save") }
+          .disabled(_saveIsDisabled)
+      }
+    }
     .fileImporter(
       isPresented: $_filePickerIsPresented,
       allowedContentTypes: [.text, .data, .item],
