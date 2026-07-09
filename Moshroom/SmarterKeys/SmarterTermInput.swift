@@ -65,7 +65,25 @@ import Combine
     if traitCollection.userInterfaceIdiom != .pad {
       _setupAccessoryView()
     }
+
+    #if targetEnvironment(macCatalyst)
+    // When a Mac window becomes key again (Cmd-Tab away and back), AppKit restores first
+    // responder to the web content view — from then on selections paint through the UIKit
+    // overlay (deactivated gray / accent blue) instead of the page's red CSS. Take it back the
+    // moment the window returns.
+    NotificationCenter.default.addObserver(
+      self, selector: #selector(_moshroomWindowDidBecomeKey(_:)),
+      name: UIWindow.didBecomeKeyNotification, object: nil)
+    #endif
   }
+
+  #if targetEnvironment(macCatalyst)
+  @objc private func _moshroomWindowDidBecomeKey(_ note: Notification) {
+    guard (note.object as? UIWindow) === window else { return }
+    // Async: AppKit may restore the first responder after posting the notification.
+    DispatchQueue.main.async { [weak self] in self?.deactivateSelectionUI() }
+  }
+  #endif
   
   override func layoutSubviews() {
     super.layoutSubviews()
@@ -180,7 +198,13 @@ import Combine
   // ::selection/:window-inactive CSS keeps it Moshroom red (term.js scopes user-select to the
   // selection's lifetime so that styling applies).
   @objc func activateSelectionUI() {
-    #if !targetEnvironment(macCatalyst)
+    #if targetEnvironment(macCatalyst)
+    // Not just a no-op: AppKit RESTORES first responder to the content view whenever the window
+    // becomes key again (Cmd-Tab away and back), and from then on selections paint through the
+    // UIKit overlay — dull black, or accent blue — instead of the page's red CSS. Undo it at
+    // every selection so the page stays the painter.
+    deactivateSelectionUI()
+    #else
     guard let cv = contentView(), !cv.isFirstResponder else { return }
     cv.becomeFirstResponder()
     #endif

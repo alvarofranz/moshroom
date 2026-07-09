@@ -163,7 +163,7 @@ function term_setup(accessibilityEnabled) {
     // web view's tintColor, also Moshroom red). The :window-inactive variant keeps it red when
     // WebKit paints the selection while the page is unfocused — the normal state on the Mac,
     // where the terminal web view deliberately never becomes first responder.
-    var _moshroomSelectionCss = '::selection{background-color:rgba(224,51,58,0.8)!important;color:inherit!important;}::selection:window-inactive{background-color:rgba(224,51,58,0.8)!important;color:inherit!important;}';
+    var _moshroomSelectionCss = '::selection{background-color:rgba(255,82,90,1)!important;color:inherit!important;}::selection:window-inactive{background-color:rgba(255,82,90,1)!important;color:inherit!important;}';
     var _moshroomScreen = t.scrollPort_.screen_;
     if (_moshroomScreen) {
       var _moshroomDoc = _moshroomScreen.ownerDocument;

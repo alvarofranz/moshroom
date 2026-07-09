@@ -236,6 +236,9 @@ class UIScrollViewWithoutHitTest: UIScrollView {
     let p = recognizer.location(in: recognizer.view)
     switch recognizer.state {
     case .began:
+      // The selection about to be born must be page-painted (red CSS), never the UIKit overlay —
+      // shed any first responder AppKit may have restored to the content view.
+      (_wkWebView as? SmarterTermInput)?.deactivateSelectionUI()
       // Anchor at the true mouse-down point — by .began the pointer already moved past the
       // recognizer's hysteresis, so walk the translation back to the origin.
       let t = recognizer.translation(in: recognizer.view)
