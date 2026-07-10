@@ -235,6 +235,14 @@ extension SpaceController {
       // fresh), so a reveal-trigger racing the spawn must not wipe what noteConnection just set.
       let justConnected = (term?.moshroomConnectedHostSetAt).map { Date().timeIntervalSince($0) < 3 } ?? false
       if !justConnected {
+        // A connection just ENDED here (`exit` back to the local prompt): reset the tab to its
+        // fresh-start look — wipe the dead connect transcript (the same full reset the `clear`
+        // builtin prints) and let Quick Connect come back — instead of stranding the user on
+        // stale "Connecting to…" scrollback with nothing tappable.
+        if term?.moshroomConnectedHost != nil {
+          term?.termView.write("\u{1B}c\u{1B}[H\u{1B}[2J\u{1B}[0m")
+          term?.moshroomUserHasInteracted = false
+        }
         term?.moshroomConnectedHost = nil
       }
       // Only reveal on a brand-new, untouched terminal. Once a command has run here, the shell is still
