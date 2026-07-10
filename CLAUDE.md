@@ -26,10 +26,11 @@ Every target uses `DEVELOPMENT_TEAM = $(TEAM_ID)`.
 
 ### Xcode Cloud (CI/CD → TestFlight / App Store)
 
-Every push to `main` triggers an Xcode Cloud build (workflow **Default**, iOS Archive, distribution
-prep = App Store Connect) that delivers to TestFlight + App Store, and a **TestFlight internal
-testing post-action** adds every build to the internal group automatically (configured in the
-workflow's Post-Actions — without it builds sit "Ready to Submit", never installable). One
+Every push to `main` triggers an Xcode Cloud build (workflow **Default**, **iOS Archive + macOS
+(Catalyst) Archive** — both observed running per push as GitHub check-runs since ≤2026-07-10 —
+distribution prep = App Store Connect) that delivers to TestFlight + App Store, and a **TestFlight
+internal testing post-action** adds every build to the internal group automatically (configured in
+the workflow's Post-Actions — without it builds sit "Ready to Submit", never installable). One
 `ci_scripts/` script does the setup Xcode Cloud can't infer:
 - `ci_post_clone.sh` — recreates the gitignored `developer_setup.xcconfig` from the workflow's
   **Environment Variables** (`TEAM_ID`, `BUNDLE_ID`, `GROUP_ID`, `CLOUD_ID`, `KEYCHAIN_ID1`) + the fixed
