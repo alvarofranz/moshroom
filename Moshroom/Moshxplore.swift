@@ -397,6 +397,49 @@ enum MoshxploreStyle {
   static func monoFont(_ size: CGFloat, _ weight: UIFont.Weight = .regular) -> UIFont {
     .monospacedSystemFont(ofSize: size + effectiveTextSize - authoredBase, weight: weight)
   }
+  // Paddings authored at the 15px base scale with the text size too — a bigger font in a
+  // fixed-inset button reads as "no padding". Proportional, so the buttons keep their shape.
+  static func inset(_ base: CGFloat) -> CGFloat {
+    (base * effectiveTextSize / authoredBase).rounded()
+  }
+}
+
+// The tiny gray copy-glyph next to a path: tap → the path lands on the clipboard and the glyph
+// flashes a checkmark for 2 s before reverting. One shared control for the file detail and the
+// browser's current-folder path; iOS and Mac alike (UIPasteboard bridges to the Mac clipboard).
+final class MoshxploreCopyButton: UIButton {
+  var textToCopy: () -> String? = { nil }
+  private var revertWork: DispatchWorkItem?
+
+  init() {
+    super.init(frame: .zero)
+    #if targetEnvironment(macCatalyst)
+    preferredBehavioralStyle = .pad
+    #endif
+    _setSymbol("doc.on.doc")
+    addAction(UIAction { [weak self] _ in self?._copyNow() }, for: .touchUpInside)
+    translatesAutoresizingMaskIntoConstraints = false
+    setContentHuggingPriority(.required, for: .horizontal)
+    setContentCompressionResistancePriority(.required, for: .horizontal)
+  }
+
+  required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+  private func _setSymbol(_ name: String) {
+    let cfg = UIImage.SymbolConfiguration(pointSize: MoshxploreStyle.inset(13), weight: .medium)
+    setImage(UIImage(systemName: name, withConfiguration: cfg)?
+      .withTintColor(MoshxploreStyle.gray, renderingMode: .alwaysOriginal), for: .normal)
+  }
+
+  private func _copyNow() {
+    guard let text = textToCopy(), !text.isEmpty else { return }
+    UIPasteboard.general.string = text
+    _setSymbol("checkmark")
+    revertWork?.cancel()
+    let work = DispatchWorkItem { [weak self] in self?._setSymbol("doc.on.doc") }
+    revertWork = work
+    DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: work)
+  }
 }
 
 // MARK: - Entry row
@@ -482,7 +525,8 @@ private final class MoshxploreDetailView: UIView {
 
   var onBack: (() -> Void)?
   var onDownload: (() -> Void)?
-  var onEditToggle: (() -> Void)?    // Edit ↔ Save taps; the card decides what they mean
+  var onEditToggle: (() -> Void)?
+  var onEditCancel: (() -> Void)?    // Edit ↔ Save taps; the card decides what they mean
 
   private(set) var isEditingText = false
   var editedText: String { textView.text ?? "" }
@@ -498,9 +542,23 @@ private final class MoshxploreDetailView: UIView {
   private let placeholderLabel = UILabel()
   private let placeholder = UIStackView()
   private let spinner = UIActivityIndicatorView(style: .medium)
-  private let saveButton = UIButton(type: .system)     // top-right, next to the file name — edit mode only
-  private let editButton = UIButton(type: .system)
-  private let downloadButton = UIButton(type: .system)
+  // The pill buttons use UIButton.Configuration — on Mac Catalyst that defaults to the `.mac`
+  // behavioral style, which swaps in the native macOS push-button look and IGNORES the
+  // configuration's contentInsets and fill (the "Download button has no padding and isn't
+  // mushroom-red" bug). `.pad` keeps our authored pills identical on every platform.
+  private static func pillButton() -> UIButton {
+    let b = UIButton(type: .system)
+    #if targetEnvironment(macCatalyst)
+    b.preferredBehavioralStyle = .pad
+    #endif
+    return b
+  }
+  private let saveButton = MoshxploreDetailView.pillButton()     // top-right, next to the file name — edit mode only
+  private let cancelButton = MoshxploreDetailView.pillButton()   // beside Save — white, discards the edit
+  private let editButton = MoshxploreDetailView.pillButton()
+  private let downloadButton = MoshxploreDetailView.pillButton()
+  private let pathLabel = UILabel()                    // the full remote path, with its copy glyph
+  private let pathCopyButton = MoshxploreCopyButton()
   private let actionRow = UIStackView()                // the bottom Edit/Download pair; hidden while editing
 
   // Moshlight: the code surface (Mushroom soil, the one and only theme), its line-number gutter,
@@ -542,7 +600,16 @@ private final class MoshxploreDetailView: UIView {
     saveButton.setContentCompressionResistancePriority(.required, for: .horizontal)
     saveButton.addAction(UIAction { [weak self] _ in self?.onEditToggle?() }, for: .touchUpInside)
 
-    let header = UIStackView(arrangedSubviews: [back, titleLabel, saveButton])
+    // Cancel: the white twin of Save (white capsule, near-black text — the house chip colours,
+    // fixed in both appearances). Same discard the back button performs while editing, but
+    // visible right where the decision is being made.
+    cancelButton.configuration = Self.cancelConfig()
+    cancelButton.isHidden = true
+    cancelButton.setContentHuggingPriority(.required, for: .horizontal)
+    cancelButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+    cancelButton.addAction(UIAction { [weak self] _ in self?.onEditCancel?() }, for: .touchUpInside)
+
+    let header = UIStackView(arrangedSubviews: [back, titleLabel, cancelButton, saveButton])
     header.axis = .horizontal
     header.spacing = 8
     header.alignment = .center
@@ -550,6 +617,14 @@ private final class MoshxploreDetailView: UIView {
     metaLabel.font = MoshxploreStyle.font(12)
     metaLabel.textColor = MoshxploreStyle.gray
     metaLabel.numberOfLines = 0
+
+    // The full remote path on its own line, with the copy glyph right beside it.
+    pathLabel.font = MoshxploreStyle.font(12)
+    pathLabel.textColor = MoshxploreStyle.gray
+    pathLabel.lineBreakMode = .byTruncatingMiddle
+    pathLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+    pathLabel.setContentHuggingPriority(.defaultHigh, for: .horizontal)   // glyph rides the text
+    pathCopyButton.textToCopy = { [weak self] in self?.pathLabel.text }
 
     // Full-bleed viewer surface — edge to edge, hairline top/bottom, no card chrome.
     previewBox.backgroundColor = MoshxploreStyle.row
@@ -627,7 +702,12 @@ private final class MoshxploreDetailView: UIView {
 
     header.translatesAutoresizingMaskIntoConstraints = false
     metaLabel.translatesAutoresizingMaskIntoConstraints = false
-    [header, metaLabel, previewBox, actionRow].forEach { addSubview($0) }
+    let pathRow = UIStackView(arrangedSubviews: [pathLabel, pathCopyButton, UIView()])
+    pathRow.axis = .horizontal
+    pathRow.spacing = 8
+    pathRow.alignment = .center
+    pathRow.translatesAutoresizingMaskIntoConstraints = false
+    [header, metaLabel, pathRow, previewBox, actionRow].forEach { addSubview($0) }
 
     previewBottomToButtons = previewBox.bottomAnchor.constraint(equalTo: actionRow.topAnchor, constant: -12)
     previewBottomToEdge = previewBox.bottomAnchor.constraint(equalTo: bottomAnchor)
@@ -640,7 +720,10 @@ private final class MoshxploreDetailView: UIView {
       metaLabel.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 6),
       metaLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
       metaLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
-      previewBox.topAnchor.constraint(equalTo: metaLabel.bottomAnchor, constant: 12),
+      pathRow.topAnchor.constraint(equalTo: metaLabel.bottomAnchor, constant: 2),
+      pathRow.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
+      pathRow.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
+      previewBox.topAnchor.constraint(equalTo: pathRow.bottomAnchor, constant: 12),
       previewBox.leadingAnchor.constraint(equalTo: leadingAnchor),
       previewBox.trailingAnchor.constraint(equalTo: trailingAnchor),
       previewBottomToButtons,
@@ -679,9 +762,10 @@ private final class MoshxploreDetailView: UIView {
 
   required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-  func configure(name: String, meta: String) {
+  func configure(name: String, meta: String, path: String) {
     titleLabel.text = name
     metaLabel.text = meta
+    pathLabel.text = path
   }
 
   func showPreviewLoading() {
@@ -746,6 +830,7 @@ private final class MoshxploreDetailView: UIView {
     previewBottomToButtons.isActive = false
     previewBottomToEdge.isActive = true     // the editor takes the freed bottom space
     saveButton.isHidden = false
+    cancelButton.isHidden = false
     textView.isEditable = true
     _applySurface()   // the amanita ring marks edit mode on the soil surface
     textView.becomeFirstResponder()
@@ -756,6 +841,7 @@ private final class MoshxploreDetailView: UIView {
   func setSaving(_ saving: Bool) {
     saveButton.configuration = Self.saveConfig(saving: saving)
     saveButton.isEnabled = !saving
+    cancelButton.isEnabled = !saving   // a save mid-flight must resolve before discarding
     textView.isEditable = !saving
   }
 
@@ -774,6 +860,7 @@ private final class MoshxploreDetailView: UIView {
     downloadButton.isHidden = false
     editButton.isHidden = true
     saveButton.isHidden = true
+    cancelButton.isHidden = true
     saveButton.isEnabled = true
     saveButton.configuration = Self.saveConfig(saving: false)
     _applySurface()
@@ -820,11 +907,26 @@ private final class MoshxploreDetailView: UIView {
       cfg.background.strokeColor = MoshxploreStyle.stroke
       cfg.background.strokeWidth = 0.5
     }
-    cfg.image = UIImage(systemName: symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: 14, weight: .semibold))
-    cfg.imagePadding = 8
+    cfg.image = UIImage(systemName: symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: MoshxploreStyle.inset(14), weight: .semibold))
+    cfg.imagePadding = MoshxploreStyle.inset(8)
     var attr = AttributeContainer(); attr.font = MoshxploreStyle.font(16, .semibold)
     cfg.attributedTitle = AttributedString(title, attributes: attr)
-    cfg.contentInsets = NSDirectionalEdgeInsets(top: 13, leading: 16, bottom: 13, trailing: 16)
+    cfg.contentInsets = NSDirectionalEdgeInsets(top: MoshxploreStyle.inset(13), leading: MoshxploreStyle.inset(16), bottom: MoshxploreStyle.inset(13), trailing: MoshxploreStyle.inset(16))
+    return cfg
+  }
+
+  // The header Cancel: Save's white twin — white capsule, near-black text (the house chip
+  // colours, deliberately the same in light and dark).
+  private static func cancelConfig() -> UIButton.Configuration {
+    var cfg = UIButton.Configuration.filled()
+    cfg.baseBackgroundColor = UIColor(white: 0.97, alpha: 1)
+    cfg.baseForegroundColor = UIColor(white: 0.12, alpha: 1)
+    cfg.cornerStyle = .capsule
+    cfg.background.strokeColor = MoshxploreStyle.stroke
+    cfg.background.strokeWidth = 0.5
+    var attr = AttributeContainer(); attr.font = MoshxploreStyle.font(14, .semibold)
+    cfg.attributedTitle = AttributedString("Cancel", attributes: attr)
+    cfg.contentInsets = NSDirectionalEdgeInsets(top: MoshxploreStyle.inset(7), leading: MoshxploreStyle.inset(14), bottom: MoshxploreStyle.inset(7), trailing: MoshxploreStyle.inset(14))
     return cfg
   }
 
@@ -837,8 +939,8 @@ private final class MoshxploreDetailView: UIView {
     cfg.showsActivityIndicator = saving
     var attr = AttributeContainer(); attr.font = MoshxploreStyle.font(14, .semibold)
     cfg.attributedTitle = AttributedString(saving ? "Saving…" : "Save", attributes: attr)
-    cfg.imagePadding = 6
-    cfg.contentInsets = NSDirectionalEdgeInsets(top: 7, leading: 14, bottom: 7, trailing: 14)
+    cfg.imagePadding = MoshxploreStyle.inset(6)
+    cfg.contentInsets = NSDirectionalEdgeInsets(top: MoshxploreStyle.inset(7), leading: MoshxploreStyle.inset(14), bottom: MoshxploreStyle.inset(7), trailing: MoshxploreStyle.inset(14))
     return cfg
   }
 }
@@ -886,6 +988,7 @@ final class MoshxploreView: UIView {
   private let upButton = moshButton()
   private let hostsButton = moshButton()
   private let pathLabel = UILabel()
+  private let pathCopyButton = MoshxploreCopyButton()   // copies the current folder path
   private let entriesStack = UIStackView()
   private let entriesScroll = UIScrollView()
   private let spinner = UIActivityIndicatorView(style: .medium)
@@ -966,7 +1069,11 @@ final class MoshxploreView: UIView {
     pathLabel.lineBreakMode = .byTruncatingHead
     pathLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-    let pathBar = UIStackView(arrangedSubviews: [upButton, pathLabel, hostsButton])
+    pathCopyButton.textToCopy = { [weak self] in self?.currentPath }
+    // The copy glyph must sit right BESIDE the path text: the label hugs its content (truncating
+    // when genuinely long) and the flexible spacer absorbs the leftover width.
+    pathLabel.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+    let pathBar = UIStackView(arrangedSubviews: [upButton, pathLabel, pathCopyButton, UIView(), hostsButton])
     pathBar.axis = .horizontal
     pathBar.spacing = 8
     pathBar.alignment = .center
@@ -995,6 +1102,7 @@ final class MoshxploreView: UIView {
     detailView.onBack = { [weak self] in self?.closeDetail() }
     detailView.onDownload = { [weak self] in self?.saveDetailFile() }
     detailView.onEditToggle = { [weak self] in self?.toggleDetailEdit() }
+    detailView.onEditCancel = { [weak self] in self?.cancelDetailEdit() }
 
     errorLabel.font = MoshxploreStyle.font(12, .medium)
     errorLabel.textColor = .moshroomTint
@@ -1121,6 +1229,11 @@ final class MoshxploreView: UIView {
     pathLabel.text = path
     upButton.isEnabled = path != "/"
     upButton.alpha = upButton.isEnabled ? 1 : 0.35
+    pathCopyButton.isHidden = path == "/"   // copying the root path helps nobody
+    // The old folder's rows vanish the INSTANT navigation starts: path and content must never
+    // disagree on screen (a new path over stale rows reads as the wrong folder). Tap → rows
+    // gone → spinner → the new listing lands.
+    entriesStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
     clearDetail()
     spinner.startAnimating()
     errorLabel.isHidden = true
@@ -1161,18 +1274,31 @@ final class MoshxploreView: UIView {
 
   // MARK: Rows
 
+  // A host is a proper CARD, not a thin line: red server glyph, bold alias, the host's optional
+  // gray description underneath, generous padding — the same visual weight as the entry rows.
   private func _hostRow(_ alias: String) -> UIView {
-    var cfg = UIButton.Configuration.plain()
-    cfg.image = UIImage(systemName: "server.rack", withConfiguration: UIImage.SymbolConfiguration(pointSize: 14))
-    cfg.imagePadding = 9
-    var attr = AttributeContainer(); attr.font = MoshxploreStyle.font(15, .medium)
-    cfg.attributedTitle = AttributedString(alias, attributes: attr)
+    var cfg = UIButton.Configuration.filled()
+    cfg.baseBackgroundColor = MoshxploreStyle.row
     cfg.baseForegroundColor = Self.dark
-    cfg.background.backgroundColor = MoshxploreStyle.row
-    cfg.background.cornerRadius = 12
-    cfg.contentInsets = NSDirectionalEdgeInsets(top: 12, leading: 14, bottom: 12, trailing: 14)
+    cfg.background.cornerRadius = 14
+    cfg.background.strokeColor = MoshxploreStyle.stroke
+    cfg.background.strokeWidth = 0.5
+    cfg.image = UIImage(systemName: "server.rack", withConfiguration: UIImage.SymbolConfiguration(pointSize: MoshxploreStyle.inset(16), weight: .semibold))?
+      .withTintColor(.moshroomTint, renderingMode: .alwaysOriginal)
+    cfg.imagePadding = 12
+    var attr = AttributeContainer(); attr.font = MoshxploreStyle.font(16, .semibold)
+    cfg.attributedTitle = AttributedString(alias, attributes: attr)
+    if let description = MoshHosts.withHost(alias)?.hostDescription, !description.isEmpty {
+      var sub = AttributeContainer(); sub.font = MoshxploreStyle.font(13); sub.foregroundColor = MoshxploreStyle.gray
+      cfg.attributedSubtitle = AttributedString(description, attributes: sub)
+      cfg.titlePadding = 2
+    }
+    cfg.contentInsets = NSDirectionalEdgeInsets(top: MoshxploreStyle.inset(14), leading: MoshxploreStyle.inset(16), bottom: MoshxploreStyle.inset(14), trailing: MoshxploreStyle.inset(16))
 
     let b = UIButton(configuration: cfg)
+    #if targetEnvironment(macCatalyst)
+    b.preferredBehavioralStyle = .pad   // keep OUR card metrics, never the native Mac push-button
+    #endif
     b.contentHorizontalAlignment = .leading
     b.translatesAutoresizingMaskIntoConstraints = false
     b.setContentCompressionResistancePriority(.required, for: .vertical)   // never squashed by the scroll
@@ -1198,7 +1324,7 @@ final class MoshxploreView: UIView {
   private func openDetail(_ entry: MoshxploreEntry) {
     clearDetail()
     detailEntry = entry
-    detailView.configure(name: entry.name, meta: detailMeta(for: entry))
+    detailView.configure(name: entry.name, meta: detailMeta(for: entry), path: childPath(entry.name))
     showStep(detail: true)
     errorLabel.isHidden = true
 
@@ -1211,14 +1337,21 @@ final class MoshxploreView: UIView {
     }
   }
 
+  // Discard the edit and stay on the file: restore the fetched text, back into view mode.
+  // Reached from the header Cancel button and from back-while-editing alike.
+  private func cancelDetailEdit() {
+    guard !savingDetail, detailView.isEditingText, let original = detailTextFile else { return }
+    detailView.showText(original.text, filename: detailEntry?.name ?? "")   // resets edit UI, drops keyboard
+    detailView.setEditAvailable(true)
+    errorLabel.isHidden = true
+  }
+
   private func closeDetail() {
     guard !savingDetail else { return }   // a save is landing — resolve it before navigating
     // In edit mode, back means cancel: restore the fetched text and stay on the file. Deliberate
     // and reversible — never a silent discard-and-navigate on one accidental tap.
-    if detailView.isEditingText, let original = detailTextFile {
-      detailView.showText(original.text, filename: detailEntry?.name ?? "")   // resets edit UI, drops keyboard
-      detailView.setEditAvailable(true)
-      errorLabel.isHidden = true
+    if detailView.isEditingText {
+      cancelDetailEdit()
       return
     }
     let refresh = detailDidSave
@@ -1334,7 +1467,7 @@ final class MoshxploreView: UIView {
             let updated = MoshxploreEntry(name: entry.name, isDirectory: false, isSymlink: entry.isSymlink,
                                           size: UInt64(data.count), modified: Date())
             self.detailEntry = updated
-            self.detailView.configure(name: updated.name, meta: self.detailMeta(for: updated))
+            self.detailView.configure(name: updated.name, meta: self.detailMeta(for: updated), path: self.childPath(updated.name))
             self.detailView.exitEditMode()
           case .failure(let error):
             self.showError(self.message(for: error))
@@ -1497,7 +1630,7 @@ final class MoshxploreView: UIView {
     var parts: [String] = [Self.byteFormatter.string(fromByteCount: Int64(entry.size))]
     if let date = entry.modified { parts.append(Self.dateFormatter.string(from: date)) }
     if entry.isSymlink { parts.append("symlink") }
-    return parts.joined(separator: "  ·  ") + "\n" + childPath(entry.name)
+    return parts.joined(separator: "  ·  ")
   }
 
   private func previewUnavailableMessage(for entry: MoshxploreEntry) -> String {

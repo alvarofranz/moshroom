@@ -116,32 +116,46 @@ final class MoshnectorView: UIView {
 
   required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-  // Rebuild the host list. `aliases` are the saved SSH host aliases.
-  func reload(aliases: [String]) {
+  // Rebuild the host list: one card per saved host — alias plus its optional gray description.
+  func reload(hosts: [(alias: String, description: String)]) {
     rowsStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
-    let empty = aliases.isEmpty
+    let empty = hosts.isEmpty
     emptyLabel.isHidden = !empty
     scroll.isHidden = empty
-    for alias in aliases { rowsStack.addArrangedSubview(_hostRow(alias)) }
+    for host in hosts { rowsStack.addArrangedSubview(_hostRow(host.alias, description: host.description)) }
     // Always start at the first host (a rebuilt scroll can otherwise keep a stale offset).
     scroll.setContentOffset(.zero, animated: false)
   }
 
-  private func _hostRow(_ alias: String) -> UIView {
-    var cfg = UIButton.Configuration.plain()
-    cfg.image = UIImage(systemName: "server.rack", withConfiguration: UIImage.SymbolConfiguration(pointSize: 14, weight: .regular))
-    cfg.imagePadding = 9
-    var attr = AttributeContainer()
-    attr.font = .systemFont(ofSize: 15, weight: .medium)
-    cfg.attributedTitle = AttributedString(alias, attributes: attr)
+  // A host is a proper CARD, not a thin line: red server glyph, bold alias, the optional gray
+  // description underneath, generous padding. The card keeps its fixed light look (this whole
+  // overlay does), so the colours are constants, not semantic.
+  private func _hostRow(_ alias: String, description: String) -> UIView {
+    var cfg = UIButton.Configuration.filled()
+    cfg.baseBackgroundColor = UIColor(white: 0.985, alpha: 1)
     cfg.baseForegroundColor = UIColor(white: 0.12, alpha: 1)
-    cfg.background.backgroundColor = .white
-    cfg.background.cornerRadius = 12
-    cfg.background.strokeColor = UIColor(white: 0.82, alpha: 1)
+    cfg.background.cornerRadius = 14
+    cfg.background.strokeColor = UIColor(white: 0.8, alpha: 1)
     cfg.background.strokeWidth = 0.5
-    cfg.contentInsets = NSDirectionalEdgeInsets(top: 12, leading: 14, bottom: 12, trailing: 14)
+    cfg.image = UIImage(systemName: "server.rack", withConfiguration: UIImage.SymbolConfiguration(pointSize: 16, weight: .semibold))?
+      .withTintColor(.moshroomTint, renderingMode: .alwaysOriginal)
+    cfg.imagePadding = 12
+    var attr = AttributeContainer()
+    attr.font = .systemFont(ofSize: 16, weight: .semibold)
+    cfg.attributedTitle = AttributedString(alias, attributes: attr)
+    if !description.isEmpty {
+      var sub = AttributeContainer()
+      sub.font = .systemFont(ofSize: 13)
+      sub.foregroundColor = UIColor(white: 0.45, alpha: 1)
+      cfg.attributedSubtitle = AttributedString(description, attributes: sub)
+      cfg.titlePadding = 2
+    }
+    cfg.contentInsets = NSDirectionalEdgeInsets(top: 14, leading: 16, bottom: 14, trailing: 16)
 
     let b = UIButton(configuration: cfg)
+    #if targetEnvironment(macCatalyst)
+    b.preferredBehavioralStyle = .pad   // keep OUR card metrics, never the native Mac push-button
+    #endif
     b.contentHorizontalAlignment = .leading
     b.translatesAutoresizingMaskIntoConstraints = false
     // Never let the scroll's shrink-wrap squash a row below its natural height.
@@ -176,7 +190,7 @@ enum Moshnector {
         guard let sc,
               let card = sc.view.subviews.compactMap({ $0 as? MoshnectorView }).first,
               !card.isHidden else { return }
-        card.reload(aliases: sc.moshroomSavedHostAliases)
+        card.reload(hosts: sc.moshroomSavedHostCards)
       }
     }
 
@@ -210,10 +224,18 @@ extension SpaceController {
     }
   }
 
+  // The card rows also show each host's optional gray description.
+  var moshroomSavedHostCards: [(alias: String, description: String)] {
+    MoshHosts.allHosts().compactMap { (host: MoshHosts) -> (String, String)? in
+      guard let alias = host.host as String?, !alias.isEmpty else { return nil }
+      return (alias, host.hostDescription ?? "")
+    }
+  }
+
   // Show the quick-connect card for the current (idle) terminal, refreshing the host list.
   func showMoshnector() {
     guard let card = view.subviews.compactMap({ $0 as? MoshnectorView }).first else { return }
-    card.reload(aliases: moshroomSavedHostAliases)
+    card.reload(hosts: moshroomSavedHostCards)
     card.isHidden = false
     view.bringSubviewToFront(card)
   }

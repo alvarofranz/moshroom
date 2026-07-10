@@ -69,6 +69,7 @@ static UICKeyChainStore *__get_keychain() {
   _moshPortEnd = [coder decodeObjectOfClasses:numbers forKey:@"moshPortEnd"];
   _moshStartup = [coder decodeObjectOfClasses:strings forKey:@"moshStartup"];
   _commandOnConnect = [coder decodeObjectOfClasses:strings forKey:@"commandOnConnect"];
+  _hostDescription = [coder decodeObjectOfClasses:strings forKey:@"hostDescription"];
   _prediction = [coder decodeObjectOfClasses:numbers forKey:@"prediction"];
   _proxyCmd = [coder decodeObjectOfClasses:strings forKey:@"proxyCmd"];
   _proxyJump = [coder decodeObjectOfClasses:strings forKey:@"proxyJump"];
@@ -94,6 +95,7 @@ static UICKeyChainStore *__get_keychain() {
   [encoder encodeObject:_moshPortEnd forKey:@"moshPortEnd"];
   [encoder encodeObject:_moshStartup forKey:@"moshStartup"];
   [encoder encodeObject:_commandOnConnect forKey:@"commandOnConnect"];
+  [encoder encodeObject:_hostDescription forKey:@"hostDescription"];
   [encoder encodeObject:_prediction forKey:@"prediction"];
   [encoder encodeObject:_proxyCmd forKey:@"proxyCmd"];
   [encoder encodeObject:_proxyJump forKey:@"proxyJump"];
@@ -209,6 +211,7 @@ sshConfigAttachment:(NSString *)sshConfigAttachment
            moshPortRange:(NSString *)moshPortRange
               startUpCmd:(NSString *)startUpCmd
          commandOnConnect:(NSString *)commandOnConnect
+         hostDescription:(NSString *)hostDescription
               prediction:(enum MoshMoshPrediction)prediction
                 proxyCmd:(NSString *)proxyCmd
                proxyJump:(NSString *)proxyJump
@@ -277,6 +280,7 @@ sshConfigAttachment:(NSString *)sshConfigAttachment
   }
   // Applies to both a freshly-created and an edited host (not part of initWithAlias:).
   bkHost.commandOnConnect = commandOnConnect;
+  bkHost.hostDescription = hostDescription;
   bkHost.lastModified = [NSDate date];
   if (![MoshHosts saveHosts]) {
     return nil;

@@ -63,6 +63,8 @@ enum MoshAgentForward {
 // "cd dev && claude". Independent of moshStartup (screen -r / tmux attach); it runs *inside* whatever
 // session comes up.
 @property (nonatomic, strong) NSString *commandOnConnect;
+// Optional free-text one-liner shown in gray next to the alias (e.g. "a demo host for apple reviews").
+@property (nonatomic, strong) NSString *hostDescription;
 @property (nonatomic, strong) NSNumber *prediction;
 @property (nonatomic, strong) NSString *proxyCmd;
 @property (nonatomic, strong) NSString *proxyJump;
@@ -90,6 +92,7 @@ enum MoshAgentForward {
            moshPortRange:(NSString *)moshPortRange
               startUpCmd:(NSString *)startUpCmd
          commandOnConnect:(NSString *)commandOnConnect
+         hostDescription:(NSString *)hostDescription
               prediction:(enum MoshMoshPrediction)prediction
                 proxyCmd:(NSString *)proxyCmd
                proxyJump:(NSString *)proxyJump

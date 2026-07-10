@@ -27,10 +27,12 @@ fileprivate struct HostCard: Equatable {
   let host: MoshHosts
   let alias: String
   let hostName: String
+  let hostDescription: String
   init(host: MoshHosts) {
     self.host = host
     self.alias = host.host
     self.hostName = host.hostName
+    self.hostDescription = host.hostDescription ?? ""
   }
 }
 
@@ -44,6 +46,11 @@ struct HostRow: View {
       content: {
         HStack {
           Text(card.alias)
+          if !card.hostDescription.isEmpty {
+            Text(card.hostDescription)
+              .font(.system(.subheadline)).foregroundColor(.secondary)
+              .lineLimit(1)
+          }
           Spacer()
           Text(card.hostName)
             .font(.system(.subheadline)).foregroundColor(.secondary)

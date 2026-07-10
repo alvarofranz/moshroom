@@ -268,6 +268,7 @@ struct HostView: View {
   @State private var _moshExperimentalIP: MoshMoshExperimentalIP = MoshMoshExperimentalIPNone
   @State private var _moshCommand: String = ""
   @State private var _commandOnConnect: String = ""
+  @State private var _hostDescription: String = ""
   @State private var _loaded = false
   @State private var _enabled: Bool = true
 
@@ -317,7 +318,8 @@ struct HostView: View {
         header: Text(""),
         footer: Text(verbatim: _usageHint())
       ) {
-        Field("Alias", _aliasNoSpaces, next: "HostName", placeholder: "Required")
+        Field("Alias", _aliasNoSpaces, next: "Description", placeholder: "Required")
+        Field("Description", $_hostDescription, next: "HostName", placeholder: "Optional one-liner, e.g. demo host for reviews")
       }.disabled(!_enabled)
 
       Section(
@@ -446,6 +448,7 @@ struct HostView: View {
     _moshServer  = host.moshServer ?? ""
     _moshCommand = host.moshStartup ?? ""
     _commandOnConnect = host.commandOnConnect ?? ""
+    _hostDescription = host.hostDescription ?? ""
     _agentForwardPrompt.rawValue = UInt32(host.agentForwardPrompt?.intValue ?? 0)
     _agentForwardKeys = host.agentForwardKeys ?? []
     _enabled = true
@@ -506,6 +509,7 @@ struct HostView: View {
       moshPortRange: _moshPort,
       startUpCmd: _moshCommand,
       commandOnConnect: _commandOnConnect,
+      hostDescription: _hostDescription.trimmingCharacters(in: .whitespacesAndNewlines),
       prediction: _moshPrediction,
       proxyCmd: _proxyCmd,
       proxyJump: _proxyJump,

@@ -248,9 +248,10 @@ class SpaceController: UIViewController {
         // floating Moshkeys bars (Tabs/Settings up top, quick-keys below) so terminal text is
         // never hidden behind the round buttons — with extra breathing room up top.
         // On the Mac there ARE no bottom quick-keys (hardware keyboard + tap dispatch cover
-        // everything), so the bottom strip is just a small inset.
+        // everything), so no strip is reserved at all — the terminal runs to the bottom, kept
+        // off the very edge only by LayoutConstraintManager's small uniform margin.
         #if targetEnvironment(macCatalyst)
-        let bottomStrip: CGFloat = 12
+        let bottomStrip: CGFloat = 0
         #else
         let bottomStrip: CGFloat = 56
         #endif

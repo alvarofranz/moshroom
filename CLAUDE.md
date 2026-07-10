@@ -146,7 +146,19 @@ In `Moshroom/`, gated by `Moshroom.scratchOnly` (defined in `Moshkitor.swift`):
   folders descend, files open detail; dirs-first sort; an up button + a switch-host button) →
   **file detail** (`MoshxploreDetailView`: multiline name, size·date·path, an **inline preview**,
   and a bottom action row: **Download**, joined by **Edit** when the text decodes
-  cleanly). **Text detection is universal, not a list**: anything that isn't an image or a
+  cleanly). **Navigation never lies**: entering/leaving a folder clears the
+  old rows in the same runloop the path label changes (spinner while the listing loads — a new
+  path must never sit over stale rows). **Copy-path glyphs** (`MoshxploreCopyButton`, shared
+  control): next to the current-folder path (hidden at "/") and next to the file detail's path —
+  tap → clipboard + a 2 s checkmark flash; works on iOS and Mac alike. **Edit mode has a white
+  Cancel capsule beside Save** (same discard as back-while-editing, via `cancelDetailEdit`).
+  **Host rows are proper cards** (red server glyph, bold alias, the host's optional gray
+  `hostDescription`, generous insets) in BOTH the Moshxplore host picker and the Quick Connect
+  card. ⚠️ **Mac Catalyst trap**: any `UIButton.Configuration` button defaults to the `.mac`
+  behavioral style there — native push-button look, contentInsets and fills IGNORED (this was
+  the gray, padding-less Download button); every configured button sets
+  `preferredBehavioralStyle = .pad`. Button paddings scale with the Text Size preference via
+  `MoshxploreStyle.inset()`. **Text detection is universal, not a list**: anything that isn't an image or a
   known-binary extension (`MoshxplorePreview.binaryExt`) and fits 1 MB is fetched as candidate
   text — jsonl/ndjson, dotfiles, extensionless scripts, whatever — and the bytes decide (NUL
   sniff ⇒ "Binary content" placeholder; strict decode ⇒ editable; else lossy read-only preview).
@@ -194,6 +206,11 @@ In `Moshroom/`, gated by `Moshroom.scratchOnly` (defined in `Moshkitor.swift`):
   `Moshroom/Commands/mosh/mosh.swift`.
 - **ConnectTimeout defaults to 15s** (`SSH/SSHClientConfig.swift`) — a mobile client should report
   a dead host quickly; per-host ssh-config `ConnectTimeout` still overrides.
+- **Hosts carry an optional one-line description** (`MoshHosts.hostDescription`, encoded/decoded
+  like `commandOnConnect`, a `hostDescription:` param on `saveHost:`, field under Alias in
+  `HostView.swift`): shown in gray next to the alias in the Settings hosts list and as the
+  subtitle line of the host cards (Quick Connect + Moshxplore host picker). E.g.
+  "a demo host for apple reviews".
 - **Host aliases can never contain whitespace**: the alias field in
   `Settings/ViewControllers/MoshHosts/HostView.swift` hyphenates spaces live as you type (pasted
   text included), and `_validate()` returns Bool — **Save is blocked** when validation fails (it
@@ -205,6 +222,9 @@ In `Moshroom/`, gated by `Moshroom.scratchOnly` (defined in `Moshkitor.swift`):
   opens the Moshkitor composer. Zero per-TUI logic — see the `WKWebView.swift` and `term.js` seam
   rows. Verified live on Catalyst against the demo VPS (bash, vim `mouse=a`, opencode); iOS builds
   green, on-device verification pending.
+- **`exit` resets the tab to its fresh-start look**: returning to the local prompt with a
+  connection recorded on the tab wipes the dead connect transcript (the `clear` builtin's reset
+  sequence via `TermView.write`) and brings Quick Connect back (`showMoshnectorIfIdle`).
 
 ### Big screens / iPad (incl. "My Mac (Designed for iPad)")
 
@@ -217,8 +237,9 @@ centered cards; close is the system ✕ / chevron + Esc). Only Quick Connect and
 over the terminal — **and the bottom quick-keys cluster (⌃/123/dpad/abc/⏎ + compose) is iOS/iPad
 ONLY**: on the Mac the hardware keyboard covers all of it (arrows/Esc/ctrl straight through, typing
 opens the composer via the probe, tap on the input line opens it too), so `Moshkeys.install` skips
-the whole bottom cluster there and the bottom strip shrinks to 12pt (the top Tabs/Moshxplore/
-Settings chips stay). The iOS letters pad is the FULL alphabet, alphabetical, six columns. Moshxplore
+the whole bottom cluster there and NO bottom strip is reserved at all (the terminal runs to the
+bottom, kept off the edge only by LayoutConstraintManager's 6pt uniform margin; the top
+Tabs/Moshxplore/Settings chips stay). The iOS letters pad is the FULL alphabet, alphabetical, six columns. Moshxplore
 uses **adaptive semantic colors** (`MoshxploreStyle`), lists run the full height, the detail viewer
 bleeds edge-to-edge, images render centered at max 60% of the viewer per dimension, and the
 explorer's bottom rides `keyboardLayoutGuide`. The Quick Connect card keeps its fixed light card
@@ -428,6 +449,47 @@ On the Mac (Designed for iPad) it's simpler: the container lives at
 `Documents/moshdbg.txt` directly. `idevicescreenshot -n -u <udid>` (libimobiledevice over network)
 is a fallback for *visual* checks on-device, but needs the dev image; `idevice_id -n` lists the
 network UDID.
+
+## Autonomous UI testing on the Mac (Catalyst) — the proven loop
+
+Used live 2026-07-10 for the tap dispatch, the selection painter, Moshxplore and the quick-keys
+work. The whole loop needs Accessibility + Screen Recording permission for the host terminal
+(both already granted on this Mac) and NO simulator (none exists by design):
+
+1. **Build + launch**: `xcodebuild -scheme Moshroom -destination 'platform=macOS,variant=Mac Catalyst' build`
+   (ALWAYS from the repo root — a stray `cd` builds the wrong dir and you'll test a stale binary),
+   then `open ~/Library/Developer/Xcode/DerivedData/Moshroom-*/Build/Products/Debug-maccatalyst/Moshroom.app`.
+   Kill first: `osascript -e 'quit app "Moshroom"'; pkill -9 -f Moshroom.app`.
+2. **Window id** (for capture + coordinates): CGWindowList via a tiny `swift` script filtering
+   `kCGWindowOwnerName == "Moshroom"`, layer 0, width 1024 — returns id + bounds; windows on
+   another Space report `onscreen=false` (bring the app forward with `open` again). Beware
+   auxiliary Moshroom windows (tooltips, 500×500 helpers) — filter by size.
+3. **Screenshots**: `screencapture -x -l<windowID> out.png` (works occluded, includes shadow).
+   Coordinate math: the capture is 2× retina with a shadow inset — with the window at
+   (208,56,1024×768) the mapping is `screen_pt = capture_px/2 + (151.5, 18)`. Verify against an
+   AX-known button once per session before trusting it.
+4. **Synthetic input**: CGEvent one-file swift tools (compile with `swiftc -O`) — click
+   (move+down+up, clickState for dblclick), drag (down, ~12 interpolated `leftMouseDragged`
+   steps, up), scroll wheel (`CGEvent(scrollWheelEvent2Source:)`, line units). Keystrokes via
+   System Events (`keystroke "text"`, `key code 53` = Esc, `keystroke return using control down`
+   = the composer's send). ALWAYS `set frontmost of process "Moshroom" to true` immediately
+   before clicking — a click at stale coordinates lands in whatever app the USER left on top
+   (it happened: a click hit their Terminal). If the user is actively using the Mac, STOP
+   clicking entirely.
+5. **Coordinates**: prefer the AX tree (`System Events → process "Moshroom" → entire contents` /
+   recursive dumps give positions in SCREEN points directly); Moshroom's custom rows often carry
+   no AX labels, so fall back to screenshot geometry via the mapping above.
+6. **Assert by PIXELS, not vibes**: PIL histograms over the region under test
+   (`Counter` of `img.getpixel`) — e.g. selection red = `(46,19,17)` under the old ::selection,
+   `(132,53,53)` under the overlay painter; the dead-box regression = `(13,13,13)` +
+   gray `(192,…)` glyphs. Verify clipboard with `pbpaste`, frontmost app with System Events.
+7. **In-app logs when pixels aren't enough**: temporary `MoshDbg()` file-append to the app
+   container's `Documents/moshdbg.txt` (`~/Library/Containers/<UUID>/Data/Documents/`, find the
+   UUID once via `find`), readable live from the CLI. STRIP before shipping — and NEVER trust a
+   fix verified only on an instrumented build: the logging latency itself once masked a real
+   race (the selection dead-box "heal").
+8. **Remote fixture**: the `awesomehost` demo VPS (banner says so; `opencode` and `vi` installed,
+   box resets daily). Careful with sshd PerSourcePenalties — connect once, don't probe.
 
 ## Recommended next (do WITH device testing)
 
