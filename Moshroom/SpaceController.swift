@@ -153,6 +153,19 @@ class SpaceController: UIViewController {
       showMoshnectorIfIdle()
     }
   }
+
+  // Every full-screen Moshroom modal presents as .overFullScreen (the terminal must STAY in the
+  // window — see openMoshkitor), which also means viewDidAppear does NOT re-fire when a modal
+  // dismisses. Restore what it owns here instead: first responder for hardware keys, and the
+  // quick-connect reveal. (Idempotent, so incidental dismissals — alerts, menus — are harmless.)
+  override func dismiss(animated flag: Bool, completion: (() -> Void)? = nil) {
+    super.dismiss(animated: flag) { [weak self] in
+      completion?()
+      guard let self, Moshroom.scratchOnly else { return }
+      self.becomeFirstResponder()
+      self.showMoshnectorIfIdle()
+    }
+  }
   
   private func setupOverlayConstraints() {
     // Overlay positioning to wrap safe areas and keyboard.
@@ -234,13 +247,20 @@ class SpaceController: UIViewController {
         // Moshroom: the terminal fills the safe area, reserving a strip top and bottom for the
         // floating Moshkeys bars (Tabs/Settings up top, quick-keys below) so terminal text is
         // never hidden behind the round buttons — with extra breathing room up top.
+        // On the Mac there ARE no bottom quick-keys (hardware keyboard + tap dispatch cover
+        // everything), so the bottom strip is just a small inset.
+        #if targetEnvironment(macCatalyst)
+        let bottomStrip: CGFloat = 12
+        #else
+        let bottomStrip: CGFloat = 56
+        #endif
         v.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(v)
         NSLayoutConstraint.activate([
           v.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 76),
           v.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
           v.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
-          v.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -56),
+          v.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -bottomStrip),
         ])
       } else {
         v.autoresizingMask = [.flexibleWidth, .flexibleHeight]
@@ -311,6 +331,12 @@ class SpaceController: UIViewController {
     nc.addObserver(self, selector: #selector(_moshnectorPromptReady),
                    name: NSNotification.Name("MoshroomPromptReadyNotification"), object: nil)
 
+    // Moshroom: a tap on the program's input line (the cursor row — posted by the terminal tap
+    // dispatch with the tapped web view) is a typing intent: open the composer, exactly like
+    // the compose key.
+    nc.addObserver(self, selector: #selector(_terminalInputTapped(_:)),
+                   name: NSNotification.Name(MoshroomTerminalInputTapNotification), object: nil)
+
     nc.addObserver(self, selector: #selector(_UISceneDidEnterBackgroundNotification(_:)),
                    name: UIScene.didEnterBackgroundNotification, object: nil)
     
@@ -319,6 +345,18 @@ class SpaceController: UIViewController {
 
   }
                    
+  @objc func _terminalInputTapped(_ n: Notification) {
+    // Only the visible terminal of THIS space may compose (the web-view identity check also
+    // disambiguates multi-window iPad).
+    guard let webView = n.object as? UIView,
+          webView === currentDevice?.view?.webView,
+          view.window != nil
+    else {
+      return
+    }
+    openMoshkitor()
+  }
+
   @objc func _UISceneDidEnterBackgroundNotification(_ n: Notification) {
     guard let scene = n.object as? UIWindowScene,
           view.window?.windowScene === scene
@@ -814,7 +852,8 @@ extension SpaceController {
       let navCtrl = UINavigationController()
       navCtrl.navigationBar.prefersLargeTitles = true
       // Settings takes the full screen on every device, matching the composer — use the canvas.
-      navCtrl.modalPresentationStyle = .fullScreen
+      // .overFullScreen keeps the terminal in the window (see openMoshkitor).
+      navCtrl.modalPresentationStyle = .overFullScreen
       let s = SettingsHostingController.createSettings(nav: navCtrl, onDismiss: {
         [weak self] in self?.focusOnShellAction()
       })

@@ -976,8 +976,9 @@ final class MoshkitorSnipEditor: UIViewController {
 // MARK: - Opening Moshkitor
 
 extension SpaceController {
-  // Opened by the Moshkeys compose button, or by the hardware keyboard once typing exceeds
-  // a single probe keystroke. A plain terminal tap is left untouched (select/copy works).
+  // Opened by the Moshkeys compose button, by the hardware keyboard once typing exceeds a
+  // single probe keystroke, or by a tap on the terminal's input line (the cursor row — see
+  // the tap dispatch in WKWebView.swift/term.js). Long-press select/copy is untouched.
   func openMoshkitor(seed: String = "") {
     dismissMoshnector()
     view.subviews.compactMap({ $0 as? MoshkeysBar }).first?.closeIfOpen()
@@ -992,7 +993,11 @@ extension SpaceController {
     let nav = UINavigationController(rootViewController: composer)
     // The composer owns the whole screen, on every device — writing to the agent is the main
     // event, and a sheet (iPhone) or centered card (iPad) wastes canvas. Close is the ✕ up top.
-    nav.modalPresentationStyle = .fullScreen
+    // .overFullScreen (NOT .fullScreen): the covered terminal must STAY in the window — pulling
+    // the web view out and back re-latches WebKit's selection painting into a dead near-black
+    // box that no responder dance reliably heals (reproduced live 2026-07-10). Same look, and
+    // SpaceController's dismiss override restores what viewDidAppear no longer re-fires for.
+    nav.modalPresentationStyle = .overFullScreen
     // When the hardware keyboard opened it (seed present), skip the present animation so the editor
     // is on screen and first responder immediately — the ~0.3s slide otherwise leaves a window where
     // the next keystroke lands with no responder and Mac Catalyst beeps (and drops the key).

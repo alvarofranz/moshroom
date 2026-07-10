@@ -71,12 +71,16 @@ class UIScrollViewWithoutHitTest: UIScrollView {
   }
 }
 
+// A tap on the terminal input line (the cursor row) is a typing intent — SpaceController
+// observes this and opens the Moshkitor composer for the tapped web view.
+let MoshroomTerminalInputTapNotification = "MoshroomTerminalInputTapNotification"
+
 /**
  Gestures:
 
- - 1 finger tap - reports click
- - 2 finger pan - reports mouse wheel
- - 3 pinch - zoom
+ - 1 finger tap - universal tap dispatch (term_tapAt: URL open / TUI click report / composer)
+ - 1 finger long-press - select word → Copy
+ - pan - terminal scroll (touch); on Mac Catalyst a left-drag is live text selection instead
  */
 
 @objc class WKWebViewGesturesInteraction: NSObject, UIInteraction {
@@ -87,6 +91,7 @@ class UIScrollViewWithoutHitTest: UIScrollView {
   private let _jsScrollerPath: String
   private let _handlerName: String
   private let _longPressRecognizer = UILongPressGestureRecognizer()
+  private let _tapRecognizer = UITapGestureRecognizer()
   #if targetEnvironment(macCatalyst)
   private let _mouseSelectRecognizer = UIPanGestureRecognizer()
   #endif
@@ -116,14 +121,16 @@ class UIScrollViewWithoutHitTest: UIScrollView {
   }
   
   var allRecognizers:[UIGestureRecognizer] {
-    // Moshroom: the only custom gesture is long-press (select word → Copy); the rest is the
-    // two scroll-view pans that drive terminal scroll. Every other gesture was removed.
+    // Moshroom: two custom gestures — long-press (select word → Copy) and single tap (the
+    // universal tap dispatch: OSC 8 / URL open, mouse-report click to the TUI, input-row →
+    // composer; see term_tapAt) — plus the two scroll-view pans that drive terminal scroll.
     // On the Mac a pan translates the mouse drag into a live text selection (see
     // _onMouseSelectDrag) — WebKit-on-Catalyst never turns click-drags into WebCore drag
     // selection by itself (only dblclick word-select comes for free).
     #if targetEnvironment(macCatalyst)
     return [
       _longPressRecognizer,
+      _tapRecognizer,
       _mouseSelectRecognizer,
       _scrollView.panGestureRecognizer,
       _termScrollView.panGestureRecognizer,
@@ -131,6 +138,7 @@ class UIScrollViewWithoutHitTest: UIScrollView {
     #else
     return [
       _longPressRecognizer,
+      _tapRecognizer,
       _scrollView.panGestureRecognizer,
       _termScrollView.panGestureRecognizer,
     ]
@@ -216,6 +224,16 @@ class UIScrollViewWithoutHitTest: UIScrollView {
     _longPressRecognizer.addTarget(self, action: #selector(_onLongPress(_:)))
     _longPressRecognizer.isEnabled = true   // Moshroom: long-press = select word → Copy
 
+    // Moshroom: single tap = the universal tap dispatch (term_tapAt). It must observe, never
+    // own, the touch stream — cancelsTouchesInView would steal the events WebKit needs for its
+    // native behaviours (Mac dblclick word-select, selection dismissal), and the selection /
+    // scroll guards live in _onTap instead.
+    _tapRecognizer.numberOfTapsRequired = 1
+    _tapRecognizer.numberOfTouchesRequired = 1
+    _tapRecognizer.cancelsTouchesInView = false
+    _tapRecognizer.delegate = self
+    _tapRecognizer.addTarget(self, action: #selector(_onTap(_:)))
+
     #if targetEnvironment(macCatalyst)
     // On the Mac a left-button DRAG selects text, like any terminal. The two scroll pans exist
     // for touch scrolling — on Catalyst they'd claim the click-drag — while actual Mac scrolling
@@ -256,6 +274,28 @@ class UIScrollViewWithoutHitTest: UIScrollView {
   }
   #endif
   
+  // Moshroom: a single tap keeps the TUI interactive without giving up the transcript model —
+  // term_tapAt (term.js) dispatches it through generic terminal mechanisms only: an OSC 8 or
+  // plain-text URL opens on the device, a program that asked for mouse events (DECSET 1000/…)
+  // gets a standard click report at the cell, and a tap on the cursor row (the program's input
+  // line) opens the Moshkitor composer. A tap that lands mid-scroll is "stop the scroll", and a
+  // tap while a selection is up is "dismiss it" — neither may click, open, or compose.
+  @objc func _onTap(_ recognizer: UITapGestureRecognizer) {
+    guard focused, recognizer.state == .ended else { return }
+    guard !hasSelection,
+          !_scrollView.isDecelerating, !_termScrollView.isDecelerating else { return }
+    let point = recognizer.location(in: recognizer.view)
+    _wkWebView?.evaluateJavaScript("term_tapAt(\(point.x), \(point.y));") { [weak self] result, _ in
+      guard
+        let webView = self?._wkWebView,
+        let response = result as? [String: Any],
+        response["input"] as? Bool == true
+      else { return }
+      NotificationCenter.default.post(
+        name: NSNotification.Name(MoshroomTerminalInputTapNotification), object: webView)
+    }
+  }
+
   @objc func _onLongPress(_ recognizer: UILongPressGestureRecognizer) {
     guard focused, recognizer.state == .began else {
       return

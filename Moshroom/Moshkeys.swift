@@ -25,6 +25,11 @@ import UIKit
 
 enum Moshkeys {
   static func install(in sc: SpaceController) {
+    // The bottom quick-keys are a TOUCH aid — on the Mac the hardware keyboard covers every one
+    // of them (arrows/Esc/ctrl go straight through, typing opens the composer, and a tap on the
+    // terminal's input line opens it too), so the whole bottom cluster simply isn't installed
+    // there. The top bar (Tabs / Moshxplore / Settings) is navigation chrome and stays.
+    #if !targetEnvironment(macCatalyst)
     // Pad cluster — bottom-left.
     let bar = MoshkeysBar(spaceController: sc)
     bar.translatesAutoresizingMaskIntoConstraints = false
@@ -46,6 +51,7 @@ enum Moshkeys {
     arrowEnter.isHidden = true
     arrowEnter.addAction(UIAction { [weak bar] _ in bar?.arrowModeEnter() }, for: .touchUpInside)
     sc.view.addSubview(arrowEnter)
+    #endif
 
     // Top bar — mirrors the bottom one (no background, just round buttons): Tabs on the
     // left, Settings on the right.
@@ -68,6 +74,19 @@ enum Moshkeys {
     xplore.addAction(UIAction { [weak sc] _ in sc?.openMoshxplore() }, for: .touchUpInside)
     sc.view.addSubview(xplore)
 
+    NSLayoutConstraint.activate([
+      tabs.leadingAnchor.constraint(equalTo: sc.view.safeAreaLayoutGuide.leadingAnchor, constant: 14),
+      tabs.topAnchor.constraint(equalTo: sc.view.safeAreaLayoutGuide.topAnchor, constant: 10),
+      settings.trailingAnchor.constraint(equalTo: sc.view.safeAreaLayoutGuide.trailingAnchor, constant: -14),
+      settings.topAnchor.constraint(equalTo: sc.view.safeAreaLayoutGuide.topAnchor, constant: 10),
+      xplore.trailingAnchor.constraint(equalTo: settings.leadingAnchor, constant: -10),
+      xplore.centerYAnchor.constraint(equalTo: settings.centerYAnchor),
+    ])
+    sc.view.bringSubviewToFront(tabs)
+    sc.view.bringSubviewToFront(settings)
+    sc.view.bringSubviewToFront(xplore)
+
+    #if !targetEnvironment(macCatalyst)
     bar.chrome = [compose, tabs, settings, xplore, arrowEnter]   // kept tappable above the dismiss overlay
     bar.composeButton = compose                      // stepped aside while the ↕ arrow mode is active
     bar.arrowEnterButton = arrowEnter                // takes the compose spot during arrow mode
@@ -79,19 +98,11 @@ enum Moshkeys {
       compose.bottomAnchor.constraint(equalTo: sc.view.safeAreaLayoutGuide.bottomAnchor, constant: -10),
       arrowEnter.trailingAnchor.constraint(equalTo: sc.view.safeAreaLayoutGuide.trailingAnchor, constant: -14),
       arrowEnter.bottomAnchor.constraint(equalTo: sc.view.safeAreaLayoutGuide.bottomAnchor, constant: -10),
-      tabs.leadingAnchor.constraint(equalTo: sc.view.safeAreaLayoutGuide.leadingAnchor, constant: 14),
-      tabs.topAnchor.constraint(equalTo: sc.view.safeAreaLayoutGuide.topAnchor, constant: 10),
-      settings.trailingAnchor.constraint(equalTo: sc.view.safeAreaLayoutGuide.trailingAnchor, constant: -14),
-      settings.topAnchor.constraint(equalTo: sc.view.safeAreaLayoutGuide.topAnchor, constant: 10),
-      xplore.trailingAnchor.constraint(equalTo: settings.leadingAnchor, constant: -10),
-      xplore.centerYAnchor.constraint(equalTo: settings.centerYAnchor),
     ])
     sc.view.bringSubviewToFront(bar)
     sc.view.bringSubviewToFront(compose)
-    sc.view.bringSubviewToFront(tabs)
-    sc.view.bringSubviewToFront(settings)
-    sc.view.bringSubviewToFront(xplore)
     sc.view.bringSubviewToFront(arrowEnter)
+    #endif
   }
 }
 
@@ -356,11 +367,17 @@ final class MoshkeysBar: UIStackView {
         [("5", "5"), ("6", "6"), ("7", "7"), ("8", "8"), ("9", "9")],
       ]
     case .letters:
+      // The FULL alphabet, alphabetical, six columns — a quick-keys pad that is missing common
+      // letters forces a round-trip through the composer for a one-letter TUI answer. The last
+      // row (y z) centers itself (rowsStack.alignment == .center). 6×46pt keys + spacing =
+      // 340pt wide, inside every iPhone. (iOS-only by construction: the bottom quick-keys
+      // cluster is not installed on the Mac.)
       return [
-        [("y", "y"), ("n", "n"), ("a", "a"), ("c", "c")],
-        [("d", "d"), ("e", "e"), ("q", "q"), ("s", "s")],
-        [("p", "p"), ("r", "r"), ("o", "o"), ("k", "k")],
-        [("l", "l"), ("v", "v"), ("h", "h"), ("m", "m")],
+        [("a", "a"), ("b", "b"), ("c", "c"), ("d", "d"), ("e", "e"), ("f", "f")],
+        [("g", "g"), ("h", "h"), ("i", "i"), ("j", "j"), ("k", "k"), ("l", "l")],
+        [("m", "m"), ("n", "n"), ("o", "o"), ("p", "p"), ("q", "q"), ("r", "r")],
+        [("s", "s"), ("t", "t"), ("u", "u"), ("v", "v"), ("w", "w"), ("x", "x")],
+        [("y", "y"), ("z", "z")],
       ]
     case .special:
       return [
@@ -626,7 +643,8 @@ extension SpaceController {
     let ctrl = MoshtabsController()
     ctrl.space = self
     let nav = UINavigationController(rootViewController: ctrl)
-    nav.modalPresentationStyle = .fullScreen
+    // .overFullScreen keeps the terminal in the window (see openMoshkitor).
+    nav.modalPresentationStyle = .overFullScreen
     present(nav, animated: true)
   }
 }

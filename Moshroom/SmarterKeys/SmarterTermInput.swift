@@ -203,6 +203,11 @@ import Combine
     // becomes key again (Cmd-Tab away and back), and from then on selections paint through the
     // UIKit overlay — dull black, or accent blue — instead of the page's red CSS. Undo it at
     // every selection so the page stays the painter.
+    //
+    // (A related trap, fixed at the ROOT elsewhere: presenting a `.fullScreen` modal pulls this
+    // web view out of the window, and on re-add WebKit latches selection painting into a dead
+    // near-black box that NO responder dance reliably heals — which is why every full-screen
+    // Moshroom modal presents as `.overFullScreen` instead, keeping the terminal in the window.)
     deactivateSelectionUI()
     #else
     guard let cv = contentView(), !cv.isFirstResponder else { return }

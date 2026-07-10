@@ -21,7 +21,16 @@ hterm.Terminal.prototype.onFocusChange__ = function(focused) {
 // Do not show resize notifications. We show ours
 hterm.Terminal.prototype.overlaySize = function() {};
 
-hterm.Terminal.prototype.onMouse_ = function() {};
+// Real DOM mouse events don't drive the terminal — clicks/moves are owned by the native
+// gesture layer (tap dispatch, drag-select) and fed back in synthetically. The one exception
+// is `wheel`: hterm routes the scrollport's DOM wheel events (Mac trackpad/mouse — a touch
+// never generates them here) through onMouse_, and that path is what gives TUIs standard
+// wheel reports and alt-screen alternate-scroll arrows. Forward exactly those.
+hterm.Terminal.prototype.onMouse_ = function(e) {
+  if (e.type === 'wheel') {
+    this.onMouse_Moshroom(e);
+  }
+};
 
 // TODO: Remove our patch. htermjs supports cursorBlinkPause_ option now
 // see https://github.com/chromium/hterm/commit/f57d62de8f91f1fc8923fb000aeace041d063f9f

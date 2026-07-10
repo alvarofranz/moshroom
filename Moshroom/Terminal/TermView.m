@@ -438,7 +438,33 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
   } else if ([operation isEqualToString:@"setTitle"]) {
     // The program set its terminal title (OSC 0/2) — remember it for the tab name.
     _oscTitle = data[@"title"];
+  } else if ([operation isEqualToString:@"openLink"]) {
+    [self _openLink:data[@"url"]];
   }
+}
+
+// A tapped/clicked terminal hyperlink (OSC 8 anchor or a URL in the rendered text) opens on the
+// DEVICE. One tap can reach here more than once — on the Mac a real DOM click on an OSC 8 anchor
+// fires alongside the native tap dispatch, and a double-click doubles both — so anything inside
+// a short window collapses into a single open. Links only ever open from a user tap (hterm calls
+// openUrl exclusively from click handlers), and only web/mail schemes qualify: a remote program
+// must not be able to poke tel:, facetime:, or app-custom schemes at the user.
+- (void)_openLink:(NSString *)urlString
+{
+  static NSTimeInterval lastOpen = 0;
+  NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+  if (now - lastOpen < 0.6) {
+    return;
+  }
+
+  NSURL *url = [NSURL URLWithString:urlString ?: @""];
+  NSString *scheme = url.scheme.lowercaseString;
+  if (!scheme || !([scheme isEqualToString:@"http"] || [scheme isEqualToString:@"https"] || [scheme isEqualToString:@"mailto"])) {
+    return;
+  }
+
+  lastOpen = now;
+  [[UIApplication sharedApplication] openURL:url options:@{} completionHandler:nil];
 }
 
 - (void)_onTerminalReady:(NSDictionary *)data

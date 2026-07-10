@@ -48,6 +48,53 @@ hterm.Terminal.prototype.setWindowTitle = function(title) {
   _postMessage('setTitle', {title: title || ''});
 };
 
+// Links open on the DEVICE, never inside the web view: window.open is dead in a WKWebView, and
+// a URL printed by a remote agent is for the user's browser. hterm's OSC 8 anchors bind this
+// function to their click listeners at span-creation time (long after this line runs), so every
+// hyperlink — anchor click or tap dispatch — funnels through the one native `openLink` path,
+// which dedupes the overlapping routes.
+hterm.openUrl = function(url) {
+  _postMessage('openLink', {url});
+};
+
+// ---- Selection painter (both platforms) ------------------------------------------------------
+// The selection highlight is OURS: translucent red rects derived from the live Range's client
+// geometry, in a fixed, non-interactive overlay. On the Mac it is the ONLY red (WebKit's own
+// selection painting is unreliable there — its activity-state latches — so ::selection is
+// transparent and this painter is the single source of truth). On iOS it rides ON TOP of the
+// native selection (which stays: the grab handles and their red tint are UIKit chrome above the
+// page), giving both platforms the same strong red. Repainted on every selectionchange (fires
+// per step of a live drag / handle drag) and on scroll/resize.
+var _moshroomSelOverlay = null;
+
+function _moshroomPaintSelection() {
+  if (!_moshroomSelOverlay) {
+    _moshroomSelOverlay = document.createElement('div');
+    _moshroomSelOverlay.style.cssText =
+      'position:fixed;inset:0;pointer-events:none;z-index:2147483646;';
+    (document.body || document.documentElement).appendChild(_moshroomSelOverlay);
+  }
+  _moshroomSelOverlay.textContent = '';
+  var sel = document.getSelection();
+  if (!sel || sel.rangeCount === 0 || sel.isCollapsed) {
+    return;
+  }
+  var rects = sel.getRangeAt(0).getClientRects();
+  for (var i = 0; i < rects.length; i++) {
+    var r = rects[i];
+    if (r.width <= 0 || r.height <= 0) {
+      continue;
+    }
+    var d = document.createElement('div');
+    d.style.cssText = 'position:fixed;background:rgba(255,82,90,0.45);' +
+      'left:' + r.left + 'px;top:' + r.top + 'px;width:' + r.width + 'px;height:' + r.height + 'px;';
+    _moshroomSelOverlay.appendChild(d);
+  }
+}
+
+document.addEventListener('scroll', _moshroomPaintSelection, true);
+window.addEventListener('resize', _moshroomPaintSelection);
+
 document.addEventListener('selectionchange', function() {
   var current = term_getCurrentSelection();
   // Selection gone (copied, cleaned, or the TUI redrew the rows under it) — drop the
@@ -55,6 +102,7 @@ document.addEventListener('selectionchange', function() {
   if (!current.text) {
     _moshroomSetSelecting(false);
   }
+  _moshroomPaintSelection();
   _postMessage('selectionchange', current);
 });
 
@@ -159,11 +207,17 @@ function term_setup(accessibilityEnabled) {
     var _moshroomSelectRules = _moshroomIsMac
       ? '*{-webkit-user-select:text!important;-webkit-touch-callout:none!important;caret-color:transparent!important;}'
       : '*{-webkit-user-select:none!important;-webkit-touch-callout:none!important;caret-color:transparent!important;}.moshroom-selecting *{-webkit-user-select:text!important;}';
-    // …plus a translucent Moshroom-red selection highlight (on iOS the grab handles follow the
-    // web view's tintColor, also Moshroom red). The :window-inactive variant keeps it red when
-    // WebKit paints the selection while the page is unfocused — the normal state on the Mac,
-    // where the terminal web view deliberately never becomes first responder.
-    var _moshroomSelectionCss = '::selection{background-color:rgba(255,82,90,1)!important;color:inherit!important;}::selection:window-inactive{background-color:rgba(255,82,90,1)!important;color:inherit!important;}';
+    // …plus the Moshroom-red selection highlight. On iOS that's real ::selection CSS (and the
+    // grab handles follow the web view's tintColor, also Moshroom red). On the Mac, ::selection
+    // is made TRANSPARENT instead: WebKit's own selection painting there depends on a volatile
+    // window/responder activity state with at least three observed latch modes (page-red /
+    // UIKit-overlay / dead near-black box — the last one born whenever a selection is created
+    // while the window is still becoming key, and persisting after), so the red is painted by
+    // OUR overlay (see _moshroomPaintSelection), which only depends on the live Range geometry
+    // and never on WebKit's mood.
+    var _moshroomSelectionCss = _moshroomIsMac
+      ? '::selection{background-color:transparent!important;color:inherit!important;}::selection:window-inactive{background-color:transparent!important;color:inherit!important;}'
+      : '::selection{background-color:rgba(255,82,90,1)!important;color:inherit!important;}::selection:window-inactive{background-color:rgba(255,82,90,1)!important;color:inherit!important;}';
     var _moshroomScreen = t.scrollPort_.screen_;
     if (_moshroomScreen) {
       var _moshroomDoc = _moshroomScreen.ownerDocument;
@@ -352,6 +406,161 @@ function term_reportWheelEvent(name, x, y, deltaX, deltaY) {
 // always the Moshroom red.
 function _moshroomSetSelecting(on) {
   document.documentElement.classList.toggle('moshroom-selecting', !!on);
+}
+
+// ---- Universal tap interactivity ------------------------------------------------------------
+// A tap on the terminal is dispatched through GENERIC terminal mechanisms only — nothing is
+// specific to any one TUI: OSC 8 hyperlinks, URLs in the rendered text (hterm's own expansion),
+// standard mouse reporting (DECSET 1000/1002/1006 — any program that asked for mouse events gets
+// a real click report), and the cursor position (the one universal marker of "the program reads
+// input HERE" — every REPL and TUI parks its cursor in the focused text field).
+//
+// Returns {action, input} to the native tap recognizer:
+//   action 'url'   — a link was under the tap; it was already routed to hterm.openUrl
+//          'click' — mouse reporting is on; a left press+release was reported at the cell
+//          'none'  — nothing consumed the tap
+//   input  true    — the tap landed on the cursor row (the program's input line): typing intent,
+//                    native opens the composer. Suppresses the plain-text URL check (a URL the
+//                    user typed into their own input line must not hijack the tap), but not
+//                    OSC 8 (a real anchor is a link wherever it sits).
+function term_tapAt(x, y) {
+  var none = {action: 'none', input: false};
+  if (!t || !t.scrollPort_) {
+    return none;
+  }
+  // An existing selection owns the gesture (a tap dismisses it; a Mac dblclick just made one) —
+  // never probe or clobber it.
+  var sel = document.getSelection();
+  if (sel && sel.toString()) {
+    return none;
+  }
+
+  // 1) OSC 8 hyperlink: hterm renders them as .uri-node spans (title = the target).
+  var el = document.elementFromPoint(x, y);
+  while (el && el.nodeType === 1 && el.tagName !== 'X-SCREEN') {
+    if (el.classList && el.classList.contains('uri-node') && el.title) {
+      hterm.openUrl(el.title);
+      return {action: 'url', input: false};
+    }
+    el = el.parentElement;
+  }
+
+  var input = _moshroomTapOnCursorRow(y);
+
+  // 2) A plain URL in the rendered text — works for any program that ever printed one.
+  if (!input) {
+    var url = _moshroomUrlAtPoint(x, y);
+    if (url) {
+      hterm.openUrl(url);
+      return {action: 'url', input: false};
+    }
+  }
+
+  // 3) The program asked for mouse events: report a real left click at the cell, through the
+  //    exact pipeline the wheel path already uses (hterm's VT encodes SGR/X10 and sends it).
+  if (t.vt && t.vt.mouseReport !== t.vt.MOUSE_REPORT_DISABLED && !t.defeatMouseReports_) {
+    _moshroomReportClick(x, y);
+    return {action: 'click', input: input};
+  }
+
+  return {action: 'none', input: input};
+}
+
+// The tap row vs the cursor row, both in viewport terms — the scrollback offset math keeps this
+// correct while scrolled (a tap on history text is never "the input line").
+function _moshroomTapOnCursorRow(y) {
+  if (!t.options_.cursorVisible) {
+    return false;
+  }
+  var vrow = Math.floor((y - t.scrollPort_.visibleRowTopMargin) / t.scrollPort_.characterSize.height);
+  var cursorVRow = t.scrollbackRows_.length + t.screen_.cursorPosition.row - t.scrollPort_.getTopRowIndex();
+  return vrow === cursorVRow;
+}
+
+// Find a URL in the rendered text under (x, y). Pure DOM read — no selection is created, no
+// hterm internals touched (this hterm build models screen rows as records, so its own
+// expandSelectionForUrl machinery cannot run against a DOM caret). The tapped x-row's text is
+// assembled (joined with its wrapped continuation rows via the line-overflow attribute), the
+// tap's character offset located, and a URL match containing that offset wins. Only an EXPLICIT
+// link counts: a scheme (https://, mailto:) or a www. host — a tap must never invent links out
+// of random words.
+var _moshroomUrlRegex = /(?:[a-z][a-z0-9+.-]*:\/\/|www\.|mailto:)[^\s\[\](){}<>"'`]+/gi;
+
+function _moshroomUrlAtPoint(x, y) {
+  var range = document.caretRangeFromPoint(x, y);
+  if (!range || range.startContainer.nodeType !== Node.TEXT_NODE) {
+    return null;
+  }
+  var node = range.startContainer;
+  var row = node.parentElement;
+  while (row && row.nodeName !== 'X-ROW') {
+    row = row.parentElement;
+  }
+  if (!row) {
+    return null;
+  }
+
+  // The logical line: walk back while the PREVIOUS row overflows into ours, then forward while
+  // the current row overflows into the next — so a URL wrapped across rows is seen whole.
+  var overflows = function(r) { return r && r.hasAttribute && r.hasAttribute('line-overflow'); };
+  var first = row;
+  while (first.previousSibling && overflows(first.previousSibling)) {
+    first = first.previousSibling;
+  }
+  var rows = [first];
+  var last = first;
+  while (overflows(last) && last.nextSibling && last.nextSibling.nodeName === 'X-ROW') {
+    last = last.nextSibling;
+    rows.push(last);
+  }
+
+  // Assemble the line text and locate the tapped character's offset within it.
+  var text = '';
+  var offset = -1;
+  for (var i = 0; i < rows.length; i++) {
+    var walker = document.createTreeWalker(rows[i], NodeFilter.SHOW_TEXT);
+    var n;
+    while ((n = walker.nextNode())) {
+      if (n === node) {
+        offset = text.length + range.startOffset;
+      }
+      text += n.textContent;
+    }
+  }
+  if (offset < 0) {
+    return null;
+  }
+
+  _moshroomUrlRegex.lastIndex = 0;
+  var m;
+  while ((m = _moshroomUrlRegex.exec(text))) {
+    if (offset >= m.index && offset < m.index + m[0].length) {
+      // Trailing punctuation belongs to the prose, not the link.
+      var url = m[0].replace(/[.,;:!?'")\]}>]+$/, '');
+      if (/^www\./i.test(url)) {
+        url = 'https://' + url;
+      }
+      if (url.length > 2048) {
+        return null;
+      }
+      return url;
+    }
+  }
+  return null;
+}
+
+// Synthetic left press+release with the terminal cell stamped on, exactly like the wheel path —
+// t.onMouse is hterm.VT's onTerminalMouse_, which encodes and io.sendString()s the report. This
+// bypasses onMouse_Moshroom's DOM-selection housekeeping (built for real browser events).
+function _moshroomReportClick(x, y) {
+  // Same row math as hterm's own event stamping (clientY minus the scrollport's top margin).
+  var my = y - t.scrollPort_.visibleRowTopMargin;
+  var down = new MouseEvent('mousedown', {clientX: x, clientY: y, button: 0, buttons: 1});
+  _setTermCoordinates(down, x, my);
+  t.onMouse(down);
+  var up = new MouseEvent('mouseup', {clientX: x, clientY: y, button: 0, buttons: 0});
+  _setTermCoordinates(up, x, my);
+  t.onMouse(up);
 }
 
 // Select the whole terminal word under (x, y) — used by the native long-press to offer Copy.

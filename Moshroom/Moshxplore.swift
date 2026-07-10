@@ -1618,7 +1618,8 @@ extension SpaceController {
     ctrl.space = self
     ctrl.preferredHost = currentTerm()?.moshroomConnectedHost
     let nav = UINavigationController(rootViewController: ctrl)
-    nav.modalPresentationStyle = .fullScreen
+    // .overFullScreen keeps the terminal in the window (see openMoshkitor).
+    nav.modalPresentationStyle = .overFullScreen
     present(nav, animated: true)
   }
 
