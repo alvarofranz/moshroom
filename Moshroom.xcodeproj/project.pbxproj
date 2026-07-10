@@ -213,6 +213,7 @@
 		D2BB5E152A1F718300BB0520 /* app-font-regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = D2BB5E132A1F718300BB0520 /* app-font-regular.ttf */; };
 		D2BC514D2355C3AE0034FDD4 /* History.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2BC514C2355C3AE0034FDD4 /* History.swift */; };
 		D2C21F3920FCD7B800F125E0 /* moshroomCommandsDictionary.plist in Resources */ = {isa = PBXBuildFile; fileRef = D2C21F3220FCD6CD00F125E0 /* moshroomCommandsDictionary.plist */; };
+		D2C21F3A20FCD7B800F125E1 /* commandDictionary.plist in Resources */ = {isa = PBXBuildFile; fileRef = D2C21F3320FCD6CD00F125E1 /* commandDictionary.plist */; };
 		D2C24412238E44AB0082C69C /* KeyModifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2C243FA238E44AB0082C69C /* KeyModifier.swift */; };
 		D2C24413238E44AB0082C69C /* KeyConfigPair.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2C243FB238E44AB0082C69C /* KeyConfigPair.swift */; };
 		D2C24414238E44AB0082C69C /* KeyAction.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2C243FC238E44AB0082C69C /* KeyAction.swift */; };
@@ -543,6 +544,7 @@
 		D2BC514C2355C3AE0034FDD4 /* History.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = History.swift; sourceTree = "<group>"; };
 		D2BF5F6B2659522C0070F839 /* Intents.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Intents.framework; path = System/Library/Frameworks/Intents.framework; sourceTree = SDKROOT; };
 		D2C21F3220FCD6CD00F125E0 /* moshroomCommandsDictionary.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = moshroomCommandsDictionary.plist; sourceTree = "<group>"; };
+		D2C21F3320FCD6CD00F125E1 /* commandDictionary.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = commandDictionary.plist; sourceTree = "<group>"; };
 		D2C243FA238E44AB0082C69C /* KeyModifier.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = KeyModifier.swift; sourceTree = "<group>"; };
 		D2C243FB238E44AB0082C69C /* KeyConfigPair.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = KeyConfigPair.swift; sourceTree = "<group>"; };
 		D2C243FC238E44AB0082C69C /* KeyAction.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = KeyAction.swift; sourceTree = "<group>"; };
@@ -727,6 +729,7 @@
 			children = (
 				D2E670112A2DB83200DEC4ED /* AppFont */,
 				D2C21F3220FCD6CD00F125E0 /* moshroomCommandsDictionary.plist */,
+				D2C21F3320FCD6CD00F125E1 /* commandDictionary.plist */,
 				D209465B204D3FC5003C4F72 /* cacert.pem */,
 				D2F30EAC205009CD008C5F35 /* base64js.min.js */,
 				85A34303200A837A009324F1 /* webfontloader.js */,
@@ -1562,6 +1565,7 @@
 				85A34307200A837A009324F1 /* webfontloader.js in Resources */,
 				D2BB5E152A1F718300BB0520 /* app-font-regular.ttf in Resources */,
 				D2C21F3920FCD7B800F125E0 /* moshroomCommandsDictionary.plist in Resources */,
+				D2C21F3A20FCD7B800F125E1 /* commandDictionary.plist in Resources */,
 				D2496F412003941B00E75FE9 /* term.js in Resources */,
 				C94437651D838ABF0096F84E /* Fonts in Resources */,
 				D29392B72004D785001FB2AA /* hterm_all.patches.js in Resources */,

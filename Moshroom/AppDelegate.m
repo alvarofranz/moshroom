@@ -86,6 +86,10 @@ void __setupProcessEnv(void) {
   // launch can starve for seconds — so a host tapped right after launch printed
   // "ssh: command not found". The work is cheap (plist parse + setenv + ssh_init), so run it inline;
   // only the profile-file read (least critical) stays on the background queue.
+  // NOTE: ios_system SEEDS its registry from Resources/commandDictionary.plist (a copy of the
+  // moshroom plist) — initializeCommandList() loads that exact filename from the main bundle and
+  // bails to a nil commandList without it, which turns this addCommandList call into a silent
+  // no-op ("ssh: command not found" for every ios_system-dispatched command).
   addCommandList([[NSBundle mainBundle] pathForResource:@"moshroomCommandsDictionary" ofType:@"plist"]); // Load Moshroom commands into ios_system
   __setupProcessEnv(); // must run after ios_system initializeEnvironment to override its defaults.
   dispatch_async(bgQueue, ^{
