@@ -1,0 +1,43 @@
+{
+  "object": {
+    "pins": [
+      {
+        "package": "Runestone",
+        "repositoryURL": "https://github.com/simonbs/Runestone",
+        "state": {
+          "branch": null,
+          "revision": "592434a103a4d1ab83e14f87ac6eef569dd7a99d",
+          "version": "0.5.2"
+        }
+      },
+      {
+        "package": "SwiftCBOR",
+        "repositoryURL": "https://github.com/unrelentingtech/SwiftCBOR",
+        "state": {
+          "branch": "master",
+          "revision": "fd929a6d8f7651ce0f63fc99397fd5762358cc29",
+          "version": null
+        }
+      },
+      {
+        "package": "TreeSitter",
+        "repositoryURL": "https://github.com/tree-sitter/tree-sitter",
+        "state": {
+          "branch": null,
+          "revision": "98be227227af10cc7a269cb3ffb23686c0610b17",
+          "version": "0.20.9"
+        }
+      },
+      {
+        "package": "TreeSitterLanguages",
+        "repositoryURL": "https://github.com/simonbs/treesitterlanguages",
+        "state": {
+          "branch": null,
+          "revision": "15cf3a9ec3ab95e0d058b7df9f35619123c9e02d",
+          "version": "0.1.10"
+        }
+      }
+    ]
+  },
+  "version": 1
+}

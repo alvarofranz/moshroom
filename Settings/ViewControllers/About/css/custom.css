@@ -1,0 +1,27 @@
+body {
+    background-color: #000000;
+    color: #ffffff;
+}
+
+.section {
+    padding: 8rem 0 7rem;
+    text-align:center;
+}
+
+.description {
+    text-align:left;
+}
+
+.hero {
+    color: #e0333a;
+    width: 100%;
+    padding: 6rem 0 4rem;
+}
+
+.hero h1 {
+    margin: 0;
+    font-size: 4.4rem;
+    font-weight: 300;
+    letter-spacing: 0.4rem;
+    color: #e0333a;
+}
