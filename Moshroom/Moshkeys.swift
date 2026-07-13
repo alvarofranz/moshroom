@@ -86,6 +86,20 @@ enum Moshkeys {
     sc.view.bringSubviewToFront(settings)
     sc.view.bringSubviewToFront(xplore)
 
+    // Tab-switch toast — a small red pill just right of Tabs that names the tab a swipe landed on,
+    // then fades away. Only shown on a completed swipe (SpaceController.didFinishAnimating). It caps
+    // its width against the folder/Settings buttons and truncates a long alias.
+    let toast = MoshroomTabToast()
+    toast.translatesAutoresizingMaskIntoConstraints = false
+    sc.view.addSubview(toast)
+    NSLayoutConstraint.activate([
+      toast.leadingAnchor.constraint(equalTo: tabs.trailingAnchor, constant: 10),
+      toast.centerYAnchor.constraint(equalTo: tabs.centerYAnchor),
+      toast.trailingAnchor.constraint(lessThanOrEqualTo: xplore.leadingAnchor, constant: -8),
+    ])
+    sc.view.bringSubviewToFront(toast)
+    sc.moshroomTabToast = toast
+
     #if !targetEnvironment(macCatalyst)
     bar.chrome = [compose, tabs, settings, xplore, arrowEnter]   // kept tappable above the dismiss overlay
     bar.composeButton = compose                      // stepped aside while the ↕ arrow mode is active
@@ -653,4 +667,28 @@ extension SpaceController {
 // knows which session to rename.
 private final class _TabLongPress: UILongPressGestureRecognizer {
   var key: UUID?
+}
+
+// The red pill that names the tab a swipe just landed on, sitting next to the Tabs button. A padded
+// UILabel (Moshroom red, white text); fades in/out via SpaceController.moshroomShowTabToast. It never
+// takes touches — a tap passes straight through to the terminal underneath.
+final class MoshroomTabToast: UILabel {
+  private let insets = UIEdgeInsets(top: 6, left: 12, bottom: 6, right: 12)
+  override init(frame: CGRect) {
+    super.init(frame: frame)
+    backgroundColor = .moshroomTint
+    textColor = .white
+    font = .systemFont(ofSize: 14, weight: .semibold)
+    layer.cornerRadius = 15
+    clipsToBounds = true
+    lineBreakMode = .byTruncatingTail
+    isUserInteractionEnabled = false
+    alpha = 0
+  }
+  required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+  override func drawText(in rect: CGRect) { super.drawText(in: rect.inset(by: insets)) }
+  override var intrinsicContentSize: CGSize {
+    let s = super.intrinsicContentSize
+    return CGSize(width: s.width + insets.left + insets.right, height: s.height + insets.top + insets.bottom)
+  }
 }

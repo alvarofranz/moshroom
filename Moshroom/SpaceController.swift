@@ -48,6 +48,9 @@ class SpaceController: UIViewController {
   // The newest switch requested while a page transition was in flight — replayed (unanimated)
   // when the live transition ends, so a racing tap can never corrupt the page VC. See _installTerm.
   private var _pendingMoveKey: UUID? = nil
+  // The red tab-switch toast next to the Tabs button (created in Moshkeys.install) + its hide timer.
+  var moshroomTabToast: MoshroomTabToast?
+  private var _tabToastHide: DispatchWorkItem?
   var stuckKeyCode: KeyCode? = nil
 
   private var _snippetsVC: SnippetsViewController? = nil
@@ -569,7 +572,8 @@ extension SpaceController: UIPageViewControllerDelegate {
     _currentKey = termController.meta.key
     _syncTerminalBackground()
     _attachInputToCurrentTerm()
-
+    // A swipe just landed on this tab — flash its alias next to the Tabs button for 3 s.
+    moshroomShowTabToast(moshroomTitle(for: termController.meta.key))
   }
 }
 
@@ -1113,21 +1117,35 @@ extension SpaceController {
     let isActive: Bool
   }
 
+  // A tab's display title: forced custom name, then the connected host's alias (a tab that is an
+  // ssh/mosh session to "awesomehost" IS awesomehost to the user), then the program's own OSC title
+  // (opencode / vim / ssh). Unloaded, unconnected tabs have no live title, so "shell".
+  func moshroomTitle(for key: UUID) -> String {
+    let term: TermController = SessionRegistry.shared[key]
+    let custom = (term.meta.customName ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    let connected = (term.meta.connectedHost ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    let osc = (term.termView.title ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    return !custom.isEmpty ? custom : !connected.isEmpty ? connected : (osc.isEmpty ? "shell" : osc)
+  }
+
   /// The open terminal tabs, in order, each with its display title and whether it is active.
   func moshroomTabs() -> [MoshroomTabInfo] {
-    _viewportsKeys.map { key in
-      let term: TermController = SessionRegistry.shared[key]
-      let custom = (term.meta.customName ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-      // Title priority: a forced custom name, then the connected host's alias (a tab that is an
-      // ssh/mosh session to "awesomehost" IS awesomehost to the user), then the program's own OSC
-      // title (opencode / vim / ssh). Unloaded, unconnected tabs have no live title, so "shell".
-      let connected = (term.meta.connectedHost ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-      let osc = (term.termView.title ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-      let name = !custom.isEmpty ? custom
-               : !connected.isEmpty ? connected
-               : (osc.isEmpty ? "shell" : osc)
-      return MoshroomTabInfo(key: key, title: name, isActive: key == _currentKey)
+    _viewportsKeys.map { MoshroomTabInfo(key: $0, title: moshroomTitle(for: $0), isActive: $0 == _currentKey) }
+  }
+
+  // Flash the red pill next to the Tabs button with the tab a swipe just landed on, then fade it out
+  // after 3 s. Reschedules cleanly if another swipe lands within the window.
+  func moshroomShowTabToast(_ title: String) {
+    guard let toast = moshroomTabToast else { return }
+    toast.text = title
+    _tabToastHide?.cancel()
+    view.bringSubviewToFront(toast)
+    UIView.animate(withDuration: 0.2) { toast.alpha = 1 }
+    let work = DispatchWorkItem { [weak toast] in
+      UIView.animate(withDuration: 0.3) { toast?.alpha = 0 }
     }
+    _tabToastHide = work
+    DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: work)
   }
 
   func moshroomSwitch(toTab key: UUID) {
