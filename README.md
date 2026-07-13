@@ -8,6 +8,25 @@ launch the thing into orbit halfway through.
 
 ---
 
+## Once upon a mushroom… 🍄
+
+Three [Magikitos](https://magikitos.com/en/stories) had Very Important Work waiting on a server far across the cloud. One tap in
+Moshroom — a saved host, SSH or Mosh — and they were *in*, steering their agent from a moonlit cliff.
+
+<img width="100%" src="screenshots/magikitos-connect.png" alt="Three Magikitos on a moonlit cliff in a glowing mushroom forest, connecting to a remote server through Moshroom on a phone — the red mushroom logo and server racks glow as a hologram">
+
+No desk, no problem. They roamed the glowing forest and briefed the agent from a mossy tree-branch
+bridge — the whole toolkit riding along in one hand.
+
+<img width="100%" src="screenshots/magikitos-anywhere.png" alt="The Magikitos crossing a mossy tree-branch bridge high in the forest canopy at night, briefing their agent on Moshroom from anywhere">
+
+By sunrise they'd earned a break — cocktails on the beach while Moshroom kept the agent grinding away
+on a rock by the sea. **Rule your agents from anywhere.** Even the Magikitos figured it out.
+
+<img width="100%" src="screenshots/magikitos-beach.png" alt="The Magikitos lounging on a sunny tropical beach with cocktails and sunglasses while a Moshroom screen on a rock keeps the agent working by the sea">
+
+---
+
 ## Real talk: every mobile terminal sucks at this
 
 They're all the same sad combo — a thumb-sized keyboard bolted under a wall of scrollback. Great for a
