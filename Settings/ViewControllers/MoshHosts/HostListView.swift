@@ -44,16 +44,19 @@ struct HostRow: View {
   var body: some View {
     Row(
       content: {
-        HStack {
-          Text(card.alias)
-          if !card.hostDescription.isEmpty {
-            Text(card.hostDescription)
-              .font(.system(.subheadline)).foregroundColor(.secondary)
-              .lineLimit(1)
+        HStack(alignment: .firstTextBaseline) {
+          VStack(alignment: .leading, spacing: 2) {
+            Text(card.alias)
+            if !card.hostDescription.isEmpty {
+              Text(card.hostDescription)
+                .font(.system(.subheadline)).foregroundColor(.secondary)
+                .lineLimit(2)
+            }
           }
-          Spacer()
+          Spacer(minLength: 12)
           Text(card.hostName)
             .font(.system(.subheadline)).foregroundColor(.secondary)
+            .lineLimit(1)
         }
       },
       details: {
