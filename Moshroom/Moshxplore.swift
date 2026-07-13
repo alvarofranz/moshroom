@@ -377,31 +377,31 @@ enum MoshxploreStyle {
   static let rowPressed = UIColor.tertiarySystemGroupedBackground
   static let screen = UIColor.systemGroupedBackground
 
-  // Every piece of explorer text sizes through here — one knob, an absolute point size exactly
-  // like the terminal's Font Size. The layouts are authored at 15; the preference (Settings →
-  // Moshxplore) shifts every font by the same amount, so proportions between titles, metadata and
-  // previews are preserved. Defaults: 15 px on iPhone, 17 px on iPad (the big canvas earns a
-  // slightly larger read). The explorer is built fresh per open, so a change applies next open.
+  // The Moshxplore "Text Size" preference (Settings → Moshxplore) is an absolute point size that
+  // controls ONLY the file viewer/editor CONTENT text — the thing you actually read and edit. The
+  // explorer chrome (rows, buttons, titles, metadata, paths) keeps fixed, sensible defaults so the
+  // navigator always looks right on any device regardless of the content size. Defaults: 15 px on
+  // iPhone, 17 px on iPad. The explorer is built fresh per open, so a change applies next open.
   static let textSizeKey = "MoshxploreTextSize"
   static let textSizeRange = 12...24
   static var defaultTextSize: Int { UIDevice.current.userInterfaceIdiom == .pad ? 17 : 15 }
-  private static let authoredBase: CGFloat = 15
   private static var effectiveTextSize: CGFloat {
     let stored = UserDefaults.standard.integer(forKey: textSizeKey) // 0 = never set
     let size = stored == 0 ? defaultTextSize : stored
     return CGFloat(min(max(size, textSizeRange.lowerBound), textSizeRange.upperBound))
   }
+  // The file viewer/editor content font — the ONLY thing the Text Size preference scales.
+  static var contentFont: UIFont { .monospacedSystemFont(ofSize: effectiveTextSize, weight: .regular) }
+
+  // Chrome fonts + paddings are FIXED at their authored sizes — a normal iPad/iPhone default that
+  // reads well and never follows the content Text Size preference.
   static func font(_ size: CGFloat, _ weight: UIFont.Weight = .regular) -> UIFont {
-    .systemFont(ofSize: size + effectiveTextSize - authoredBase, weight: weight)
+    .systemFont(ofSize: size, weight: weight)
   }
   static func monoFont(_ size: CGFloat, _ weight: UIFont.Weight = .regular) -> UIFont {
-    .monospacedSystemFont(ofSize: size + effectiveTextSize - authoredBase, weight: weight)
+    .monospacedSystemFont(ofSize: size, weight: weight)
   }
-  // Paddings authored at the 15px base scale with the text size too — a bigger font in a
-  // fixed-inset button reads as "no padding". Proportional, so the buttons keep their shape.
-  static func inset(_ base: CGFloat) -> CGFloat {
-    (base * effectiveTextSize / authoredBase).rounded()
-  }
+  static func inset(_ base: CGFloat) -> CGFloat { base }
 }
 
 // The tiny gray copy-glyph next to a path: tap → the path lands on the clipboard and the glyph
@@ -570,7 +570,7 @@ private final class MoshxploreDetailView: UIView {
   private var pendingHighlight: DispatchWorkItem?
   // Computed, not a stored static: the size preference must be re-read on every fresh explorer,
   // and a cached `let` would pin the first launch's size for the whole app session.
-  private static var codeFont: UIFont { MoshxploreStyle.monoFont(11) }
+  private static var codeFont: UIFont { MoshxploreStyle.contentFont }
 
   // The preview fills all the height between the meta line and the bottom buttons; while editing
   // the buttons step aside and it runs to the bottom edge. Toggled in enter/exit edit mode.
@@ -639,7 +639,7 @@ private final class MoshxploreDetailView: UIView {
 
     textView.isEditable = false
     textView.backgroundColor = .clear
-    textView.font = MoshxploreStyle.monoFont(11)
+    textView.font = Self.codeFont
     textView.textColor = MoshxploreStyle.dark
     textView.textContainerInset = UIEdgeInsets(top: 10, left: 10, bottom: 10, right: 10)
     textView.translatesAutoresizingMaskIntoConstraints = false

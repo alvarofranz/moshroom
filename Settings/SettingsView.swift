@@ -96,7 +96,7 @@ struct SettingsView: View {
 
       Section {
         HStack {
-          Label("Text Size", systemImage: "textformat.size")
+          Label("Editor Text Size", systemImage: "textformat.size")
           Spacer()
           Text("\(_moshxploreTextSize) px")
             .foregroundColor(.secondary)
@@ -107,7 +107,7 @@ struct SettingsView: View {
       } header: {
         Text("Moshxplore")
       } footer: {
-        Text("Text size for the remote file explorer — lists, previews and labels all follow it. On iPad everything already reads slightly larger by default.")
+        Text("Text size for the file viewer and editor — the content you read and edit. The rest of the explorer (lists, buttons, labels) uses a standard size that looks right on every device.")
       }
 
       Section {
