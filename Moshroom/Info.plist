@@ -83,8 +83,10 @@
 	<true/>
 	<key>MOSHROOM_APP_FONT</key>
 	<string>$(MOSHROOM_APP_FONT)</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Moshroom uses the camera to scan two-factor (2FA) QR codes into your vault.</string>
 	<key>NSFaceIDUsageDescription</key>
-	<string>Face ID protects revealing and copying your saved SSH keys.</string>
+	<string>Face ID protects your saved keys, passwords and 2FA codes, and can lock the app.</string>
 	<key>NSSiriUsageDescription</key>
 	<string>storing commands</string>
 	<key>NSUbiquitousContainers</key>

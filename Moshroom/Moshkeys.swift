@@ -67,23 +67,33 @@ enum Moshkeys {
     settings.addAction(UIAction { [weak sc] _ in sc?.openSettings() }, for: .touchUpInside)
     sc.view.addSubview(settings)
 
-    // Moshxplore — the remote file explorer. Sits just left of Settings, opens over any tab.
+    // Moshxplore — the remote file explorer. Opens over any tab.
     let xplore = moshkeyRoundButton()
     xplore.setMoshIcon("folder")
     xplore.translatesAutoresizingMaskIntoConstraints = false
     xplore.addAction(UIAction { [weak sc] _ in sc?.openMoshxplore() }, for: .touchUpInside)
     sc.view.addSubview(xplore)
 
+    // Moshvault — the credentials hub (passwords + 2FA). Sits between Moshxplore and Settings.
+    let vault = moshkeyRoundButton()
+    vault.setMoshIcon("key.fill")
+    vault.translatesAutoresizingMaskIntoConstraints = false
+    vault.addAction(UIAction { [weak sc] _ in sc?.openMoshvault() }, for: .touchUpInside)
+    sc.view.addSubview(vault)
+
     NSLayoutConstraint.activate([
       tabs.leadingAnchor.constraint(equalTo: sc.view.safeAreaLayoutGuide.leadingAnchor, constant: 14),
       tabs.topAnchor.constraint(equalTo: sc.view.safeAreaLayoutGuide.topAnchor, constant: 10),
       settings.trailingAnchor.constraint(equalTo: sc.view.safeAreaLayoutGuide.trailingAnchor, constant: -14),
       settings.topAnchor.constraint(equalTo: sc.view.safeAreaLayoutGuide.topAnchor, constant: 10),
-      xplore.trailingAnchor.constraint(equalTo: settings.leadingAnchor, constant: -10),
+      vault.trailingAnchor.constraint(equalTo: settings.leadingAnchor, constant: -10),
+      vault.centerYAnchor.constraint(equalTo: settings.centerYAnchor),
+      xplore.trailingAnchor.constraint(equalTo: vault.leadingAnchor, constant: -10),
       xplore.centerYAnchor.constraint(equalTo: settings.centerYAnchor),
     ])
     sc.view.bringSubviewToFront(tabs)
     sc.view.bringSubviewToFront(settings)
+    sc.view.bringSubviewToFront(vault)
     sc.view.bringSubviewToFront(xplore)
 
     // Tab-switch toast — a small red pill just right of Tabs that names the tab a swipe landed on,
@@ -101,7 +111,7 @@ enum Moshkeys {
     sc.moshroomTabToast = toast
 
     #if !targetEnvironment(macCatalyst)
-    bar.chrome = [compose, tabs, settings, xplore, arrowEnter]   // kept tappable above the dismiss overlay
+    bar.chrome = [compose, tabs, settings, xplore, vault, arrowEnter]   // kept tappable above the dismiss overlay
     bar.composeButton = compose                      // stepped aside while the ↕ arrow mode is active
     bar.arrowEnterButton = arrowEnter                // takes the compose spot during arrow mode
 

@@ -1107,6 +1107,13 @@ static NSString *_defaultService;
     if (floor(NSFoundationVersionNumber) > floor(993.00)) { // iOS 7+ (NSFoundationVersionNumber_iOS_6_1)
         query[(__bridge __strong id)kSecAttrSynchronizable] = (__bridge id)kSecAttrSynchronizableAny;
     }
+
+    // Use the data-protection keychain on every platform. On iOS this is already the only keychain,
+    // so it's a no-op there; on Mac Catalyst it is REQUIRED — without it the item goes to the legacy
+    // file-based (login) keychain, which supports neither keychain-access-groups nor iCloud Keychain
+    // sync. Setting it is what lets Moshroom's keys/passwords/vault/2FA items sync iOS <-> macOS.
+    // (Available iOS 13+/macOS 10.15+; the deployment target is well above that.)
+    query[(__bridge __strong id)kSecUseDataProtectionKeychain] = (__bridge id)kCFBooleanTrue;
     
     if (itemClass == kSecClassGenericPassword) {
         query[(__bridge __strong id)(kSecAttrService)] = _service;

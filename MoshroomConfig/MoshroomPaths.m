@@ -234,6 +234,14 @@ NSString *__iCloudsDriveDocumentsPath = nil;
   return nil;
 }
 
++ (NSURL *)iCloudKeysLocationURL {
+  NSString *path = [self iCloudDriveDocuments];
+  if (path) {
+    return [NSURL fileURLWithPath:[path stringByAppendingPathComponent:@"keys"]];
+  }
+  return nil;
+}
+
 + (NSString *)knownHostsFile
 {
   return [[self ssh] stringByAppendingPathComponent:@"known_hosts"];

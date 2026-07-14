@@ -248,8 +248,8 @@ extension SpaceController {
   // Reveal the card only for a fresh, unconnected shell; keep it hidden for a restored or
   // still-connected ssh/mosh session (so reopening into a live mosh shows no card).
   func showMoshnectorIfIdle() {
-    // Never compete with Moshxplore — while the file explorer is open, Quick Connect stays hidden.
-    if moshroomMoshxploreIsOpen { dismissMoshnector(); return }
+    // Never compete with a full-screen hub — while Moshxplore or Moshvault is open, Quick Connect stays hidden.
+    if moshroomMoshxploreIsOpen || moshroomMoshvaultIsOpen { dismissMoshnector(); return }
     let term = currentTerm()
     if term?.moshroomIsFreshShell == true {
       // Back at the local prompt — this tab has no active connection to upload to. Grace window:

@@ -43,7 +43,6 @@
 		07FABBDF25C9AF5F00E1CC2C /* Publishers.swift in Sources */ = {isa = PBXBuildFile; fileRef = 07FABBD425C9AF5F00E1CC2C /* Publishers.swift */; };
 		07FABBE025C9AF5F00E1CC2C /* Streams.swift in Sources */ = {isa = PBXBuildFile; fileRef = 07FABBD525C9AF5F00E1CC2C /* Streams.swift */; };
 		07FABBE125C9AF5F00E1CC2C /* SFTP.swift in Sources */ = {isa = PBXBuildFile; fileRef = 07FABBD625C9AF5F00E1CC2C /* SFTP.swift */; };
-		E0F1A2B3C4D5E6F700000002 /* SSHProgname.c in Sources */ = {isa = PBXBuildFile; fileRef = E0F1A2B3C4D5E6F700000001 /* SSHProgname.c */; };
 		07FABBE225C9AF5F00E1CC2C /* DispatchStreams.swift in Sources */ = {isa = PBXBuildFile; fileRef = 07FABBD725C9AF5F00E1CC2C /* DispatchStreams.swift */; };
 		07FABBE425C9AF5F00E1CC2C /* SSHClient+KnownHostsHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = 07FABBD925C9AF5F00E1CC2C /* SSHClient+KnownHostsHelpers.swift */; };
 		07FABBE525C9AF5F00E1CC2C /* AuthMethods.swift in Sources */ = {isa = PBXBuildFile; fileRef = 07FABBDA25C9AF5F00E1CC2C /* AuthMethods.swift */; };
@@ -54,10 +53,16 @@
 		07FABC0D25C9AF8600E1CC2C /* CopyFiles.swift in Sources */ = {isa = PBXBuildFile; fileRef = 07FABC0925C9AF8600E1CC2C /* CopyFiles.swift */; };
 		07FABC2225C9AFC500E1CC2C /* String+Extension.swift in Sources */ = {isa = PBXBuildFile; fileRef = 07FABC2125C9AFC400E1CC2C /* String+Extension.swift */; };
 		07FABC4825C9B08100E1CC2C /* MoshroomFiles.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 07FABBAF25C9AECF00E1CC2C /* MoshroomFiles.framework */; };
+		4F1BE6B40B272F061AE4F1B3 /* MoshTOTP.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7FA3AE9788EBBCC6CC508DC7 /* MoshTOTP.swift */; };
+		6505E62CB6D107BB1A6BD743 /* MoshAppLock.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4AEFEAD2A92BC23EAA24608 /* MoshAppLock.swift */; };
+		6FC592DE4C53465F168780DD /* MoshvaultStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD90DF8630790330363141DB /* MoshvaultStore.swift */; };
+		7D77D389B2B7444BEB3C0FDD /* MoshOTPMigration.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5CD8824356AF0F7187BB21D /* MoshOTPMigration.swift */; };
 		803B99D72582869200DC99C8 /* MoshNotificationsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 803B99D62582869200DC99C8 /* MoshNotificationsView.swift */; };
 		803B99E3258381B200DC99C8 /* SettingsHostingController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 803B99E2258381B200DC99C8 /* SettingsHostingController.swift */; };
+		852D8A7FFFF34395C6EE2E3C /* MoshQRScanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 91424650D3949AA7FB312F37 /* MoshQRScanner.swift */; };
 		85A34307200A837A009324F1 /* webfontloader.js in Resources */ = {isa = PBXBuildFile; fileRef = 85A34303200A837A009324F1 /* webfontloader.js */; };
 		85A34309200A8FAF009324F1 /* term.css in Resources */ = {isa = PBXBuildFile; fileRef = 85A34308200A8FAF009324F1 /* term.css */; };
+		9AA7BB1E9A955A0F1E664363 /* MoshvaultViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = E4FD3D95B858D8D01DEEE573 /* MoshvaultViews.swift */; };
 		AAAAA1110001000000000001 /* HostsCloudMirror.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAAA1110001000000000002 /* HostsCloudMirror.swift */; };
 		B102C0DE000000000000B17D /* Moshkitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = B102C0DE000000000000F11E /* Moshkitor.swift */; };
 		B1D90000000000000000B17D /* Moshdrop.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1D90000000000000000F11E /* Moshdrop.swift */; };
@@ -255,6 +260,8 @@
 		D2F330CC20A6D98C0074ADD7 /* config.m in Sources */ = {isa = PBXBuildFile; fileRef = D2F330CB20A6D98C0074ADD7 /* config.m */; };
 		D2F330D420A6F1DF0074ADD7 /* clear.m in Sources */ = {isa = PBXBuildFile; fileRef = D2F330D320A6F1DF0074ADD7 /* clear.m */; };
 		D2F330D620A6F4F50074ADD7 /* history.m in Sources */ = {isa = PBXBuildFile; fileRef = D2F330D520A6F4F50074ADD7 /* history.m */; };
+		D33F2A08A55DBF275C4708B6 /* Moshvault.swift in Sources */ = {isa = PBXBuildFile; fileRef = CDCA0D3D2CAFCBE1A7627392 /* Moshvault.swift */; };
+		E0F1A2B3C4D5E6F700000002 /* SSHProgname.c in Sources */ = {isa = PBXBuildFile; fileRef = E0F1A2B3C4D5E6F700000001 /* SSHProgname.c */; };
 		FACEB00C0000000000000102 /* Moshlight.swift in Sources */ = {isa = PBXBuildFile; fileRef = FACEB00C0000000000000101 /* Moshlight.swift */; };
 /* End PBXBuildFile section */
 
@@ -371,7 +378,6 @@
 		07FABBD425C9AF5F00E1CC2C /* Publishers.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = Publishers.swift; sourceTree = "<group>"; };
 		07FABBD525C9AF5F00E1CC2C /* Streams.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = Streams.swift; sourceTree = "<group>"; };
 		07FABBD625C9AF5F00E1CC2C /* SFTP.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = SFTP.swift; sourceTree = "<group>"; };
-		E0F1A2B3C4D5E6F700000001 /* SSHProgname.c */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.c; path = SSHProgname.c; sourceTree = "<group>"; };
 		07FABBD725C9AF5F00E1CC2C /* DispatchStreams.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = DispatchStreams.swift; sourceTree = "<group>"; };
 		07FABBD925C9AF5F00E1CC2C /* SSHClient+KnownHostsHelpers.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "SSHClient+KnownHostsHelpers.swift"; sourceTree = "<group>"; };
 		07FABBDA25C9AF5F00E1CC2C /* AuthMethods.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = AuthMethods.swift; sourceTree = "<group>"; };
@@ -381,10 +387,12 @@
 		07FABC0825C9AF8600E1CC2C /* MoshroomFiles.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = MoshroomFiles.swift; sourceTree = "<group>"; };
 		07FABC0925C9AF8600E1CC2C /* CopyFiles.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = CopyFiles.swift; sourceTree = "<group>"; };
 		07FABC2125C9AFC400E1CC2C /* String+Extension.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = "String+Extension.swift"; sourceTree = "<group>"; };
+		7FA3AE9788EBBCC6CC508DC7 /* MoshTOTP.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MoshTOTP.swift; sourceTree = "<group>"; };
 		803B99D62582869200DC99C8 /* MoshNotificationsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoshNotificationsView.swift; sourceTree = "<group>"; };
 		803B99E2258381B200DC99C8 /* SettingsHostingController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsHostingController.swift; sourceTree = "<group>"; };
 		85A34303200A837A009324F1 /* webfontloader.js */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.javascript; path = webfontloader.js; sourceTree = "<group>"; };
 		85A34308200A8FAF009324F1 /* term.css */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.css; path = term.css; sourceTree = "<group>"; };
+		91424650D3949AA7FB312F37 /* MoshQRScanner.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MoshQRScanner.swift; sourceTree = "<group>"; };
 		AAAAA1110001000000000002 /* HostsCloudMirror.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostsCloudMirror.swift; sourceTree = "<group>"; };
 		B102C0DE000000000000F11E /* Moshkitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Moshkitor.swift; sourceTree = "<group>"; };
 		B1D90000000000000000F11E /* Moshdrop.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Moshdrop.swift; sourceTree = "<group>"; };
@@ -459,6 +467,7 @@
 		C9B2E0101D6B612300B89F69 /* MoshTheme.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; path = MoshTheme.m; sourceTree = "<group>"; };
 		C9B2E0121D6B612300B89F69 /* MoshSettingsFileDownloader.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = MoshSettingsFileDownloader.h; sourceTree = "<group>"; };
 		C9B2E0131D6B612300B89F69 /* MoshSettingsFileDownloader.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; path = MoshSettingsFileDownloader.m; sourceTree = "<group>"; };
+		CDCA0D3D2CAFCBE1A7627392 /* Moshvault.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = Moshvault.swift; sourceTree = "<group>"; };
 		D2011CD626A6FF9F002E4E85 /* Alert.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Alert.swift; sourceTree = "<group>"; };
 		D2036B6223967F2F0013D2A3 /* BindingConfigView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BindingConfigView.swift; sourceTree = "<group>"; };
 		D209465B204D3FC5003C4F72 /* cacert.pem */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text; path = cacert.pem; sourceTree = "<group>"; };
@@ -588,6 +597,11 @@
 		D2F330D520A6F4F50074ADD7 /* history.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = history.m; sourceTree = "<group>"; };
 		D2F64C9425CA99AD00F2225D /* openssl.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = openssl.xcframework; path = xcfs/.build/artifacts/xcfs/openssl/openssl.xcframework; sourceTree = SOURCE_ROOT; };
 		D2F64C9525CA99AD00F2225D /* libssh2.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = libssh2.xcframework; path = xcfs/.build/artifacts/xcfs/libssh2/libssh2.xcframework; sourceTree = SOURCE_ROOT; };
+		D4AEFEAD2A92BC23EAA24608 /* MoshAppLock.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MoshAppLock.swift; sourceTree = "<group>"; };
+		DD90DF8630790330363141DB /* MoshvaultStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MoshvaultStore.swift; sourceTree = "<group>"; };
+		E0F1A2B3C4D5E6F700000001 /* SSHProgname.c */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.c; path = SSHProgname.c; sourceTree = "<group>"; };
+		E4FD3D95B858D8D01DEEE573 /* MoshvaultViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MoshvaultViews.swift; sourceTree = "<group>"; };
+		E5CD8824356AF0F7187BB21D /* MoshOTPMigration.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MoshOTPMigration.swift; sourceTree = "<group>"; };
 		EA0BA18B1C0CC57B00719C1A /* Moshroom.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Moshroom.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		FACEB00C0000000000000101 /* Moshlight.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Moshlight.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -722,6 +736,13 @@
 				D2CF27282428A791009885ED /* KBTracker.swift */,
 				BD1758AB26EA8C5400AEC545 /* MenuController.swift */,
 				D2A80978270713D200CD0FAF /* FeatureFlags.swift */,
+				DD90DF8630790330363141DB /* MoshvaultStore.swift */,
+				7FA3AE9788EBBCC6CC508DC7 /* MoshTOTP.swift */,
+				E5CD8824356AF0F7187BB21D /* MoshOTPMigration.swift */,
+				91424650D3949AA7FB312F37 /* MoshQRScanner.swift */,
+				E4FD3D95B858D8D01DEEE573 /* MoshvaultViews.swift */,
+				CDCA0D3D2CAFCBE1A7627392 /* Moshvault.swift */,
+				D4AEFEAD2A92BC23EAA24608 /* MoshAppLock.swift */,
 			);
 			path = Moshroom;
 			sourceTree = "<group>";
@@ -1400,8 +1421,6 @@
 			dependencies = (
 			);
 			name = MoshroomSnippets;
-			packageProductDependencies = (
-			);
 			productName = MoshroomSnippets;
 			productReference = D22277CE2A26115300D4C708 /* MoshroomSnippets.framework */;
 			productType = "com.apple.product-type.framework";
@@ -1799,6 +1818,13 @@
 				D2C2441A238E44AB0082C69C /* KeySection.swift in Sources */,
 				079635871D0E6602000473B1 /* TermView.m in Sources */,
 				D22278002A26204900D4C708 /* Accumulators.swift in Sources */,
+				6FC592DE4C53465F168780DD /* MoshvaultStore.swift in Sources */,
+				4F1BE6B40B272F061AE4F1B3 /* MoshTOTP.swift in Sources */,
+				7D77D389B2B7444BEB3C0FDD /* MoshOTPMigration.swift in Sources */,
+				852D8A7FFFF34395C6EE2E3C /* MoshQRScanner.swift in Sources */,
+				9AA7BB1E9A955A0F1E664363 /* MoshvaultViews.swift in Sources */,
+				D33F2A08A55DBF275C4708B6 /* Moshvault.swift in Sources */,
+				6505E62CB6D107BB1A6BD743 /* MoshAppLock.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1875,9 +1901,11 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 20260701;
 				DEFINES_MODULE = YES;
+				DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER = NO;
 				DYLIB_COMPATIBILITY_VERSION = 1;
 				DYLIB_CURRENT_VERSION = 1;
 				DYLIB_INSTALL_NAME_BASE = "@rpath";
+				"EXCLUDED_ARCHS[sdk=macosx*]" = x86_64;
 				GCC_C_LANGUAGE_STANDARD = gnu11;
 				GCC_PREPROCESSOR_DEFINITIONS = (
 					"DEBUG=1",
@@ -1897,13 +1925,11 @@
 				PRODUCT_BUNDLE_IDENTIFIER = "$(BUNDLE_ID).SSH";
 				PRODUCT_NAME = "$(TARGET_NAME:c99extidentifier)";
 				SKIP_INSTALL = YES;
+				SUPPORTS_MACCATALYST = YES;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
-				SUPPORTS_MACCATALYST = YES;
-				"EXCLUDED_ARCHS[sdk=macosx*]" = x86_64;
-				DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER = NO;
 				VERSIONING_SYSTEM = "apple-generic";
 				VERSION_INFO_PREFIX = "";
 			};
@@ -1927,9 +1953,11 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 20260701;
 				DEFINES_MODULE = YES;
+				DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER = NO;
 				DYLIB_COMPATIBILITY_VERSION = 1;
 				DYLIB_CURRENT_VERSION = 1;
 				DYLIB_INSTALL_NAME_BASE = "@rpath";
+				"EXCLUDED_ARCHS[sdk=macosx*]" = x86_64;
 				GCC_C_LANGUAGE_STANDARD = gnu11;
 				INFOPLIST_FILE = SSH/Info.plist;
 				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Frameworks";
@@ -1944,11 +1972,9 @@
 				PRODUCT_BUNDLE_IDENTIFIER = "$(BUNDLE_ID).SSH";
 				PRODUCT_NAME = "$(TARGET_NAME:c99extidentifier)";
 				SKIP_INSTALL = YES;
+				SUPPORTS_MACCATALYST = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
-				SUPPORTS_MACCATALYST = YES;
-				"EXCLUDED_ARCHS[sdk=macosx*]" = x86_64;
-				DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER = NO;
 				VERSIONING_SYSTEM = "apple-generic";
 				VERSION_INFO_PREFIX = "";
 			};
@@ -1972,9 +1998,11 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 20260701;
 				DEFINES_MODULE = YES;
+				DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER = NO;
 				DYLIB_COMPATIBILITY_VERSION = 1;
 				DYLIB_CURRENT_VERSION = 1;
 				DYLIB_INSTALL_NAME_BASE = "@rpath";
+				"EXCLUDED_ARCHS[sdk=macosx*]" = x86_64;
 				GCC_C_LANGUAGE_STANDARD = gnu11;
 				GCC_PREPROCESSOR_DEFINITIONS = (
 					"DEBUG=1",
@@ -1995,8 +2023,6 @@
 				PRODUCT_NAME = "$(TARGET_NAME:c99extidentifier)";
 				SKIP_INSTALL = YES;
 				SUPPORTS_MACCATALYST = YES;
-				"EXCLUDED_ARCHS[sdk=macosx*]" = x86_64;
-				DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER = NO;
 				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
@@ -2025,9 +2051,11 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 20260701;
 				DEFINES_MODULE = YES;
+				DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER = NO;
 				DYLIB_COMPATIBILITY_VERSION = 1;
 				DYLIB_CURRENT_VERSION = 1;
 				DYLIB_INSTALL_NAME_BASE = "@rpath";
+				"EXCLUDED_ARCHS[sdk=macosx*]" = x86_64;
 				GCC_C_LANGUAGE_STANDARD = gnu11;
 				INFOPLIST_FILE = MoshroomFiles/Info.plist;
 				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Frameworks";
@@ -2043,8 +2071,6 @@
 				PRODUCT_NAME = "$(TARGET_NAME:c99extidentifier)";
 				SKIP_INSTALL = YES;
 				SUPPORTS_MACCATALYST = YES;
-				"EXCLUDED_ARCHS[sdk=macosx*]" = x86_64;
-				DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER = NO;
 				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2,6";
@@ -2073,9 +2099,11 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 20260701;
 				DEFINES_MODULE = YES;
+				DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER = NO;
 				DYLIB_COMPATIBILITY_VERSION = 1;
 				DYLIB_CURRENT_VERSION = 1;
 				DYLIB_INSTALL_NAME_BASE = "@rpath";
+				"EXCLUDED_ARCHS[sdk=macosx*]" = x86_64;
 				GCC_C_LANGUAGE_STANDARD = gnu11;
 				GCC_PREPROCESSOR_DEFINITIONS = (
 					"DEBUG=1",
@@ -2097,13 +2125,11 @@
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				"PROVISIONING_PROFILE_SPECIFIER[sdk=macosx*]" = "";
 				SKIP_INSTALL = YES;
+				SUPPORTS_MACCATALYST = YES;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
-				SUPPORTS_MACCATALYST = YES;
-				"EXCLUDED_ARCHS[sdk=macosx*]" = x86_64;
-				DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER = NO;
 				VERSIONING_SYSTEM = "apple-generic";
 				VERSION_INFO_PREFIX = "";
 			};
@@ -2129,9 +2155,11 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 20260701;
 				DEFINES_MODULE = YES;
+				DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER = NO;
 				DYLIB_COMPATIBILITY_VERSION = 1;
 				DYLIB_CURRENT_VERSION = 1;
 				DYLIB_INSTALL_NAME_BASE = "@rpath";
+				"EXCLUDED_ARCHS[sdk=macosx*]" = x86_64;
 				GCC_C_LANGUAGE_STANDARD = gnu11;
 				INFOPLIST_FILE = MoshroomConfig/Info.plist;
 				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Frameworks";
@@ -2148,11 +2176,9 @@
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				"PROVISIONING_PROFILE_SPECIFIER[sdk=macosx*]" = "";
 				SKIP_INSTALL = YES;
+				SUPPORTS_MACCATALYST = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
-				SUPPORTS_MACCATALYST = YES;
-				"EXCLUDED_ARCHS[sdk=macosx*]" = x86_64;
-				DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER = NO;
 				VERSIONING_SYSTEM = "apple-generic";
 				VERSION_INFO_PREFIX = "";
 			};
@@ -2177,10 +2203,12 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 20260701;
 				DEFINES_MODULE = YES;
+				DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER = NO;
 				DYLIB_COMPATIBILITY_VERSION = 1;
 				DYLIB_CURRENT_VERSION = 1;
 				DYLIB_INSTALL_NAME_BASE = "@rpath";
 				ENABLE_MODULE_VERIFIER = YES;
+				"EXCLUDED_ARCHS[sdk=macosx*]" = x86_64;
 				GCC_C_LANGUAGE_STANDARD = gnu11;
 				GCC_PREPROCESSOR_DEFINITIONS = (
 					"DEBUG=1",
@@ -2203,14 +2231,12 @@
 				PRODUCT_BUNDLE_IDENTIFIER = "$(BUNDLE_ID).MoshroomSnippets";
 				PRODUCT_NAME = "$(TARGET_NAME:c99extidentifier)";
 				SKIP_INSTALL = YES;
+				SUPPORTS_MACCATALYST = YES;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
-				SUPPORTS_MACCATALYST = YES;
-				"EXCLUDED_ARCHS[sdk=macosx*]" = x86_64;
-				DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER = NO;
 				VERSIONING_SYSTEM = "apple-generic";
 				VERSION_INFO_PREFIX = "";
 			};
@@ -2235,10 +2261,12 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 20260701;
 				DEFINES_MODULE = YES;
+				DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER = NO;
 				DYLIB_COMPATIBILITY_VERSION = 1;
 				DYLIB_CURRENT_VERSION = 1;
 				DYLIB_INSTALL_NAME_BASE = "@rpath";
 				ENABLE_MODULE_VERIFIER = YES;
+				"EXCLUDED_ARCHS[sdk=macosx*]" = x86_64;
 				GCC_C_LANGUAGE_STANDARD = gnu11;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright © 2026 Moshroom. GPLv3.";
@@ -2256,12 +2284,10 @@
 				PRODUCT_BUNDLE_IDENTIFIER = "$(BUNDLE_ID).MoshroomSnippets";
 				PRODUCT_NAME = "$(TARGET_NAME:c99extidentifier)";
 				SKIP_INSTALL = YES;
+				SUPPORTS_MACCATALYST = YES;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
-				SUPPORTS_MACCATALYST = YES;
-				"EXCLUDED_ARCHS[sdk=macosx*]" = x86_64;
-				DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER = NO;
 				VERSIONING_SYSTEM = "apple-generic";
 				VERSION_INFO_PREFIX = "";
 			};
@@ -2391,9 +2417,11 @@
 				DEAD_CODE_STRIPPING = NO;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				DEFINES_MODULE = YES;
+				DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER = NO;
 				DEVELOPMENT_TEAM = "$(TEAM_ID)";
 				ENABLE_BITCODE = NO;
 				ENABLE_TESTABILITY = YES;
+				"EXCLUDED_ARCHS[sdk=macosx*]" = x86_64;
 				GCC_PREPROCESSOR_DEFINITIONS = (
 					"DEBUG=1",
 					"$(inherited)",
@@ -2424,8 +2452,6 @@
 				STRIP_STYLE = "non-global";
 				STRIP_SWIFT_SYMBOLS = NO;
 				SUPPORTS_MACCATALYST = YES;
-				"EXCLUDED_ARCHS[sdk=macosx*]" = x86_64;
-				DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER = NO;
 				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
 				SWIFT_OBJC_BRIDGING_HEADER = "Moshroom/Moshroom-bridge.h";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
@@ -2445,8 +2471,10 @@
 				CURRENT_PROJECT_VERSION = 20260701;
 				DEAD_CODE_STRIPPING = NO;
 				DEFINES_MODULE = YES;
+				DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER = NO;
 				DEVELOPMENT_TEAM = "$(TEAM_ID)";
 				ENABLE_BITCODE = NO;
+				"EXCLUDED_ARCHS[sdk=macosx*]" = x86_64;
 				GCC_PREPROCESSOR_DEFINITIONS = "";
 				INFOPLIST_FILE = Moshroom/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Moshroom;
@@ -2473,8 +2501,6 @@
 				STRIP_STYLE = "non-global";
 				STRIP_SWIFT_SYMBOLS = NO;
 				SUPPORTS_MACCATALYST = YES;
-				"EXCLUDED_ARCHS[sdk=macosx*]" = x86_64;
-				DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER = NO;
 				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
 				SWIFT_OBJC_BRIDGING_HEADER = "Moshroom/Moshroom-bridge.h";
 				TARGETED_DEVICE_FAMILY = "1,2,6";

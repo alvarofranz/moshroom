@@ -45,13 +45,32 @@ static NSString *__keychainService() {
   return [NSString stringWithFormat:@"%@.pkcard", [XCConfig infoPlistKeyChainID1]];
 }
 
-// Private keys ride the iCloud Keychain (kSecAttrSynchronizable, end-to-end encrypted): they
-// survive an app reinstall and follow the user's devices. Secure Enclave keys are unaffected —
-// hardware-bound by design (SEKey.swift).
+// The single global "Sync with iCloud" toggle governs whether secrets ride the iCloud Keychain.
+// Its value lives in the app-group user defaults (written by MoshroomDefaults in the app target;
+// importing it here would be a dependency cycle). Key + suite are identical in MoshHosts.m and
+// MoshroomDefaults.m.
+static NSString *const kMoshroomICloudSyncEnabledKey = @"MoshroomICloudSyncEnabled";
+static BOOL __icloud_sync_enabled() {
+  NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:[XCConfig infoPlistFullGroupID]];
+  return [d boolForKey:kMoshroomICloudSyncEnabledKey];
+}
+
+// When sync is ON, private keys ride the iCloud Keychain (kSecAttrSynchronizable, end-to-end
+// encrypted): they survive an app reinstall and follow the user's devices. When OFF, they are
+// written local to this device. Secure Enclave keys are unaffected either way — hardware-bound by
+// design (SEKey.swift), never synced.
 static UICKeyChainStore *__get_keychain() {
   UICKeyChainStore *keychain = [UICKeyChainStore keyChainStoreWithService: __keychainService()];
-  keychain.synchronizable = YES;
+  keychain.synchronizable = __icloud_sync_enabled();
   return keychain;
+}
+
+// Write a keychain string so the item always takes the CURRENT sync flavor. SecItemUpdate cannot
+// change an existing item's kSecAttrSynchronizable, so delete any existing variant first (the lookup
+// matches both flavors via kSecAttrSynchronizableAny) and add fresh.
+static void __kc_set(UICKeyChainStore *keychain, NSString *value, NSString *key) {
+  [keychain removeItemForKey:key];
+  [keychain setString:value forKey:key];
 }
 
 @implementation MoshPubKey {
@@ -101,15 +120,23 @@ static UICKeyChainStore *__get_keychain() {
     return NO;
   }
   
+  // CompleteUntilFirstUserAuthentication (not None): this blob holds key *metadata* (public key,
+  // tag, type, storage type) — the private material lives in the keychain, not here — but the
+  // metadata still shouldn't be readable at rest before the first unlock. This class allows
+  // background reads after the first unlock since boot, matching the keychain's AfterFirstUnlock.
   BOOL result = [data writeToFile:[MoshroomPaths moshroomKeysFile]
-                          options:NSDataWritingAtomic | NSDataWritingFileProtectionNone
+                          options:NSDataWritingAtomic | NSDataWritingFileProtectionCompleteUntilFirstUserAuthentication
                             error:&error];
   
   if (error || !result) {
     NSLog(@"[MoshPubKey] Failed to save data to file: %@", error);
     return NO;
   }
-  
+
+  // Mirror the saved keys up to iCloud Drive — the cloud mirror observes this; a no-op if sync is
+  // off. Symmetric with MoshHosts posting MoshroomHostsDidSave.
+  [[NSNotificationCenter defaultCenter] postNotificationName:@"MoshroomKeysDidSave" object:nil];
+
   return result;
 }
 
@@ -163,6 +190,7 @@ static UICKeyChainStore *__get_keychain() {
 }
 
 + (void)addCard:(MoshPubKey *)pubKey {
+  pubKey.lastModified = [NSDate date];
   [__identities addObject:pubKey];
   [MoshPubKey saveIDS];
 }
@@ -197,7 +225,8 @@ static UICKeyChainStore *__get_keychain() {
   
   _rawAttestationObject = [coder decodeObjectOfClass:NSData.class forKey:@"rawAttestationObject"];
   _rpId = [coder decodeObjectOfClasses:strings forKey:@"rpId"];
-  
+  _lastModified = [coder decodeObjectOfClass:NSDate.class forKey:@"lastModified"];
+
   if (!_tag) {
     _tag = [NSProcessInfo processInfo].globallyUniqueString;
   }
@@ -223,6 +252,7 @@ static UICKeyChainStore *__get_keychain() {
   
   [coder encodeObject:_rawAttestationObject forKey:@"rawAttestationObject"];
   [coder encodeObject:_rpId forKey:@"rpId"];
+  [coder encodeObject:_lastModified forKey:@"lastModified"];
 }
 
 + (NSString *)_shortKeyTypeNameFromSshKeyTypeName:(NSString *)keyTypeName {
@@ -271,8 +301,7 @@ static UICKeyChainStore *__get_keychain() {
 }
 
 - (void)storePrivateKeyInKeychain:(NSString *) privateKey {
-  UICKeyChainStore *keychain = __get_keychain();
-  [keychain setString:privateKey forKey:[self _privateKeyKeychainRef]];
+  __kc_set(__get_keychain(), privateKey, [self _privateKeyKeychainRef]);
 }
 
 - (void)storeCertificateInKeychain:(nullable NSString *) certificate {
@@ -280,11 +309,15 @@ static UICKeyChainStore *__get_keychain() {
   NSString *certRef = [self _certificateKeychainRef];
   if (certificate) {
     _certType = [MoshPubKey _shortKeyTypeNameFromSshKeyTypeName:[[certificate componentsSeparatedByString:@" "] firstObject]];
-    [keychain setString:certificate forKey: certRef];
+    __kc_set(keychain, certificate, certRef);
   } else {
     [keychain removeItemForKey:certRef];
     _certType = nil;
   }
+  // A certificate change is a metadata change — restamp so an iCloud merge tie-breaks in its favour,
+  // and persist (certType + lastModified live in the keys blob).
+  _lastModified = [NSDate date];
+  [MoshPubKey saveIDS];
 }
 
 - (nullable NSString *)privateKey {

@@ -28,11 +28,21 @@
 #import "DeviceInfo.h"
 #import "Moshroom-Swift.h"
 #import "LayoutConstraintManager.h"
+#import <MoshroomConfig/XCConfig.h>
 
 
 MoshroomDefaults *defaults;
 
 NSString *const MoshAppearanceChanged = @"MoshAppearanceChanged";
+
+// Mirror the "Sync with iCloud" flag into the app-group user defaults so MoshroomConfig
+// (MoshHosts/MoshPubKey) can read it synchronously without importing this class — that would be a
+// dependency cycle. The vault/2FA stores in the app target read the same key. Kept in lockstep with
+// kMoshroomICloudSyncEnabledKey in MoshHosts.m / MoshPubKey.m.
+static void __mirrorICloudSyncFlag(BOOL enabled) {
+  NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:[XCConfig infoPlistFullGroupID]];
+  [d setBool:enabled forKey:@"MoshroomICloudSyncEnabled"];
+}
 
 @implementation MoshroomDefaults
 
@@ -76,6 +86,7 @@ NSString *const MoshAppearanceChanged = @"MoshAppearanceChanged";
   _invertVerticalScroll = [coder decodeBoolForKey:@"invertVerticalScroll"];
   
   _iCloudSyncEnabled = [coder decodeBoolForKey:@"iCloudSyncEnabled"];
+  _requireBiometricUnlock = [coder decodeBoolForKey:@"requireBiometricUnlock"];
   _scratchLanguageMode = [coder decodeObjectOfClass:[NSString class] forKey:@"scratchLanguageMode"];
 
   return self;
@@ -99,6 +110,7 @@ NSString *const MoshAppearanceChanged = @"MoshAppearanceChanged";
   [encoder encodeBool:_oscNotifications forKey:@"oscNotifications"];
   [encoder encodeBool:_invertVerticalScroll forKey:@"invertVerticalScroll"];
   [encoder encodeBool:_iCloudSyncEnabled forKey:@"iCloudSyncEnabled"];
+  [encoder encodeBool:_requireBiometricUnlock forKey:@"requireBiometricUnlock"];
   [encoder encodeObject:_scratchLanguageMode forKey:@"scratchLanguageMode"];
 
 }
@@ -204,6 +216,10 @@ NSString *const MoshAppearanceChanged = @"MoshAppearanceChanged";
   if(!defaults.globalSSHConfig) {
     [MoshroomDefaults saveGlobalSSHConfig];
   }
+
+  // Publish the loaded sync flag to the app group so MoshroomConfig sees the authoritative value
+  // from the very first keychain access this launch.
+  __mirrorICloudSyncFlag(defaults.iCloudSyncEnabled);
 }
 
 + (void)setCursorBlink:(BOOL)state
@@ -273,6 +289,15 @@ NSString *const MoshAppearanceChanged = @"MoshAppearanceChanged";
 
 + (void)setICloudSyncEnabled:(BOOL)state {
   defaults.iCloudSyncEnabled = state;
+  __mirrorICloudSyncFlag(state);
+}
+
++ (void)setRequireBiometricUnlock:(BOOL)state {
+  defaults.requireBiometricUnlock = state;
+}
+
++ (BOOL)isRequireBiometricUnlock {
+  return defaults.requireBiometricUnlock;
 }
 
 + (void)setScratchLanguageMode:(NSString *)mode {

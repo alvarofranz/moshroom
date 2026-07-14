@@ -29,15 +29,36 @@
 
 NSMutableArray *__hosts;
 
+// The single global "Sync with iCloud" toggle governs whether secrets ride the iCloud Keychain.
+// Its value lives in the app-group user defaults, written by MoshroomDefaults (which is compiled in
+// the app target and can't be imported here — that would be a dependency cycle, since MoshroomDefaults
+// imports MoshroomConfig). Reading the shared default directly is the clean seam. Key + suite are
+// kept identical in MoshPubKey.m and MoshroomDefaults.m.
+static NSString *const kMoshroomICloudSyncEnabledKey = @"MoshroomICloudSyncEnabled";
+static BOOL __icloud_sync_enabled() {
+  NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:[XCConfig infoPlistFullGroupID]];
+  return [d boolForKey:kMoshroomICloudSyncEnabledKey];
+}
+
 // Keychain service for host passwords: derived from the build's KEYCHAIN_ID1
-// (e.g. com.alvarofranz.moshroom.pwd) — never a hardcoded foreign namespace. Passwords ride the
-// iCloud Keychain (kSecAttrSynchronizable, end-to-end encrypted): they survive an app reinstall
-// and follow the user's devices.
+// (e.g. com.alvarofranz.moshroom.pwd) — never a hardcoded foreign namespace. When sync is ON,
+// passwords ride the iCloud Keychain (kSecAttrSynchronizable, end-to-end encrypted): they survive an
+// app reinstall and follow the user's devices. When OFF, they are written local to this device.
 static UICKeyChainStore *__get_keychain() {
   NSString *service = [NSString stringWithFormat:@"%@.pwd", [XCConfig infoPlistKeyChainID1]];
   UICKeyChainStore *keychain = [UICKeyChainStore keyChainStoreWithService:service];
-  keychain.synchronizable = YES;
+  keychain.synchronizable = __icloud_sync_enabled();
   return keychain;
+}
+
+// Write a keychain string so the item always takes the CURRENT sync flavor. SecItemUpdate cannot
+// change an existing item's kSecAttrSynchronizable, so we delete any existing variant first (the
+// lookup matches both flavors via kSecAttrSynchronizableAny) and add fresh. Net effect: each item's
+// sync state equals the toggle value at its last write; items you never touch keep the flavor they
+// already had ("lo que hay es lo que hay").
+static void __kc_set(UICKeyChainStore *keychain, NSString *value, NSString *key) {
+  [keychain removeItemForKey:key];
+  [keychain setString:value forKey:key];
 }
 
 @implementation MoshHosts
@@ -222,7 +243,7 @@ sshConfigAttachment:(NSString *)sshConfigAttachment
   NSString *pwdRef = @"";
   if (password) {
     pwdRef = [newHost stringByAppendingString:@".pwd"];
-    [__get_keychain() setString:password forKey:pwdRef];
+    __kc_set(__get_keychain(), password, pwdRef);
   }
 
   MoshHosts *bkHost = [MoshHosts withHost:host];
@@ -328,8 +349,13 @@ sshConfigAttachment:(NSString *)sshConfigAttachment
     return NO;
   }
   
+  // CompleteUntilFirstUserAuthentication (not None): the blob holds connection metadata (aliases,
+  // hostnames, users, per-host options, password *references*) — no secrets, but it maps the user's
+  // infrastructure, so it should not sit readable at rest before the first unlock. This class still
+  // allows background reads once the device has been unlocked once since boot, which is exactly what
+  // a background SSH/mosh session needs (same trade-off as the keychain's AfterFirstUnlock).
   BOOL result = [data writeToFile:[MoshroomPaths moshroomHostsFile]
-                          options:NSDataWritingAtomic | NSDataWritingFileProtectionNone
+                          options:NSDataWritingAtomic | NSDataWritingFileProtectionCompleteUntilFirstUserAuthentication
                             error:&error];
   
   if (error || !result) {

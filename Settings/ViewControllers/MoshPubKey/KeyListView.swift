@@ -335,6 +335,10 @@ struct KeyListView: View {
         }
       }
     }
+    // A key list pulled from iCloud (Drive metadata + Keychain material) lands live while open.
+    .onReceive(NotificationCenter.default.publisher(for: HostsCloudMirror.keysDidChangeNotification)) { _ in
+      _state.reloadCards()
+    }
     .listStyle(InsetGroupedListStyle())
     .toolbar {
       MoshNavBarItem(placement: .navigationBarTrailing) {

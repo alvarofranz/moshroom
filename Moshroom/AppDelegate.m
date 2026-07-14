@@ -66,8 +66,11 @@ void __setupProcessEnv(void) {
   [AppDelegate reloadDefaults];
   [[UIView appearance] setTintColor:[UIColor moshroomTint]];
 
-  // iCloud Drive hosts mirror: self-installs (pushes on save, pulls on foreground). No-op when sync is off.
+  // iCloud Drive mirror (hosts + keys): self-installs (pushes on save, pulls on foreground). No-op when sync is off.
   [HostsCloudMirror install];
+
+  // Optional app lock (Face ID / passcode). No-op unless enabled in Settings › Security.
+  [[MoshAppLock shared] install];
 
   signal(SIGPIPE, __on_pipebroken_signal);
  

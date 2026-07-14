@@ -44,6 +44,9 @@ typedef enum: NSUInteger {
 @property (readonly) MoshPubKeyStorageType storageType;
 @property (readonly, nullable) NSData * rawAttestationObject;
 @property (readonly, nullable) NSString * rpId;
+// When this identity was last created/modified. Stamped on add and on certificate change; drives the
+// per-key newest-wins tie-break when the keys list is merged across devices during an iCloud sync.
+@property (nullable) NSDate *lastModified;
 
 - (nullable NSString *)loadPrivateKey;
 - (nullable NSString *)loadCertificate;

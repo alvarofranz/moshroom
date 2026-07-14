@@ -54,6 +54,7 @@ typedef NS_ENUM(NSInteger, MoshLayoutMode) {
 @property (nonatomic) BOOL oscNotifications;
 @property (nonatomic) BOOL invertVerticalScroll;
 @property (nonatomic) BOOL iCloudSyncEnabled;
+@property (nonatomic) BOOL requireBiometricUnlock;
 @property (nonatomic, strong) NSString *scratchLanguageMode;
 
 + (void)loadDefaults NS_SWIFT_NAME(loadDefaults());
@@ -71,6 +72,8 @@ typedef NS_ENUM(NSInteger, MoshLayoutMode) {
 + (void)setOscNotifications:(BOOL)state;
 + (void)setInvertedVerticalScroll:(BOOL) state;
 + (void)setICloudSyncEnabled:(BOOL)state;
++ (void)setRequireBiometricUnlock:(BOOL)state;
++ (BOOL)isRequireBiometricUnlock;
 + (NSString *)selectedFontName;
 + (NSString *)selectedThemeName;
 + (NSNumber *)selectedFontSize;

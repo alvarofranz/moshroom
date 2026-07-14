@@ -63,6 +63,11 @@
 // The hosts blob mirrored into iCloud Drive when "Sync with iCloud" is on (nil if iCloud unavailable).
 + (NSURL *) iCloudHostsLocationURL;
 
+// The keys-metadata blob mirrored into iCloud Drive when "Sync with iCloud" is on. Only the
+// projection of Keychain-backed keys is written here (their private material rides the iCloud
+// Keychain); Secure Enclave / passkey / security keys are never mirrored. nil if iCloud unavailable.
++ (NSURL *) iCloudKeysLocationURL;
+
 + (void)linkICloudDriveIfNeeded;
 + (void)linkDocumentsIfNeeded;
 

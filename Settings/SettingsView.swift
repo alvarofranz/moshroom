@@ -29,6 +29,7 @@ struct SettingsView: View {
 
   @State private var _moshroomVersion = UIApplication.moshroomShortVersion() ?? ""
   @State private var _iCloudSyncOn = MoshroomDefaults.isICloudSyncEnabled()
+  @State private var _requireBiometric = MoshroomDefaults.isRequireBiometricUnlock()
   @AppStorage(MoshxploreStyle.textSizeKey) private var _moshxploreTextSize: Int = MoshxploreStyle.defaultTextSize
   private var _iCloudAvailable: Bool { FileManager.default.ubiquityIdentityToken != nil }
   @State private var _defaultUser = MoshroomDefaults.defaultUserName() ?? ""
@@ -111,6 +112,20 @@ struct SettingsView: View {
       }
 
       Section {
+        Toggle(isOn: $_requireBiometric) {
+          Label("Require Face ID / passcode", systemImage: "faceid")
+        }
+        .onChange(of: _requireBiometric) { on in
+          MoshroomDefaults.setRequireBiometricUnlock(on)
+          MoshroomDefaults.save()
+        }
+      } header: {
+        Text("Security")
+      } footer: {
+        Text("When on, Moshroom asks for Face ID (or your device passcode) to open the app, and hides its contents in the app switcher. Your keys, passwords and 2FA codes are always stored in the keychain regardless of this setting.")
+      }
+
+      Section {
         Toggle(isOn: $_iCloudSyncOn) {
           Label("Enabled", systemImage: "icloud")
         }
@@ -153,8 +168,8 @@ struct SettingsView: View {
         Text("Sync with iCloud")
       } footer: {
         Text(_iCloudAvailable
-             ? "Hosts and snippets sync across your devices through iCloud Drive. Keys and passwords live in your iCloud Keychain (end-to-end encrypted), so they survive reinstalls and follow your devices — except Secure Enclave keys, which never leave this device. If the same host is edited on two devices, the newest edit wins — a conflict merges both lists and never deletes anything."
-             : "Sign in to iCloud to sync hosts and snippets across your devices.")
+             ? "One switch for everything. Your hosts, keys, snippets, passwords and 2FA codes sync across your devices: settings and metadata through iCloud Drive, and every secret (key material, host and vault passwords, 2FA seeds) through your iCloud Keychain — end-to-end encrypted, so Apple can't read them and they survive reinstalls. Secure Enclave keys never leave this device. Edit the same item on two devices and the newest edit wins; a conflict merges both sides and never deletes anything. Turning sync off stops syncing from here on — whatever already reached your other devices stays there."
+             : "Sign in to iCloud to sync your hosts, keys, snippets, passwords and 2FA codes across your devices.")
       }
 
       Section {
@@ -179,6 +194,7 @@ struct SettingsView: View {
     }
     .onAppear {
       _iCloudSyncOn = MoshroomDefaults.isICloudSyncEnabled()
+      _requireBiometric = MoshroomDefaults.isRequireBiometricUnlock()
       _defaultUser = MoshroomDefaults.defaultUserName() ?? ""
       _isSyncing = HostsCloudMirror.isSyncing
       _lastSync = HostsCloudMirror.lastSyncDate
