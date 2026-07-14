@@ -33,29 +33,25 @@ import MoshroomConfig
 //
 // Two independent transports carry a full backup across a user's devices:
 //   1. This Drive mirror — the *metadata* (host configs; key public/type/storage records).
-//   2. The iCloud Keychain — the *secrets* (host passwords, private key material), synced E2E by the
-//      OS whenever the same toggle is on (see MoshHosts.m / MoshPubKey.m). Secure-Enclave keys are
-//      hardware-bound and ride neither transport.
+//   2. The iCloud Keychain — the *secrets* (host passwords, private key material, vault + 2FA), synced
+//      E2E by the OS whenever the same toggle is on. Deletions there are handled by the OS.
 //
-// Sync model — safe by construction, a conflict can never lose data:
-// - Normal case: whole-projection newest-wins by modification date. Edits AND deletions propagate,
-//   because only one side changed since this device last synced.
-// - True conflict (BOTH sides changed since this device's last sync, or iCloud forked the file into
-//   unresolved versions): the lists are MERGED — union by identity; where the same item was edited
-//   on both sides, the entry with the newer per-item `lastModified` wins. Worst case a deletion on
-//   one device loses to an edit on another — never the other way around.
+// Sync is entirely EVENT-DRIVEN, never polled: a local save/edit/delete posts a notification →
+// immediate reconcile (push); a foreground-only NSMetadataQuery watches the iCloud files so a change
+// made on another device pulls in live; plus a pass on launch and on foreground. No timer, no cron.
 //
-// Keys are mirrored as a PROJECTION: only Keychain-backed keys travel (their private material rides
-// the iCloud Keychain). Secure-Enclave / passkey / security keys are device- or provider-bound, so
-// their metadata is never uploaded and — critically — the local device-only keys are always kept
-// when a remote keys list is adopted or merged. A synced device therefore rebuilds its keys file as
-// (its own device-only keys) + (the shared Keychain-key projection).
+// Deletions are first-class and bulletproof via TOMBSTONES. Removing an item drops it from the list
+// AND records `{id: deletedAt}` in a small sidecar blob that is itself synced (union, newest wins).
+// The reconcile filters out any item whose tombstone is newer than the item's own `lastModified`, so
+// a deletion — including "delete everything" — always wins, even against a concurrent edit on another
+// device (a plain union merge would otherwise resurrect it). Re-adding a deleted alias just works
+// (the new item is newer than its tombstone). Tombstones self-prune after 30 days, by which point
+// every device has converged. (The iCloud Keychain already tombstones the secrets it carries.)
 //
-// Self-installs once (`install()` from AppDelegate): reconciles when either blob is saved
-// (`MoshroomHostsDidSave` / `MoshroomKeysDidSave`), on every foreground and at launch, and on demand
-// via `syncNow()`. `isSyncing` + `lastSyncDate` + `lastSyncSummary` + `syncStateNotification` drive
-// the Settings row. All file work runs off the main thread with NSFileCoordinator; the only
-// main-thread steps are reloading MoshHosts / MoshPubKey after a local file changed.
+// A conflict still never loses an EDIT: where the same id was changed on both sides, the newer
+// `lastModified` wins and the other side is unioned in. Keys mirror only the projection of
+// Keychain-backed keys (their private material rides the iCloud Keychain); Secure-Enclave / passkey
+// keys are device-bound, never uploaded, and always preserved locally.
 @objc final class HostsCloudMirror: NSObject {
 
   // Posted by MoshHosts / MoshPubKey after their local blob is written (kept in sync with the .m files).
@@ -70,11 +66,11 @@ import MoshroomConfig
   private static let queue = DispatchQueue(label: "moshroom.cloudmirror", qos: .utility)
   private static var installed = false
 
+  // Tombstones older than this are pruned (every device has long since converged).
+  private static let tombstoneTTL: TimeInterval = 30 * 24 * 3600
+
   // MARK: - Extra count providers (set by the vault/2FA stores at launch)
 
-  // The password vault and 2FA accounts live in the iCloud Keychain (not in a Drive blob), so this
-  // coordinator can't count them itself. The stores register a counter so the Settings readout can
-  // still show "N passwords · N 2FA". nil ⇒ that store hasn't loaded yet (shown as 0 / omitted).
   static var passwordsCountProvider: (() -> Int)?
   static var totpCountProvider: (() -> Int)?
 
@@ -83,31 +79,28 @@ import MoshroomConfig
   private static let lastSyncKey = "MoshroomCloudLastSyncDate"
   private static let lastSummaryKey = "MoshroomCloudLastSyncSummary"
 
-  // Per-dataset "what this device last saw" markers (local + cloud modification dates).
   private static let hostsMarkerLocalKey = "MoshroomCloudLastSyncedLocalDate"
   private static let hostsMarkerCloudKey = "MoshroomCloudLastSyncedCloudDate"
   private static let keysMarkerLocalKey = "MoshroomCloudKeysLastSyncedLocalDate"
   private static let keysMarkerCloudKey = "MoshroomCloudKeysLastSyncedCloudDate"
+  // The set of item ids this device last had locally — diffed each pass to detect local deletions.
+  private static let hostsKnownIdsKey = "MoshroomCloudHostsKnownIds"
+  private static let keysKnownIdsKey = "MoshroomCloudKeysKnownIds"
 
-  // When this device last completed a successful reconcile (any direction, including no-op).
   @objc static var lastSyncDate: Date? {
     UserDefaults.standard.object(forKey: lastSyncKey) as? Date
   }
 
-  // One honest line about the last pass — the per-type counts plus what the pass did. The Settings
-  // row shows it so you can SEE what sync saw.
   @objc static var lastSyncSummary: String? {
     UserDefaults.standard.string(forKey: lastSummaryKey)
   }
 
   private static func _setSummary(_ text: String) {
     UserDefaults.standard.set(text, forKey: lastSummaryKey)
-    DispatchQueue.main.async {
-      NotificationCenter.default.post(name: syncStateNotification, object: nil)
-    }
+    DispatchQueue.main.async { NotificationCenter.default.post(name: syncStateNotification, object: nil) }
   }
 
-  @objc private(set) static var isSyncing = false   // main-thread value, drives "Syncing…"
+  @objc private(set) static var isSyncing = false
 
   private static func _setSyncing(_ on: Bool) {
     DispatchQueue.main.async {
@@ -119,9 +112,7 @@ import MoshroomConfig
 
   private static func _markGlobalSynced() {
     UserDefaults.standard.set(Date(), forKey: lastSyncKey)
-    DispatchQueue.main.async {
-      NotificationCenter.default.post(name: syncStateNotification, object: nil)
-    }
+    DispatchQueue.main.async { NotificationCenter.default.post(name: syncStateNotification, object: nil) }
   }
 
   private static func _setMarkers(local: Date?, cloud: Date?, localKey: String, cloudKey: String) {
@@ -135,25 +126,25 @@ import MoshroomConfig
   @objc static func install() {
     guard !installed else { return }
     installed = true
-    // The vault/2FA counts for the Settings readout — those stores live in the iCloud Keychain, not
-    // in a Drive blob, so they can't be counted from the reconcile itself.
     passwordsCountProvider = { MoshVaultStore.shared.count() }
     totpCountProvider = { MoshTOTPStore.shared.count() }
-    // The connect path reads the generated ssh_config, not the hosts blob. Regenerate it once at
-    // launch so it always matches the persisted hosts — this covers a host that arrived via an
-    // iCloud pull (or state restoration) on a device that never saved one locally.
+    // The connect path reads the generated ssh_config; regenerate once at launch so it matches the
+    // persisted hosts (covers a host that arrived via an iCloud pull on a device that never saved one).
     MoshHosts.saveAllToSSHConfig()
+
     let nc = NotificationCenter.default
     nc.addObserver(forName: didSaveNotification, object: nil, queue: nil) { _ in reconcile() }
     nc.addObserver(forName: keysDidSaveNotification, object: nil, queue: nil) { _ in reconcile() }
-    nc.addObserver(forName: UIScene.willEnterForegroundNotification, object: nil, queue: nil) { _ in
-      reconcile()
-    }
-    reconcile()   // launch pass
+    nc.addObserver(forName: UIScene.willEnterForegroundNotification, object: nil, queue: nil) { _ in reconcile() }
+    // Foreground-only live watcher: start when active, stop when backgrounded (never drains battery
+    // in the background — it simply isn't running there).
+    nc.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { _ in _startWatcher() }
+    nc.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { _ in _stopWatcher() }
+
+    reconcile()      // launch pass
+    _startWatcher()  // in case we're already active
   }
 
-  // The Settings "Sync Now": a full reconcile, plus a download nudge for the snips folder
-  // (snips are a plain iCloud Drive folder — iOS syncs it; we can only ask it to hurry).
   @objc static func syncNow() {
     if let snips = MoshroomPaths.iCloudSnippetsLocationURL() {
       try? FileManager.default.startDownloadingUbiquitousItem(at: snips)
@@ -161,7 +152,6 @@ import MoshroomConfig
     reconcile()
   }
 
-  // Sync is on AND iCloud Drive is reachable for this account.
   private static var isActive: Bool {
     MoshroomDefaults.isICloudSyncEnabled() && FileManager.default.ubiquityIdentityToken != nil
   }
@@ -169,93 +159,111 @@ import MoshroomConfig
   private static var hostsLocalURL: URL { URL(fileURLWithPath: MoshroomPaths.moshroomHostsFile()) }
   private static var keysLocalURL: URL { URL(fileURLWithPath: MoshroomPaths.moshroomKeysFile()) }
 
+  // MARK: - Live watcher (NSMetadataQuery, foreground only)
+
+  private static var metaQuery: NSMetadataQuery?
+  private static var metaObservers: [NSObjectProtocol] = []
+  private static var watchDebounce: DispatchWorkItem?
+
+  private static func _startWatcher() {
+    guard isActive, metaQuery == nil else { return }
+    let q = NSMetadataQuery()
+    q.searchScopes = [NSMetadataQueryUbiquitousDocumentsScope]
+    // Only our four files — never the whole container, so this stays cheap.
+    q.predicate = NSPredicate(format: "%K IN %@", NSMetadataItemFSNameKey,
+                              ["hosts", "keys", "hosts.tombstones", "keys.tombstones"])
+    let onChange: (Notification) -> Void = { _ in _debouncedReconcile() }
+    metaObservers = [
+      NotificationCenter.default.addObserver(forName: .NSMetadataQueryDidUpdate, object: q, queue: .main, using: onChange),
+      NotificationCenter.default.addObserver(forName: .NSMetadataQueryDidFinishGathering, object: q, queue: .main, using: onChange),
+    ]
+    metaQuery = q
+    q.start()
+  }
+
+  private static func _stopWatcher() {
+    metaQuery?.stop()
+    metaObservers.forEach { NotificationCenter.default.removeObserver($0) }
+    metaObservers = []
+    metaQuery = nil
+    watchDebounce?.cancel()
+    watchDebounce = nil
+  }
+
+  // Coalesce a burst of metadata updates (a single remote save can fire several) into one reconcile.
+  private static func _debouncedReconcile() {
+    watchDebounce?.cancel()
+    let work = DispatchWorkItem { reconcile() }
+    watchDebounce = work
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.8, execute: work)
+  }
+
   // MARK: - Reconcile (the one sync path)
 
   @objc static func reconcile() {
     guard isActive else { return }
     guard let hostsCloudURL = MoshroomPaths.iCloudHostsLocationURL(),
           let keysCloudURL = MoshroomPaths.iCloudKeysLocationURL() else {
-      // The single most diagnostic failure: iCloud Drive off (globally or for Moshroom) or no account.
       _setSummary("iCloud unavailable — check iCloud Drive is on for Moshroom")
       return
     }
     _setSyncing(true)
     queue.async {
       defer { _setSyncing(false) }
-
       let hostsFlavor = _reconcileHosts(cloudURL: hostsCloudURL)
       let keysFlavor = _reconcileKeys(cloudURL: keysCloudURL)
       _markGlobalSynced()
-
-      // Materialize snips that arrived from another device, count everything, publish the readout.
       let snips = _downloadAndCountSnips()
-      DispatchQueue.main.async {
-        // Runs after any adopt/merge reload enqueued above — counts are the fresh, post-sync truth.
-        _publishSummary(overall: _combine(hostsFlavor, keysFlavor), snips: snips)
-      }
+      DispatchQueue.main.async { _publishSummary(overall: _combine(hostsFlavor, keysFlavor), snips: snips) }
     }
   }
 
-  // MARK: - Hosts dataset
+  // MARK: - Datasets
 
   private static func _reconcileHosts(cloudURL: URL) -> Flavor {
     let local = hostsLocalURL
-    return _reconcileProjection(
-      cloudURL: cloudURL,
-      localProjection: try? Data(contentsOf: local),
-      localDate: modificationDate(of: local),
-      markerLocalKey: hostsMarkerLocalKey,
-      markerCloudKey: hostsMarkerCloudKey,
-      count: { decodeHosts($0)?.count },
-      merge: { mergeHosts(datasets: $0) },
-      apply: { projection, stamp in
-        // Hosts: the whole local file IS the projection.
-        guard (try? projection.write(to: local, options: .atomic)) != nil else { return }
-        if let stamp {
-          try? FileManager.default.setAttributes([.modificationDate: stamp], ofItemAtPath: local.path)
-        }
+    return _reconcileDataset(
+      cloudItemsURL: cloudURL,
+      localItemsURL: local,
+      markerLocalKey: hostsMarkerLocalKey, markerCloudKey: hostsMarkerCloudKey,
+      knownIdsKey: hostsKnownIdsKey,
+      decode: { decodeHosts($0) },
+      encode: { encodeHosts($0) },
+      idOf: { $0.host ?? "" },
+      lastModOf: { $0.lastModified },
+      applyLocal: { items, stamp in
+        guard let data = encodeHosts(items) else { return }
+        try? data.write(to: local, options: .atomic)
+        if let stamp { try? FileManager.default.setAttributes([.modificationDate: stamp], ofItemAtPath: local.path) }
         DispatchQueue.main.async {
           MoshHosts.loadHosts()
-          // The connect path reads the generated ssh_config, NOT the hosts blob — regenerate it from
-          // the freshly-synced list or a synced host can't be reached (hostName falls back to the
-          // alias → getaddrinfo fails with "Socket error: No such file or directory").
-          MoshHosts.saveAllToSSHConfig()
+          MoshHosts.saveAllToSSHConfig()   // connect path reads ssh_config, not the blob
           NotificationCenter.default.post(name: didChangeNotification, object: nil)
         }
       }
     )
   }
 
-  // MARK: - Keys dataset (Keychain-key projection; device-only keys preserved)
-
   private static func _reconcileKeys(cloudURL: URL) -> Flavor {
     let local = keysLocalURL
-    let localAll = decodeKeys((try? Data(contentsOf: local)) ?? Data()) ?? []
-    let localProjectionKeys = localAll.filter { $0.storageType == MoshPubKeyStorageTypeKeyChain }
-    // Device-only keys (Secure Enclave / passkey / security) never sync and must survive any adopt or
-    // merge of a remote list — captured here so the rebuild below always re-attaches them.
-    let deviceOnlyKeys = localAll.filter { $0.storageType != MoshPubKeyStorageTypeKeyChain }
-    let localProjection: Data? = localAll.isEmpty
-      ? nil                                   // nothing at all locally
-      : encodeKeys(localProjectionKeys)       // the syncable subset (may be an empty encoded array)
-
-    return _reconcileProjection(
-      cloudURL: cloudURL,
-      localProjection: localProjection,
-      localDate: modificationDate(of: local),
-      markerLocalKey: keysMarkerLocalKey,
-      markerCloudKey: keysMarkerCloudKey,
-      count: { decodeKeys($0)?.count },
-      merge: { mergeKeysByTag(datasets: $0) },
-      apply: { projection, stamp in
-        // Keys: rebuild the local file as (this device's device-only keys) + (the adopted projection),
-        // so a Secure-Enclave / passkey key that only exists here is never dropped by a remote list.
-        let adopted = decodeKeys(projection) ?? []
-        guard let data = encodeKeys(deviceOnlyKeys + adopted) else { return }
-        guard (try? data.write(to: local, options: .atomic)) != nil else { return }
-        if let stamp {
-          try? FileManager.default.setAttributes([.modificationDate: stamp], ofItemAtPath: local.path)
-        }
+    // Device-only keys (SE / passkey / security) never sync and must survive any adopt/merge.
+    let deviceOnlyKeys = (decodeKeys((try? Data(contentsOf: local)) ?? Data()) ?? [])
+      .filter { $0.storageType != MoshPubKeyStorageTypeKeyChain }
+    return _reconcileDataset(
+      cloudItemsURL: cloudURL,
+      localItemsURL: local,
+      markerLocalKey: keysMarkerLocalKey, markerCloudKey: keysMarkerCloudKey,
+      knownIdsKey: keysKnownIdsKey,
+      // `decode` yields the SYNCABLE projection — Keychain-backed keys only.
+      decode: { (decodeKeys($0) ?? []).filter { $0.storageType == MoshPubKeyStorageTypeKeyChain } },
+      encode: { encodeKeys($0) },
+      idOf: { $0.tag },
+      lastModOf: { $0.lastModified },
+      applyLocal: { items, stamp in
+        // Rebuild the local file as (device-only keys) + (the synced projection).
+        guard let data = encodeKeys(deviceOnlyKeys + items) else { return }
+        try? data.write(to: local, options: .atomic)
+        if let stamp { try? FileManager.default.setAttributes([.modificationDate: stamp], ofItemAtPath: local.path) }
         DispatchQueue.main.async {
           MoshPubKey.loadIDS()
           NotificationCenter.default.post(name: keysDidChangeNotification, object: nil)
@@ -264,118 +272,176 @@ import MoshroomConfig
     )
   }
 
-  // MARK: - Generic projection reconcile (shared by hosts + keys)
+  // MARK: - Generic dataset reconcile with tombstones
 
   private enum Flavor: Equatable { case upToDate, fetched, sent, merged, empty }
 
   private static func _combine(_ a: Flavor, _ b: Flavor) -> Flavor {
-    // Show the most significant thing that happened this pass.
-    let order: [Flavor] = [.merged, .fetched, .sent, .upToDate, .empty]
-    for f in order where a == f || b == f { return f }
+    for f in [Flavor.merged, .fetched, .sent, .upToDate, .empty] where a == f || b == f { return f }
     return .upToDate
   }
 
-  private static func _reconcileProjection(
-    cloudURL: URL,
-    localProjection: Data?,
-    localDate: Date?,
-    markerLocalKey: String,
-    markerCloudKey: String,
-    count: (Data) -> Int?,
-    merge: ([Data]) -> Data?,
-    apply: @escaping (_ projection: Data, _ stamp: Date?) -> Void
+  private static func _reconcileDataset<Item>(
+    cloudItemsURL: URL,
+    localItemsURL: URL,
+    markerLocalKey: String, markerCloudKey: String,
+    knownIdsKey: String,
+    decode: (Data) -> [Item]?,
+    encode: ([Item]) -> Data?,
+    idOf: (Item) -> String,
+    lastModOf: (Item) -> Date?,
+    applyLocal: @escaping (_ items: [Item], _ stamp: Date?) -> Void
   ) -> Flavor {
-    try? FileManager.default.startDownloadingUbiquitousItem(at: cloudURL)
+    let fm = FileManager.default
+    let localTombURL = localItemsURL.appendingPathExtension("tombstones")
+    let cloudTombURL = cloudItemsURL.appendingPathExtension("tombstones")
+    try? fm.startDownloadingUbiquitousItem(at: cloudItemsURL)
+    try? fm.startDownloadingUbiquitousItem(at: cloudTombURL)
 
-    // iCloud forked the file? Collect every unresolved sibling for the merge below.
-    let conflictVersions = NSFileVersion.unresolvedConflictVersionsOfItem(at: cloudURL) ?? []
-    let conflictData = conflictVersions.compactMap { try? Data(contentsOf: $0.url) }
+    // Local items (decoded to the syncable projection).
+    let localData = try? Data(contentsOf: localItemsURL)
+    let localExists = localData != nil
+    let decodedLocal = localData.flatMap(decode)
+    // A present-but-unreadable local file must NOT be read as "everything was deleted": leave the whole
+    // dataset untouched this pass (no tombstones, no overwrite) rather than risk a spurious mass wipe.
+    if localExists && decodedLocal == nil { return .upToDate }
+    let localItems = decodedLocal ?? []
+    let localProjData = encode(localItems)
+    let currentIds = Set(localItems.map(idOf).filter { !$0.isEmpty })
 
+    // Deletions this device made since last sync (ids known before, gone now) — inferred ONLY when the
+    // local file is actually present. A vanished file means a container reset (reinstall), not a
+    // "delete all"; that path adopts the cloud copy instead of tombstoning everything. A real
+    // "delete all" keeps the file (an empty archived list), so it still propagates.
+    let knownIds = Set((UserDefaults.standard.array(forKey: knownIdsKey) as? [String]) ?? [])
+    let locallyDeleted = localExists ? knownIds.subtracting(currentIds) : []
+
+    // --- Tombstones: union local + cloud + this device's new deletions, prune, publish both sides.
+    let nowTs = Date().timeIntervalSince1970
+    var localTombs = _readTombs(localTombURL)
+    for id in locallyDeleted { localTombs[id] = max(localTombs[id] ?? 0, nowTs) }
+    let cloudTombs = _readCloudData(cloudTombURL).flatMap(_decodeTombs) ?? [:]
+    var mergedTombs = _mergeTombs(localTombs, cloudTombs)
+    mergedTombs = mergedTombs.filter { nowTs - $0.value < tombstoneTTL }   // prune the long-converged
+    if mergedTombs != localTombs { _writeTombsLocal(mergedTombs, to: localTombURL) }
+    if mergedTombs != cloudTombs { _writeTombsCloud(mergedTombs, to: cloudTombURL) }
+
+    func alive(_ item: Item) -> Bool {
+      guard let ts = mergedTombs[idOf(item)] else { return true }
+      return (lastModOf(item)?.timeIntervalSince1970 ?? 0) > ts   // item newer than its tombstone ⇒ kept
+    }
+
+    // --- Cloud items + any forked conflict versions.
+    let conflictVersions = NSFileVersion.unresolvedConflictVersionsOfItem(at: cloudItemsURL) ?? []
+    let conflictLists = conflictVersions.compactMap { (try? Data(contentsOf: $0.url)).flatMap(decode) }
     var cloud: (data: Data, date: Date)?
     var coordError: NSError?
-    NSFileCoordinator().coordinate(readingItemAt: cloudURL, options: [], error: &coordError) { src in
-      guard FileManager.default.fileExists(atPath: src.path),
-            let date = modificationDate(of: src),
+    NSFileCoordinator().coordinate(readingItemAt: cloudItemsURL, options: [], error: &coordError) { src in
+      guard fm.fileExists(atPath: src.path), let date = modificationDate(of: src),
             let data = try? Data(contentsOf: src) else { return }
       cloud = (data, date)
+    }
+    let cloudItems = cloud.flatMap { decode($0.data) } ?? []
+    let localDate = modificationDate(of: localItemsURL)
+
+    // Nothing anywhere → just record the (pruned) tombstones and leave.
+    if !localExists && cloud == nil {
+      _setMarkers(local: nil, cloud: nil, localKey: markerLocalKey, cloudKey: markerCloudKey)
+      UserDefaults.standard.set([], forKey: knownIdsKey)
+      return .empty
     }
 
     let defaults = UserDefaults.standard
     let markerLocal = defaults.object(forKey: markerLocalKey) as? Date
     let markerCloud = defaults.object(forKey: markerCloudKey) as? Date
-
     func changed(_ date: Date?, since marker: Date?) -> Bool {
       guard let date else { return false }
-      guard let marker else { return true }        // first sync: treat as changed → merge (safe)
-      return date.timeIntervalSince(marker) > 0.5  // mtimes are stamped equal after each sync
+      guard let marker else { return true }
+      return date.timeIntervalSince(marker) > 0.5
+    }
+    let localChanged = changed(localDate, since: markerLocal) || !locallyDeleted.isEmpty
+    let cloudChanged = changed(cloud?.date, since: markerCloud)
+
+    // --- Decide the merged item set (newest-wins normal; union on a true conflict). NO clobber valves.
+    let decided: [Item]
+    let flavor: Flavor
+    if !localExists, let _ = cloud {
+      decided = cloudItems; flavor = .fetched
+    } else if localExists, cloud == nil {
+      decided = localItems; flavor = .sent
+    } else if (localChanged && cloudChanged) || !conflictLists.isEmpty {
+      decided = _union([localItems, cloudItems] + conflictLists, idOf: idOf, lastModOf: lastModOf)
+      flavor = .merged
+    } else if cloudChanged {
+      decided = cloudItems; flavor = .fetched
+    } else if localChanged {
+      decided = localItems; flavor = .sent
+    } else {
+      decided = localItems; flavor = .upToDate
     }
 
-    switch (localProjection, cloud) {
-    case (nil, nil):
-      _setMarkers(local: nil, cloud: nil, localKey: markerLocalKey, cloudKey: markerCloudKey)
-      return .empty
+    // Tombstones are authoritative: a deletion always wins (this is what a plain union can't do).
+    let finalItems = decided.filter(alive)
+    guard let finalData = encode(finalItems) else { return flavor }
 
-    case (let l?, nil):
-      // Nothing in the cloud yet — publish the local projection.
-      writeCloud(l, to: cloudURL, stamp: localDate)
-      _setMarkers(local: localDate, cloud: localDate, localKey: markerLocalKey, cloudKey: markerCloudKey)
-      return .sent
+    // Write only what actually changed, stamping equal dates so neither side re-pulls its own push.
+    let now = Date()
+    var markL = localDate
+    var markC = cloud?.date
+    if finalData != localProjData {
+      applyLocal(finalItems, now); markL = now
+    }
+    if finalData != cloud?.data {
+      writeCloud(finalData, to: cloudItemsURL, stamp: now); markC = now
+    }
+    _setMarkers(local: markL, cloud: markC, localKey: markerLocalKey, cloudKey: markerCloudKey)
+    UserDefaults.standard.set(finalItems.map(idOf).filter { !$0.isEmpty }, forKey: knownIdsKey)
+    return flavor
+  }
 
-    case (nil, let c?):
-      // Nothing local yet — adopt the cloud copy.
-      apply(c.data, c.date)
-      _setMarkers(local: c.date, cloud: c.date, localKey: markerLocalKey, cloudKey: markerCloudKey)
-      return .fetched
-
-    case (let l?, let c?):
-      if l == c.data && conflictData.isEmpty {
-        _setMarkers(local: localDate, cloud: c.date, localKey: markerLocalKey, cloudKey: markerCloudKey)
-        return .upToDate
-      }
-      let localChanged = changed(localDate, since: markerLocal)
-      let cloudChanged = changed(c.date, since: markerCloud)
-
-      // Safety valves. Plain newest-wins is how edits and deletions propagate, but two shapes are far
-      // more likely a half-initialized or divergent sibling (fresh install, broken/partial transport)
-      // than a real user action — those go through the merge, whose union keeps the data:
-      //  - an empty list replacing a non-empty one ("delete everything" doesn't propagate silently);
-      //  - adopting a cloud list that would silently drop more than half of this device's items.
-      let localCount = count(l) ?? 0
-      let cloudCount = count(c.data) ?? 0
-      let emptyClobber =
-        (cloudChanged && cloudCount == 0 && localCount > 0) ||
-        (localChanged && localCount == 0 && cloudCount > 0)
-      let shrinkClobber = cloudChanged && !localChanged
-        && localCount >= 2 && cloudCount * 2 < localCount
-
-      if (localChanged && cloudChanged) || !conflictData.isEmpty || emptyClobber || shrinkClobber {
-        // True conflict → merge every dataset we can see. Local first, so ties keep local.
-        guard let merged = merge([l, c.data] + conflictData) else { return .upToDate }
-        let now = Date()
-        apply(merged, now)
-        writeCloud(merged, to: cloudURL, stamp: now)
-        conflictVersions.forEach { $0.isResolved = true }
-        try? NSFileVersion.removeOtherVersionsOfItem(at: cloudURL)
-        _setMarkers(local: now, cloud: now, localKey: markerLocalKey, cloudKey: markerCloudKey)
-        return .merged
-      } else if cloudChanged {
-        apply(c.data, c.date)
-        _setMarkers(local: c.date, cloud: c.date, localKey: markerLocalKey, cloudKey: markerCloudKey)
-        return .fetched
-      } else if localChanged {
-        writeCloud(l, to: cloudURL, stamp: localDate)
-        _setMarkers(local: localDate, cloud: localDate, localKey: markerLocalKey, cloudKey: markerCloudKey)
-        return .sent
-      } else {
-        _setMarkers(local: localDate, cloud: c.date, localKey: markerLocalKey, cloudKey: markerCloudKey)
-        return .upToDate
+  private static func _union<Item>(_ lists: [[Item]], idOf: (Item) -> String, lastModOf: (Item) -> Date?) -> [Item] {
+    var byId: [String: Item] = [:]
+    var order: [String] = []
+    for list in lists {
+      for item in list {
+        let id = idOf(item)
+        guard !id.isEmpty else { continue }
+        if let ex = byId[id] {
+          if (lastModOf(item) ?? .distantPast) > (lastModOf(ex) ?? .distantPast) { byId[id] = item }
+        } else {
+          byId[id] = item; order.append(id)
+        }
       }
     }
+    return order.compactMap { byId[$0] }
+  }
+
+  // MARK: - Tombstone helpers (JSON {id: epochSeconds})
+
+  private static func _readTombs(_ url: URL) -> [String: Double] {
+    (try? Data(contentsOf: url)).flatMap(_decodeTombs) ?? [:]
+  }
+  private static func _decodeTombs(_ data: Data) -> [String: Double]? {
+    guard let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: NSNumber] else { return nil }
+    return obj.mapValues { $0.doubleValue }
+  }
+  private static func _encodeTombs(_ t: [String: Double]) -> Data? {
+    try? JSONSerialization.data(withJSONObject: t)
+  }
+  private static func _mergeTombs(_ a: [String: Double], _ b: [String: Double]) -> [String: Double] {
+    a.merging(b) { max($0, $1) }
+  }
+  private static func _writeTombsLocal(_ t: [String: Double], to url: URL) {
+    guard let data = _encodeTombs(t) else { return }
+    try? data.write(to: url, options: .atomic)
+  }
+  private static func _writeTombsCloud(_ t: [String: Double], to url: URL) {
+    guard let data = _encodeTombs(t) else { return }
+    writeCloud(data, to: url, stamp: nil)
   }
 
   // MARK: - Snips
 
-  // Nudge every file in the iCloud snips folder to download and count what's there.
   private static func _downloadAndCountSnips() -> Int {
     guard let snips = MoshroomPaths.iCloudSnippetsLocationURL() else { return 0 }
     let fm = FileManager.default
@@ -414,7 +480,7 @@ import MoshroomConfig
     _setSummary(parts.joined(separator: " · ") + " — " + state)
   }
 
-  // MARK: - Encode / decode / merge
+  // MARK: - Encode / decode
 
   private static func decodeHosts(_ data: Data) -> [MoshHosts]? {
     try? NSKeyedUnarchiver.unarchivedArrayOfObjects(ofClass: MoshHosts.self, from: data)
@@ -430,53 +496,22 @@ import MoshroomConfig
     try? NSKeyedArchiver.archivedData(withRootObject: keys as NSArray, requiringSecureCoding: true)
   }
 
-  // Union by alias; where the same alias was edited on both sides, newer per-host lastModified wins.
-  private static func mergeHosts(datasets: [Data]) -> Data? {
-    var byId: [String: MoshHosts] = [:]
-    var order: [String] = []
-    for data in datasets {
-      guard let list = decodeHosts(data) else { continue }   // an unreadable side can't erase the other
-      for item in list {
-        guard let id = item.host, !id.isEmpty else { continue }
-        if let existing = byId[id] {
-          if (item.lastModified ?? .distantPast) > (existing.lastModified ?? .distantPast) { byId[id] = item }
-        } else {
-          byId[id] = item; order.append(id)
-        }
-      }
-    }
-    return encodeHosts(order.compactMap { byId[$0] })
-  }
-
-  // Union by TAG (a key's true identity — two keys named the same are still different key material),
-  // newer per-key lastModified wins. Only ever operates on the Keychain-key projection.
-  private static func mergeKeysByTag(datasets: [Data]) -> Data? {
-    var byId: [String: MoshPubKey] = [:]
-    var order: [String] = []
-    for data in datasets {
-      guard let list = decodeKeys(data) else { continue }
-      for item in list {
-        let id = item.tag
-        guard !id.isEmpty else { continue }
-        if let existing = byId[id] {
-          if (item.lastModified ?? .distantPast) > (existing.lastModified ?? .distantPast) { byId[id] = item }
-        } else {
-          byId[id] = item; order.append(id)
-        }
-      }
-    }
-    return encodeKeys(order.compactMap { byId[$0] })
-  }
-
   // MARK: - File helpers
 
-  // Coordinated replace of the cloud copy, stamped with the given date so no device pulls back its
-  // own push.
+  private static func _readCloudData(_ url: URL) -> Data? {
+    guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+    var out: Data?
+    var err: NSError?
+    NSFileCoordinator().coordinate(readingItemAt: url, options: [], error: &err) { src in
+      out = try? Data(contentsOf: src)
+    }
+    return out
+  }
+
   private static func writeCloud(_ data: Data, to cloudURL: URL, stamp: Date?) {
     var coordError: NSError?
     NSFileCoordinator().coordinate(writingItemAt: cloudURL, options: .forReplacing, error: &coordError) { dst in
-      try? FileManager.default.createDirectory(at: dst.deletingLastPathComponent(),
-                                               withIntermediateDirectories: true)
+      try? FileManager.default.createDirectory(at: dst.deletingLastPathComponent(), withIntermediateDirectories: true)
       guard (try? data.write(to: dst, options: .atomic)) != nil else { return }
       if let stamp {
         try? FileManager.default.setAttributes([.modificationDate: stamp], ofItemAtPath: dst.path)
