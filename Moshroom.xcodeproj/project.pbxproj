@@ -129,6 +129,7 @@
 		C9B2E0321D6B612400B89F69 /* MoshFont.m in Sources */ = {isa = PBXBuildFile; fileRef = C9B2E00C1D6B612300B89F69 /* MoshFont.m */; };
 		C9B2E0341D6B612400B89F69 /* MoshTheme.m in Sources */ = {isa = PBXBuildFile; fileRef = C9B2E0101D6B612300B89F69 /* MoshTheme.m */; };
 		C9B2E0351D6B612400B89F69 /* MoshSettingsFileDownloader.m in Sources */ = {isa = PBXBuildFile; fileRef = C9B2E0131D6B612300B89F69 /* MoshSettingsFileDownloader.m */; };
+		CFC0C9A2CC20578ADC332CCF /* Moshlauncher.swift in Sources */ = {isa = PBXBuildFile; fileRef = 83E3647522771DA5A0C6184D /* Moshlauncher.swift */; };
 		D2011CD726A6FF9F002E4E85 /* Alert.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2011CD626A6FF9F002E4E85 /* Alert.swift */; };
 		D2036B6323967F2F0013D2A3 /* BindingConfigView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2036B6223967F2F0013D2A3 /* BindingConfigView.swift */; };
 		D2094662204D3FC5003C4F72 /* cacert.pem in Resources */ = {isa = PBXBuildFile; fileRef = D209465B204D3FC5003C4F72 /* cacert.pem */; };
@@ -390,6 +391,7 @@
 		7FA3AE9788EBBCC6CC508DC7 /* MoshTOTP.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MoshTOTP.swift; sourceTree = "<group>"; };
 		803B99D62582869200DC99C8 /* MoshNotificationsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoshNotificationsView.swift; sourceTree = "<group>"; };
 		803B99E2258381B200DC99C8 /* SettingsHostingController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsHostingController.swift; sourceTree = "<group>"; };
+		83E3647522771DA5A0C6184D /* Moshlauncher.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = Moshlauncher.swift; sourceTree = "<group>"; };
 		85A34303200A837A009324F1 /* webfontloader.js */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.javascript; path = webfontloader.js; sourceTree = "<group>"; };
 		85A34308200A8FAF009324F1 /* term.css */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.css; path = term.css; sourceTree = "<group>"; };
 		91424650D3949AA7FB312F37 /* MoshQRScanner.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MoshQRScanner.swift; sourceTree = "<group>"; };
@@ -743,6 +745,7 @@
 				E4FD3D95B858D8D01DEEE573 /* MoshvaultViews.swift */,
 				CDCA0D3D2CAFCBE1A7627392 /* Moshvault.swift */,
 				D4AEFEAD2A92BC23EAA24608 /* MoshAppLock.swift */,
+				83E3647522771DA5A0C6184D /* Moshlauncher.swift */,
 			);
 			path = Moshroom;
 			sourceTree = "<group>";
@@ -1825,6 +1828,7 @@
 				9AA7BB1E9A955A0F1E664363 /* MoshvaultViews.swift in Sources */,
 				D33F2A08A55DBF275C4708B6 /* Moshvault.swift in Sources */,
 				6505E62CB6D107BB1A6BD743 /* MoshAppLock.swift in Sources */,
+				CFC0C9A2CC20578ADC332CCF /* Moshlauncher.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
