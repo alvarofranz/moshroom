@@ -147,9 +147,11 @@ struct StyleCustomizationView: View {
           Text("Enable Bold controls whether bold text renders with a heavier font (Auto lets the theme decide). Bold as Bright additionally draws bold text in the bright color variants — how classic terminals did it. Cursor Blink is just that: a blinking or steady block cursor.")
         }
       }
-      .listStyle(.grouped)
+      .listStyle(.insetGrouped)
+      .moshReadableWidth()
     }
     .navigationTitle("Style")
+    .navigationBarTitleDisplayMode(.inline)
     .onAppear {
       if !isLoaded {
         ensureEditableStyle()

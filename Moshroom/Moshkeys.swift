@@ -130,24 +130,50 @@ extension UIButton {
   /// every platform.
   func setMoshIcon(_ name: String, pointSize: CGFloat = 18,
                    weight: UIImage.SymbolWeight = .regular,
-                   color: UIColor = UIColor(white: 0.12, alpha: 1)) {
+                   color: UIColor = Moshstyle.ink) {
     let cfg = UIImage.SymbolConfiguration(pointSize: pointSize, weight: weight)
     setImage(UIImage(systemName: name, withConfiguration: cfg)?
       .withTintColor(color, renderingMode: .alwaysOriginal), for: .normal)
   }
 }
 
+/// The white chip as a UIKit bar button — the UIKit twin of MoshNavGlyph, so UIKit nav bars
+/// (Moshtabs, Moshxplore, the Snips gallery, the Settings root) carry the exact same white-chip
+/// buttons as the SwiftUI screens. Flat like MoshNavGlyph: nav-bar chips carry no shadow.
+func moshNavChipBarItem(icon: String, target: Any?, action: Selector) -> UIBarButtonItem {
+  let b = moshkeyRoundButton(diameter: 34)
+  b.layer.shadowOpacity = 0
+  b.setMoshIcon(icon, pointSize: 15, weight: .semibold)
+  b.addTarget(target, action: action, for: .touchUpInside)
+  return UIBarButtonItem(customView: b)
+}
+
+/// The text twin (Save, Cancel…): a white capsule with near-black ink, like MoshNavLabel.
+func moshNavChipLabelItem(title: String, target: Any?, action: Selector) -> UIBarButtonItem {
+  var cfg = UIButton.Configuration.filled()
+  cfg.baseBackgroundColor = Moshstyle.chipFill
+  cfg.baseForegroundColor = Moshstyle.ink
+  cfg.cornerStyle = .capsule
+  var attr = AttributeContainer()
+  attr.font = UIFont.systemFont(ofSize: 15, weight: .semibold)
+  cfg.attributedTitle = AttributedString(title, attributes: attr)
+  cfg.contentInsets = NSDirectionalEdgeInsets(top: 8, leading: 14, bottom: 8, trailing: 14)
+  let b = UIButton(configuration: cfg)
+  #if targetEnvironment(macCatalyst)
+  b.preferredBehavioralStyle = .pad
+  #endif
+  b.addTarget(target, action: action, for: .touchUpInside)
+  return UIBarButtonItem(customView: b)
+}
+
 func moshkeyRoundButton(diameter: CGFloat = 42) -> UIButton {
   let b = moshButton()
-  b.tintColor = UIColor(white: 0.12, alpha: 1)
-  b.setTitleColor(UIColor(white: 0.12, alpha: 1), for: .normal)
+  b.tintColor = Moshstyle.ink
+  b.setTitleColor(Moshstyle.ink, for: .normal)
   b.titleLabel?.font = .systemFont(ofSize: 15, weight: .semibold)
-  b.backgroundColor = UIColor(white: 0.97, alpha: 0.92)
+  b.backgroundColor = Moshstyle.chipFill
   b.layer.cornerRadius = diameter / 2
-  b.layer.shadowColor = UIColor.black.cgColor
-  b.layer.shadowOpacity = 0.18
-  b.layer.shadowRadius = 4
-  b.layer.shadowOffset = CGSize(width: 0, height: 1)
+  Moshstyle.applyChipShadow(b.layer)
   b.translatesAutoresizingMaskIntoConstraints = false
   b.widthAnchor.constraint(equalToConstant: diameter).isActive = true
   b.heightAnchor.constraint(equalToConstant: diameter).isActive = true
@@ -256,8 +282,8 @@ final class MoshkeysBar: UIStackView {
   }
 
   private func _setArrowsActive(_ active: Bool) {
-    arrowsBtn.backgroundColor = active ? .moshroomTint : UIColor(white: 0.97, alpha: 0.92)
-    arrowsBtn.setMoshIcon("dpad", color: active ? .white : UIColor(white: 0.12, alpha: 1))
+    arrowsBtn.backgroundColor = active ? .moshroomTint : Moshstyle.chipFill
+    arrowsBtn.setMoshIcon("dpad", color: active ? .white : Moshstyle.ink)
   }
 
   // The ↕ button toggles a focused arrow-keys mode: the rest of the bottom bar (and the compose button)
@@ -404,12 +430,9 @@ final class MoshkeysPad: UIView {
 
   init() {
     super.init(frame: .zero)
-    backgroundColor = UIColor(white: 0.97, alpha: 0.97)
-    layer.cornerRadius = 18
-    layer.shadowColor = UIColor.black.cgColor
-    layer.shadowOpacity = 0.22
-    layer.shadowRadius = 9
-    layer.shadowOffset = CGSize(width: 0, height: 3)
+    backgroundColor = Moshstyle.padFill
+    layer.cornerRadius = Moshstyle.overlayRadius
+    Moshstyle.applyOverlayShadow(layer)
 
     rowsStack.axis = .vertical
     rowsStack.spacing = 8
@@ -452,11 +475,11 @@ final class MoshkeysPad: UIView {
     b.titleLabel?.font = .systemFont(ofSize: 17, weight: .medium)
     b.titleLabel?.adjustsFontSizeToFitWidth = true
     b.titleLabel?.minimumScaleFactor = 0.6
-    b.setTitleColor(UIColor(white: 0.1, alpha: 1), for: .normal)
+    b.setTitleColor(Moshstyle.ink, for: .normal)
     b.backgroundColor = .white
     b.layer.cornerRadius = 10
     b.layer.borderWidth = 0.5
-    b.layer.borderColor = UIColor(white: 0.82, alpha: 1).cgColor
+    b.layer.borderColor = Moshstyle.hairline.cgColor
     b.translatesAutoresizingMaskIntoConstraints = false
     b.widthAnchor.constraint(equalToConstant: 46).isActive = true
     b.heightAnchor.constraint(equalToConstant: 46).isActive = true
@@ -491,8 +514,8 @@ final class MoshtabsController: UIViewController {
     super.viewDidLoad()
     view.backgroundColor = MoshxploreStyle.screen
     navigationItem.title = "Tabs"
-    navigationItem.rightBarButtonItem = UIBarButtonItem(
-      barButtonSystemItem: .close, target: self, action: #selector(_closeMoshtabs))
+    navigationItem.rightBarButtonItem = moshNavChipBarItem(
+      icon: "xmark", target: self, action: #selector(_closeMoshtabs))
 
     stack.axis = .vertical
     stack.spacing = 8
@@ -546,6 +569,9 @@ final class MoshtabsController: UIViewController {
     // ignores configuration contentInsets on .system buttons and the title sat glued to the edge.
     cfg.contentInsets = NSDirectionalEdgeInsets(top: 12, leading: 2, bottom: 12, trailing: 4)
     title.configuration = cfg
+    #if targetEnvironment(macCatalyst)
+    title.preferredBehavioralStyle = .pad   // keep OUR row metrics, never the native Mac push-button
+    #endif
     title.titleLabel?.numberOfLines = 0
     title.contentHorizontalAlignment = .leading
     title.translatesAutoresizingMaskIntoConstraints = false
@@ -588,6 +614,9 @@ final class MoshtabsController: UIViewController {
     // is a real constraint on a wrapper.
     cfg.contentInsets = NSDirectionalEdgeInsets(top: 14, leading: 2, bottom: 14, trailing: 14)
     b.configuration = cfg
+    #if targetEnvironment(macCatalyst)
+    b.preferredBehavioralStyle = .pad
+    #endif
     b.contentHorizontalAlignment = .leading
     b.translatesAutoresizingMaskIntoConstraints = false
     b.addAction(UIAction { [weak self] _ in

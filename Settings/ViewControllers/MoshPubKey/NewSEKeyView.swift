@@ -64,7 +64,8 @@ struct NewSEKeyView: View {
         footer: Text("A Secure Enclave key is a hardware stored key that is isolated from the rest of the system. Note this type of private key cannot be read or copied, making it more difficult to become compromised.")
       ) { }
     }
-    .listStyle(GroupedListStyle())
+    .listStyle(.insetGrouped)
+    .moshReadableWidth()
     .toolbar {
       MoshNavBarItem(placement: .navigationBarLeading) {
         Button(action: onCancel) { MoshNavLabel(title: "Cancel") }
@@ -74,7 +75,8 @@ struct NewSEKeyView: View {
           .disabled(!_state.isValid)
       }
     }
-    .navigationBarTitle("New Secure Enclave Key")
+    .navigationTitle("New Secure Enclave Key")
+    .navigationBarTitleDisplayMode(.inline)
     .alert(errorMessage: $_state.errorMessage)
     .onAppear(perform: {
       FixedTextField.becomeFirstReponder(id: "keyName")

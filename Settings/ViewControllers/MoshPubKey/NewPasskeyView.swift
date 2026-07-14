@@ -68,7 +68,8 @@ struct NewPasskeyView: View {
         footer: Text("Passkeys are ECDSA keys that use the new Web Authentication standard for authentication. They are very new and may not be supported by all servers.")
       ) { }
     }
-    .listStyle(GroupedListStyle())
+    .listStyle(.insetGrouped)
+    .moshReadableWidth()
     .toolbar {
       MoshNavBarItem(placement: .navigationBarLeading) {
         Button(action: onCancel) { MoshNavLabel(title: "Cancel") }
@@ -78,7 +79,8 @@ struct NewPasskeyView: View {
           .disabled(!_state.isValid)
       }
     }
-    .navigationBarTitle("New Passkey")
+    .navigationTitle("New Passkey")
+    .navigationBarTitleDisplayMode(.inline)
     .alert(errorMessage: $_state.errorMessage)
     .onAppear(perform: {
       FixedTextField.becomeFirstReponder(id: "keyName")

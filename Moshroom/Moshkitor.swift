@@ -450,7 +450,7 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
     let bar = UIProgressView(progressViewStyle: .default)
     bar.translatesAutoresizingMaskIntoConstraints = false
     bar.progressTintColor = .moshroomTint
-    bar.trackTintColor = UIColor.moshroomTint.withAlphaComponent(0.15)
+    bar.trackTintColor = UIColor.moshroomTint.withAlphaComponent(Moshstyle.faintTintAlpha)
     bar.progress = 0
 
     // Top-right ✕ — cancel the upload and drop straight back into the editor with everything intact.
@@ -619,14 +619,20 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
 
   private func _chip(_ suggestion: Suggestion) -> UIButton {
     let isSnip: Bool = { if case .snip = suggestion { return true } else { return false } }()
-    let b = moshButton()
-    b.setTitle(suggestion.label, for: .normal)
-    b.titleLabel?.font = .monospacedSystemFont(ofSize: 15, weight: .medium)
-    b.setTitleColor(.label, for: .normal)
+    var cfg = UIButton.Configuration.plain()
+    var attr = AttributeContainer()
+    attr.font = UIFont.monospacedSystemFont(ofSize: 15, weight: .medium)
+    attr.foregroundColor = UIColor.label
+    cfg.attributedTitle = AttributedString(suggestion.label, attributes: attr)
     // Snips read in a red tint so they stand apart from plain commands.
-    b.backgroundColor = isSnip ? UIColor.moshroomTint.withAlphaComponent(0.18) : .tertiarySystemFill
-    b.layer.cornerRadius = 14
-    b.contentEdgeInsets = UIEdgeInsets(top: 6, left: 14, bottom: 6, right: 14)
+    cfg.background.backgroundColor = isSnip
+      ? UIColor.moshroomTint.withAlphaComponent(Moshstyle.faintTintAlpha) : .tertiarySystemFill
+    cfg.background.cornerRadius = Moshstyle.cardRadius
+    cfg.contentInsets = NSDirectionalEdgeInsets(top: 6, leading: 14, bottom: 6, trailing: 14)
+    let b = UIButton(configuration: cfg)
+    #if targetEnvironment(macCatalyst)
+    b.preferredBehavioralStyle = .pad
+    #endif
     b.addAction(UIAction { [weak self] _ in self?._applySuggestion(suggestion) }, for: .touchUpInside)
     return b
   }
@@ -766,8 +772,8 @@ final class MoshkitorSnipsPicker: UITableViewController {
   override func viewDidLoad() {
     super.viewDidLoad()
     title = "Snips"
-    navigationItem.leftBarButtonItem = UIBarButtonItem(barButtonSystemItem: .cancel, target: self, action: #selector(close))
-    navigationItem.rightBarButtonItem = UIBarButtonItem(barButtonSystemItem: .add, target: self, action: #selector(newSnip))
+    navigationItem.leftBarButtonItem = moshNavChipBarItem(icon: "xmark", target: self, action: #selector(close))
+    navigationItem.rightBarButtonItem = moshNavChipBarItem(icon: "plus", target: self, action: #selector(newSnip))
     tableView.register(UITableViewCell.self, forCellReuseIdentifier: "c")
     _reloadFromDisk()
   }
@@ -899,7 +905,7 @@ final class MoshkitorSnipEditor: UIViewController {
     super.viewDidLoad()
     view.backgroundColor = .systemBackground
     title = existingURL == nil ? "New snip" : "Edit snip"
-    navigationItem.rightBarButtonItem = UIBarButtonItem(barButtonSystemItem: .save, target: self, action: #selector(save))
+    navigationItem.rightBarButtonItem = moshNavChipLabelItem(title: "Save", target: self, action: #selector(save))
 
     nameField.placeholder = "name  or  folder/name"
     nameField.font = .monospacedSystemFont(ofSize: 16, weight: .regular)

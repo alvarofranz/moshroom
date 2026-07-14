@@ -28,6 +28,40 @@ enum MoshnectorMode {
   var command: String { self == .ssh ? "ssh" : "mosh" }
 }
 
+/// THE saved-host card — one builder for every host list (Quick Connect, the Moshxplore host
+/// picker): red server glyph, bold alias, the optional gray description, generous padding.
+/// Semantic colors — the app's one (dark) theme resolves them the same on every surface.
+func moshHostCardButton(alias: String, description: String) -> UIButton {
+  var cfg = UIButton.Configuration.filled()
+  cfg.baseBackgroundColor = .secondarySystemGroupedBackground
+  cfg.baseForegroundColor = .label
+  cfg.background.cornerRadius = Moshstyle.cardRadius
+  cfg.background.strokeColor = .separator
+  cfg.background.strokeWidth = 0.5
+  cfg.image = UIImage(systemName: "server.rack", withConfiguration: UIImage.SymbolConfiguration(pointSize: 16, weight: .semibold))?
+    .withTintColor(.moshroomTint, renderingMode: .alwaysOriginal)
+  cfg.imagePadding = 12
+  var attr = AttributeContainer()
+  attr.font = UIFont.systemFont(ofSize: 16, weight: .semibold)
+  cfg.attributedTitle = AttributedString(alias, attributes: attr)
+  if !description.isEmpty {
+    var sub = AttributeContainer()
+    sub.font = UIFont.systemFont(ofSize: 13)
+    sub.foregroundColor = UIColor.secondaryLabel
+    cfg.attributedSubtitle = AttributedString(description, attributes: sub)
+    cfg.titlePadding = 2
+  }
+  cfg.contentInsets = NSDirectionalEdgeInsets(top: 14, leading: 16, bottom: 14, trailing: 16)
+  let b = UIButton(configuration: cfg)
+  #if targetEnvironment(macCatalyst)
+  b.preferredBehavioralStyle = .pad   // keep OUR card metrics, never the native Mac push-button
+  #endif
+  b.contentHorizontalAlignment = .leading
+  b.translatesAutoresizingMaskIntoConstraints = false
+  b.setContentCompressionResistancePriority(.required, for: .vertical)   // never squashed by a scroll
+  return b
+}
+
 // The quick-connect card itself. Pure presentation — SpaceController owns the lifecycle.
 final class MoshnectorView: UIView {
 
@@ -42,24 +76,21 @@ final class MoshnectorView: UIView {
   init() {
     super.init(frame: .zero)
     translatesAutoresizingMaskIntoConstraints = false
-    backgroundColor = UIColor(white: 0.97, alpha: 0.97)
-    layer.cornerRadius = 18
-    layer.shadowColor = UIColor.black.cgColor
-    layer.shadowOpacity = 0.22
-    layer.shadowRadius = 12
-    layer.shadowOffset = CGSize(width: 0, height: 4)
+    // The dark family (launcher cards, Moshvault, Moshxplore): a dark card over the terminal,
+    // semantic colors, the white chips staying the one bright accent.
+    backgroundColor = .systemGroupedBackground
+    layer.cornerRadius = Moshstyle.overlayRadius
+    Moshstyle.applyOverlayShadow(layer)
 
     let title = UILabel()
     title.text = "Quick Connect"
     title.textAlignment = .center
     title.font = .systemFont(ofSize: 17, weight: .semibold)
-    title.textColor = UIColor(white: 0.12, alpha: 1)
+    title.textColor = .label
 
     modeControl.selectedSegmentIndex = 0
-    // High-contrast mushroom-red selection (white text), so the chosen mode is unmistakable.
-    modeControl.selectedSegmentTintColor = .moshroomTint
-    modeControl.setTitleTextAttributes([.foregroundColor: UIColor.white, .font: UIFont.systemFont(ofSize: 14, weight: .semibold)], for: .selected)
-    modeControl.setTitleTextAttributes([.foregroundColor: UIColor(white: 0.28, alpha: 1)], for: .normal)
+    // Mushroom-red selection with white text — the house switcher, styled once for the whole
+    // app in MoshstyleAppearance.install() (Moshvault's Passwords/2FA picker matches for free).
     modeControl.addAction(UIAction { [weak self] _ in
       self?.mode = self?.modeControl.selectedSegmentIndex == 1 ? .ssh : .mosh
     }, for: .valueChanged)
@@ -80,7 +111,7 @@ final class MoshnectorView: UIView {
       string: "No saved hosts yet.\nAdd one in Settings → Hosts.",
       attributes: [.paragraphStyle: emptyPara,
                    .font: UIFont.systemFont(ofSize: 13),
-                   .foregroundColor: UIColor(white: 0.45, alpha: 1)])
+                   .foregroundColor: UIColor.secondaryLabel])
     emptyLabel.numberOfLines = 0
     emptyLabel.isHidden = true
 
@@ -127,39 +158,10 @@ final class MoshnectorView: UIView {
     scroll.setContentOffset(.zero, animated: false)
   }
 
-  // A host is a proper CARD, not a thin line: red server glyph, bold alias, the optional gray
-  // description underneath, generous padding. The card keeps its fixed light look (this whole
-  // overlay does), so the colours are constants, not semantic.
+  // One saved host = one shared house card (see moshHostCardButton — the exact same card the
+  // Moshxplore host picker shows), wired to connect in the selected mode.
   private func _hostRow(_ alias: String, description: String) -> UIView {
-    var cfg = UIButton.Configuration.filled()
-    cfg.baseBackgroundColor = UIColor(white: 0.985, alpha: 1)
-    cfg.baseForegroundColor = UIColor(white: 0.12, alpha: 1)
-    cfg.background.cornerRadius = 14
-    cfg.background.strokeColor = UIColor(white: 0.8, alpha: 1)
-    cfg.background.strokeWidth = 0.5
-    cfg.image = UIImage(systemName: "server.rack", withConfiguration: UIImage.SymbolConfiguration(pointSize: 16, weight: .semibold))?
-      .withTintColor(.moshroomTint, renderingMode: .alwaysOriginal)
-    cfg.imagePadding = 12
-    var attr = AttributeContainer()
-    attr.font = .systemFont(ofSize: 16, weight: .semibold)
-    cfg.attributedTitle = AttributedString(alias, attributes: attr)
-    if !description.isEmpty {
-      var sub = AttributeContainer()
-      sub.font = .systemFont(ofSize: 13)
-      sub.foregroundColor = UIColor(white: 0.45, alpha: 1)
-      cfg.attributedSubtitle = AttributedString(description, attributes: sub)
-      cfg.titlePadding = 2
-    }
-    cfg.contentInsets = NSDirectionalEdgeInsets(top: 14, leading: 16, bottom: 14, trailing: 16)
-
-    let b = UIButton(configuration: cfg)
-    #if targetEnvironment(macCatalyst)
-    b.preferredBehavioralStyle = .pad   // keep OUR card metrics, never the native Mac push-button
-    #endif
-    b.contentHorizontalAlignment = .leading
-    b.translatesAutoresizingMaskIntoConstraints = false
-    // Never let the scroll's shrink-wrap squash a row below its natural height.
-    b.setContentCompressionResistancePriority(.required, for: .vertical)
+    let b = moshHostCardButton(alias: alias, description: description)
     b.addAction(UIAction { [weak self] _ in
       guard let self else { return }
       self.onConnect?(self.mode, alias)

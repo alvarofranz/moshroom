@@ -47,8 +47,9 @@ class SettingsHostingController: UIHostingController<NavView<SettingsView>>, UIA
   override func viewDidLoad() {
     super.viewDidLoad()
 
-    navigationItem.rightBarButtonItem = UIBarButtonItem(
-      barButtonSystemItem: .close, target: self, action: #selector(_closeSettings))
+    // The house white-chip ✕ — same close as every other full-screen hub.
+    navigationItem.rightBarButtonItem = moshNavChipBarItem(
+      icon: "xmark", target: self, action: #selector(_closeSettings))
   }
 
   // Not `_close`: that selector name collides with a private Apple API and App Store upload rejects it.

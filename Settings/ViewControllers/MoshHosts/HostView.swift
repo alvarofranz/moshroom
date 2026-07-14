@@ -132,7 +132,7 @@ struct FieldSSHKey: View {
             Label("Key", systemImage: "exclamationmark.icloud.fill")
             Spacer()
             Text(value[0])
-              .font(.system(.subheadline)).foregroundColor(.red)
+              .font(.system(.subheadline)).foregroundColor(.moshTint)
           }
         }
       },
@@ -228,19 +228,15 @@ struct FieldTextArea: View {
     Row(
       content: { FormLabel(text: _label) },
       details: {
-        // TextEditor can't change background color
-        RoundedRectangle(cornerRadius: 4, style: .circular)
-          .fill(Color.primary)
-          .overlay(
-            TextEditor(text: _value)
-              .font(.system(.body))
-              .autocapitalization(.none)
-              .disableAutocorrection(true)
-              .opacity(0.9).disabled(!_enabled)
-          )
-          .padding()
-        .navigationTitle(_label)
-        .navigationBarTitleDisplayMode(.inline)
+        // A plain editor page — monospaced, since what lives here is ssh-config text.
+        TextEditor(text: _value)
+          .font(.system(.body, design: .monospaced))
+          .autocapitalization(.none)
+          .disableAutocorrection(true)
+          .disabled(!_enabled)
+          .padding(12)
+          .navigationTitle(_label)
+          .navigationBarTitleDisplayMode(.inline)
       }
     )
   }
@@ -385,7 +381,8 @@ struct HostView: View {
         }
       }.disabled(!_enabled)
     }
-    .listStyle(GroupedListStyle())
+    .listStyle(.insetGrouped)
+    .moshReadableWidth()
     .alert(errorMessage: $_errorMessage)
     .toolbar {
       MoshNavBarItem(placement: .navigationBarLeading) {
@@ -404,7 +401,8 @@ struct HostView: View {
       }
     }
     .navigationBarBackButtonHidden(true)
-    .navigationBarTitle(_host == nil ? "New Host" : "Host")
+    .navigationTitle(_host == nil ? "New Host" : "Host")
+    .navigationBarTitleDisplayMode(.inline)
     .onAppear {
       if !_loaded {
         loadHost()

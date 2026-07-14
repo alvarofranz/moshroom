@@ -23,12 +23,69 @@
 
 
 import UIKit
+import SwiftUI
 
 extension UIColor {
-  // Moshroom's accent — a red-mushroom red (no blue/cyan anywhere in the app's own chrome).
+  // Moshroom's accent — THE red-mushroom red (no blue/cyan anywhere in the app's own chrome).
+  // One value everywhere: the asset is a single universal color, and this code fallback matches it.
   @objc class var moshroomTint: UIColor {
     return UIColor(named: "MoshroomColor") ??
-    UIColor.init(displayP3Red: 0.80, green: 0.12, blue: 0.16, alpha: 1)
+    UIColor.init(displayP3Red: 0.878, green: 0.20, blue: 0.227, alpha: 1)
   }
-  
+
+}
+
+extension Color {
+  // The same accent for SwiftUI surfaces. ONE definition — never re-declare per file.
+  static let moshTint = Color(UIColor.moshroomTint)
+}
+
+// The Moshroom house style, in one place. The app has exactly ONE theme (dark): full-screen
+// surfaces use semantic colors (which always resolve dark), while the floating chrome —
+// round quick keys, nav-bar chips, capsule buttons — is deliberately WHITE with near-black
+// ink, the one bright accent over the dark app. These are the constants both worlds share.
+enum Moshstyle {
+  // The white chip: fill, ink and hairline — identical for every chip in the app.
+  static let chipFill = UIColor(white: 0.97, alpha: 0.92)   // floating round buttons / nav chips
+  static let padFill = UIColor(white: 0.97, alpha: 0.97)    // the bigger floating pads/cards
+  static let chipFillOpaque = UIColor(white: 0.97, alpha: 1)
+  static let ink = UIColor(white: 0.12, alpha: 1)
+  static let hairline = UIColor(white: 0.8, alpha: 1)
+
+  // Corner radius scale — pick by role, never a bare literal:
+  // rows in a list · tappable cards (hosts, launcher tiles) · floating overlays/cards.
+  static let rowRadius: CGFloat = 12
+  static let cardRadius: CGFloat = 14
+  static let overlayRadius: CGFloat = 18
+
+  // The faint mushroom fill (progress tracks, inline chips) — one alpha everywhere.
+  static let faintTintAlpha: CGFloat = 0.15
+
+  // The house drop shadows: one for small floating chips, one for the bigger pads/overlays.
+  static func applyChipShadow(_ layer: CALayer) {
+    layer.shadowColor = UIColor.black.cgColor
+    layer.shadowOpacity = 0.18
+    layer.shadowRadius = 4
+    layer.shadowOffset = CGSize(width: 0, height: 1)
+  }
+  static func applyOverlayShadow(_ layer: CALayer) {
+    layer.shadowColor = UIColor.black.cgColor
+    layer.shadowOpacity = 0.22
+    layer.shadowRadius = 10
+    layer.shadowOffset = CGSize(width: 0, height: 3)
+  }
+}
+
+// Global appearance that can't be expressed per-view: the segmented switcher (Quick Connect's
+// Mosh/SSH, Moshvault's Passwords/2FA, …) is mushroom-red with white text on the selected
+// segment, everywhere, via the appearance proxy. Installed once from AppDelegate.
+@objc final class MoshstyleAppearance: NSObject {
+  @objc static func install() {
+    let seg = UISegmentedControl.appearance()
+    seg.selectedSegmentTintColor = .moshroomTint
+    seg.setTitleTextAttributes([.foregroundColor: UIColor.white,
+                                .font: UIFont.systemFont(ofSize: 14, weight: .semibold)],
+                               for: .selected)
+    seg.setTitleTextAttributes([.foregroundColor: UIColor.secondaryLabel], for: .normal)
+  }
 }

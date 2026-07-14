@@ -65,6 +65,8 @@ void __setupProcessEnv(void) {
   
   [AppDelegate reloadDefaults];
   [[UIView appearance] setTintColor:[UIColor moshroomTint]];
+  // House chrome that can only be set via appearance proxies (the red segmented switcher).
+  [MoshstyleAppearance install];
 
   // iCloud Drive mirror (hosts + keys): self-installs (pushes on save, pulls on foreground). No-op when sync is off.
   [HostsCloudMirror install];

@@ -49,11 +49,10 @@ struct DefaultAgentSettingsView: View {
           }
       }
     }
-    .navigationBarTitle("Default Agent")
+    .navigationTitle("Default Agent")
+    .navigationBarTitleDisplayMode(.inline)
     .onAppear {
-      print("OnAppear")
       if agentSettings == nil {
-        print("Init settings")
         do {
           let agentSettings = try SSHDefaultAgent.getSettings() ?? MoshAgentSettings()
           self.agentSettings = agentSettings
@@ -163,8 +162,10 @@ struct AgentSettingsPromptPickerView: View {
         }
       }
     }
-    .listStyle(InsetGroupedListStyle())
+    .listStyle(.insetGrouped)
+    .moshReadableWidth()
     .navigationTitle("Agent Forwarding")
+    .navigationBarTitleDisplayMode(.inline)
   }
 }
 

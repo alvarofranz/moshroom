@@ -29,8 +29,10 @@ struct KeyConfigView: View {
   
   var body: some View {
     List { KeySection(key: key) }
-    .listStyle(GroupedListStyle())
-    .navigationBarTitle(key.fullName)
+    .listStyle(.insetGrouped)
+    .moshReadableWidth()
+    .navigationTitle(key.fullName)
+    .navigationBarTitleDisplayMode(.inline)
   }
   
 }

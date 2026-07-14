@@ -919,8 +919,8 @@ private final class MoshxploreDetailView: UIView {
   // colours, deliberately the same in light and dark).
   private static func cancelConfig() -> UIButton.Configuration {
     var cfg = UIButton.Configuration.filled()
-    cfg.baseBackgroundColor = UIColor(white: 0.97, alpha: 1)
-    cfg.baseForegroundColor = UIColor(white: 0.12, alpha: 1)
+    cfg.baseBackgroundColor = Moshstyle.chipFillOpaque
+    cfg.baseForegroundColor = Moshstyle.ink
     cfg.cornerStyle = .capsule
     cfg.background.strokeColor = MoshxploreStyle.stroke
     cfg.background.strokeWidth = 0.5
@@ -1274,34 +1274,11 @@ final class MoshxploreView: UIView {
 
   // MARK: Rows
 
-  // A host is a proper CARD, not a thin line: red server glyph, bold alias, the host's optional
-  // gray description underneath, generous padding — the same visual weight as the entry rows.
+  // One saved host = one shared house card (moshHostCardButton — the exact same card Quick
+  // Connect shows), wired to open the browser on that host.
   private func _hostRow(_ alias: String) -> UIView {
-    var cfg = UIButton.Configuration.filled()
-    cfg.baseBackgroundColor = MoshxploreStyle.row
-    cfg.baseForegroundColor = Self.dark
-    cfg.background.cornerRadius = 14
-    cfg.background.strokeColor = MoshxploreStyle.stroke
-    cfg.background.strokeWidth = 0.5
-    cfg.image = UIImage(systemName: "server.rack", withConfiguration: UIImage.SymbolConfiguration(pointSize: MoshxploreStyle.inset(16), weight: .semibold))?
-      .withTintColor(.moshroomTint, renderingMode: .alwaysOriginal)
-    cfg.imagePadding = 12
-    var attr = AttributeContainer(); attr.font = MoshxploreStyle.font(16, .semibold)
-    cfg.attributedTitle = AttributedString(alias, attributes: attr)
-    if let description = MoshHosts.withHost(alias)?.hostDescription, !description.isEmpty {
-      var sub = AttributeContainer(); sub.font = MoshxploreStyle.font(13); sub.foregroundColor = MoshxploreStyle.gray
-      cfg.attributedSubtitle = AttributedString(description, attributes: sub)
-      cfg.titlePadding = 2
-    }
-    cfg.contentInsets = NSDirectionalEdgeInsets(top: MoshxploreStyle.inset(14), leading: MoshxploreStyle.inset(16), bottom: MoshxploreStyle.inset(14), trailing: MoshxploreStyle.inset(16))
-
-    let b = UIButton(configuration: cfg)
-    #if targetEnvironment(macCatalyst)
-    b.preferredBehavioralStyle = .pad   // keep OUR card metrics, never the native Mac push-button
-    #endif
-    b.contentHorizontalAlignment = .leading
-    b.translatesAutoresizingMaskIntoConstraints = false
-    b.setContentCompressionResistancePriority(.required, for: .vertical)   // never squashed by the scroll
+    let description = MoshHosts.withHost(alias)?.hostDescription ?? ""
+    let b = moshHostCardButton(alias: alias, description: description)
     b.addAction(UIAction { [weak self] _ in self?.connect(to: alias) }, for: .touchUpInside)
     return b
   }
@@ -1526,7 +1503,7 @@ final class MoshxploreView: UIView {
 
     progressBar.progressTintColor = .moshroomTint
     // Same track as the Moshdrop upload bar — the mushroom-red progress look is one thing app-wide.
-    progressBar.trackTintColor = UIColor.moshroomTint.withAlphaComponent(0.15)
+    progressBar.trackTintColor = UIColor.moshroomTint.withAlphaComponent(Moshstyle.faintTintAlpha)
 
     cancelButton.setTitle("Cancel", for: .normal)
     cancelButton.titleLabel?.font = MoshxploreStyle.font(15, .semibold)
@@ -1547,6 +1524,9 @@ final class MoshxploreView: UIView {
     openCfg.attributedTitle = AttributedString("Open", attributes: openAttr)
     openCfg.contentInsets = NSDirectionalEdgeInsets(top: 11, leading: 16, bottom: 11, trailing: 16)
     openButton.configuration = openCfg
+    #if targetEnvironment(macCatalyst)
+    openButton.preferredBehavioralStyle = .pad   // keep the mushroom fill + insets on Mac
+    #endif
     openButton.isHidden = true
     openButton.addAction(UIAction { [weak self] _ in
       guard let self, let url = self.savedURL else { return }
@@ -1690,10 +1670,10 @@ final class MoshxploreController: UIViewController {
     super.viewDidLoad()
     view.backgroundColor = MoshxploreStyle.screen   // adaptive — dark theme gets the Settings look
     navigationItem.title = "Moshxplore"
-    // Same close as Settings: the system ✕. (Not named `_close` — that selector collides with a
-    // private Apple API and App Store upload rejects it.)
-    navigationItem.rightBarButtonItem = UIBarButtonItem(
-      barButtonSystemItem: .close, target: self, action: #selector(_closeMoshxplore))
+    // Same close as every hub: the house white-chip ✕. (Not named `_close` — that selector
+    // collides with a private Apple API and App Store upload rejects it.)
+    navigationItem.rightBarButtonItem = moshNavChipBarItem(
+      icon: "xmark", target: self, action: #selector(_closeMoshxplore))
 
     explorer.savedHosts = { [weak self] in self?.space?.moshroomSavedHostAliases ?? [] }
     explorer.device = { [weak self] in self?.space?.currentDevice }

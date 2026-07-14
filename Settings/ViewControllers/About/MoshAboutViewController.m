@@ -36,6 +36,11 @@
   WKWebViewConfiguration *theConfiguration = [[WKWebViewConfiguration alloc] init];
   WKWebView *webView = [[WKWebView alloc] initWithFrame:self.view.frame configuration:theConfiguration];
   webView.translatesAutoresizingMaskIntoConstraints = NO;
+  // The page (about.html) is dark; paint the webview dark too so opening About never
+  // flashes WebKit's default opaque white while the page loads.
+  webView.opaque = NO;
+  webView.backgroundColor = UIColor.blackColor;
+  webView.scrollView.backgroundColor = UIColor.blackColor;
   
   [self.view addSubview:webView];
   

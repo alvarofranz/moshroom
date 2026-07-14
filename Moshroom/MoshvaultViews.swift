@@ -28,10 +28,6 @@ import SwiftUI
 // sync end-to-end across the user's devices when "Sync with iCloud" is on. Clean, native SwiftUI —
 // looks right on iPhone, iPad and Mac.
 
-private extension Color {
-  static let moshTint = Color(UIColor.moshroomTint)
-}
-
 // MARK: - Root
 
 struct MoshvaultRootView: View {
@@ -63,9 +59,9 @@ struct MoshvaultRootView: View {
       .navigationTitle("Moshvault")
       .navigationBarTitleDisplayMode(.inline)
       .toolbar {
-        ToolbarItem(placement: .navigationBarTrailing) {
+        MoshNavBarItem(placement: .navigationBarTrailing) {
           Button(action: onClose) {
-            Image(systemName: "xmark").font(.system(size: 15, weight: .semibold))
+            MoshNavGlyph(systemName: "xmark")
           }
           .accessibilityLabel("Close")
         }
@@ -103,29 +99,6 @@ private struct CopyChip: View {
   }
 }
 
-// Empty-state explainer shown when a tab has nothing yet.
-private struct MoshvaultEmptyState: View {
-  let icon: String
-  let title: String
-  let message: String
-  var body: some View {
-    VStack(spacing: 14) {
-      Image(systemName: icon)
-        .font(.system(size: 44))
-        .foregroundColor(.moshTint)
-      Text(title).font(.title3.weight(.semibold))
-      Text(message)
-        .font(.callout)
-        .foregroundColor(.secondary)
-        .multilineTextAlignment(.center)
-        .fixedSize(horizontal: false, vertical: true)
-    }
-    .padding(32)
-    .frame(maxWidth: 420)
-    .frame(maxWidth: .infinity, maxHeight: .infinity)
-  }
-}
-
 // MARK: - Passwords
 
 struct MoshvaultPasswordsView: View {
@@ -136,7 +109,7 @@ struct MoshvaultPasswordsView: View {
   var body: some View {
     Group {
       if entries.isEmpty {
-        MoshvaultEmptyState(
+        MoshEmptyState(
           icon: "lock.rectangle.stack",
           title: "Your password vault",
           message: "Keep your service logins here — service, username, email, password, notes and URL. Everything is stored in your iCloud Keychain, end-to-end encrypted, and follows your devices when iCloud sync is on."
@@ -157,11 +130,12 @@ struct MoshvaultPasswordsView: View {
           .onDelete(perform: delete)
         }
         .listStyle(.insetGrouped)
+        .moshReadableWidth()
       }
     }
     .toolbar {
-      ToolbarItem(placement: .navigationBarLeading) {
-        Button { isNew = true; editing = MoshVaultEntry() } label: { Image(systemName: "plus") }
+      MoshNavBarItem(placement: .navigationBarLeading) {
+        Button { isNew = true; editing = MoshVaultEntry() } label: { MoshNavGlyph(systemName: "plus") }
           .accessibilityLabel("Add password")
       }
     }
@@ -226,9 +200,11 @@ private struct MoshvaultPasswordEditor: View {
       .navigationTitle(isNew ? "New Password" : "Edit Password")
       .navigationBarTitleDisplayMode(.inline)
       .toolbar {
-        ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
-        ToolbarItem(placement: .confirmationAction) {
-          Button("Save") { MoshVaultStore.shared.save(entry); dismiss() }
+        MoshNavBarItem(placement: .cancellationAction) {
+          Button { dismiss() } label: { MoshNavLabel(title: "Cancel") }
+        }
+        MoshNavBarItem(placement: .confirmationAction) {
+          Button { MoshVaultStore.shared.save(entry); dismiss() } label: { MoshNavLabel(title: "Save") }
             .disabled(entry.isEmpty)
         }
       }
@@ -262,7 +238,7 @@ struct MoshvaultTOTPView: View {
   var body: some View {
     Group {
       if accounts.isEmpty {
-        MoshvaultEmptyState(
+        MoshEmptyState(
           icon: "lock.shield",
           title: "Your authentication codes",
           message: "Add your two-factor (2FA) codes here. Scan a QR code, migrate from Google Authenticator, or enter a setup key by hand. Codes are generated on-device and the accounts sync through your iCloud Keychain."
@@ -283,16 +259,26 @@ struct MoshvaultTOTPView: View {
           }
         }
         .listStyle(.insetGrouped)
+        .moshReadableWidth()
       }
     }
     .toolbar {
-      ToolbarItem(placement: .navigationBarLeading) {
-        Menu {
-          Button { showingScan = true } label: { Label("Scan QR Code", systemImage: "qrcode.viewfinder") }
-          Button { showingMigrate = true } label: { Label("Migrate from Google Authenticator", systemImage: "square.and.arrow.down.on.square") }
-          Button { showingManual = true } label: { Label("Enter Setup Key", systemImage: "keyboard") }
-        } label: { Image(systemName: "plus") }
-        .accessibilityLabel("Add 2FA account")
+      MoshNavBarItem(placement: .navigationBarLeading) {
+        // The chip is OUR view and the Menu rides on top with a clear label — a visible Menu
+        // label gets re-rendered washed-out/off-centre by the Mac Catalyst toolbar (see KeySortView).
+        MoshNavGlyph(systemName: "plus")
+          .overlay(
+            Menu {
+              Button { showingScan = true } label: { Label("Scan QR Code", systemImage: "qrcode.viewfinder") }
+              Button { showingMigrate = true } label: { Label("Migrate from Google Authenticator", systemImage: "square.and.arrow.down.on.square") }
+              Button { showingManual = true } label: { Label("Enter Setup Key", systemImage: "keyboard") }
+            } label: {
+              Color.clear
+                .frame(width: MoshNavChip.diameter, height: MoshNavChip.diameter)
+                .contentShape(Rectangle())
+            }
+          )
+          .accessibilityLabel("Add 2FA account")
       }
     }
     .onReceive(tick) { now = $0 }
@@ -407,9 +393,11 @@ private struct MoshTOTPManualEntry: View {
       .navigationTitle(isNew ? "New 2FA Account" : "Edit 2FA Account")
       .navigationBarTitleDisplayMode(.inline)
       .toolbar {
-        ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
-        ToolbarItem(placement: .confirmationAction) {
-          Button("Save") { MoshTOTPStore.shared.save(account); dismiss() }
+        MoshNavBarItem(placement: .cancellationAction) {
+          Button { dismiss() } label: { MoshNavLabel(title: "Cancel") }
+        }
+        MoshNavBarItem(placement: .confirmationAction) {
+          Button { MoshTOTPStore.shared.save(account); dismiss() } label: { MoshNavLabel(title: "Save") }
             .disabled(!MoshTOTP.isValidSecret(account.secret))
         }
       }
@@ -449,7 +437,11 @@ private struct MoshTOTPScanSheet: View {
       }
       .navigationTitle("Scan QR Code")
       .navigationBarTitleDisplayMode(.inline)
-      .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
+      .toolbar {
+        MoshNavBarItem(placement: .cancellationAction) {
+          Button { dismiss() } label: { MoshNavLabel(title: "Cancel") }
+        }
+      }
     }
   }
 }
@@ -481,9 +473,12 @@ private struct MoshTOTPMigrateSheet: View {
       .navigationTitle("Migrate 2FA")
       .navigationBarTitleDisplayMode(.inline)
       .toolbar {
-        ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
-        ToolbarItem(placement: .confirmationAction) {
-          Button("Import") { finish() }.disabled(collected.isEmpty)
+        MoshNavBarItem(placement: .cancellationAction) {
+          Button { dismiss() } label: { MoshNavLabel(title: "Cancel") }
+        }
+        MoshNavBarItem(placement: .confirmationAction) {
+          Button { finish() } label: { MoshNavLabel(title: "Import") }
+            .disabled(collected.isEmpty)
         }
       }
     }

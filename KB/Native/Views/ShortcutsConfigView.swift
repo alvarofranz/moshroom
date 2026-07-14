@@ -54,7 +54,8 @@ struct ActionsList: View {
         }
       }
     }
-    .listStyle(GroupedListStyle())
+    .listStyle(.insetGrouped)
+    .moshReadableWidth()
   }
 
   private func _rowCustomSequence() -> some View {
@@ -124,7 +125,8 @@ struct CustomSequenceView: View {
           .keyboardType(.asciiCapable)
       }
     }
-    .listStyle(GroupedListStyle())
+    .listStyle(.insetGrouped)
+    .moshReadableWidth()
     .onChange(of: mode) { _ in
       input = ""
     }
@@ -309,7 +311,8 @@ struct ShortcutConfigView: View {
         }
       }
     }
-    .listStyle(GroupedListStyle())
+    .listStyle(.insetGrouped)
+    .moshReadableWidth()
     .background(KeyCaptureView(shortcut: draft))
   }
 
@@ -350,8 +353,8 @@ struct ShortcutsConfigView: View {
   }
 
   private func _emptyView() -> some View {
-    AnyView(VStack {
-      Button("Add shortcut", action: _addAction)
+    AnyView(MoshEmptyState(icon: "keyboard", title: "No shortcuts yet") {
+      Button(action: _addAction) { Label("Add shortcut", systemImage: "plus") }
     })
   }
 
@@ -382,7 +385,8 @@ struct ShortcutsConfigView: View {
         }
       }
     }
-    .listStyle(GroupedListStyle())
+    .listStyle(.insetGrouped)
+    .moshReadableWidth()
     .toolbar {
       MoshNavBarItem(placement: .navigationBarTrailing) {
         Button(action: _addAction) { MoshNavLabel(title: "Add") }

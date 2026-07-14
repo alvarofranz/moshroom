@@ -37,7 +37,9 @@ struct KeyConfigPairView: View {
         KeySection(title: "Right", key: pair.right)
       }
     }
-    .listStyle(GroupedListStyle())
-    .navigationBarTitle(pair.fullName)
+    .listStyle(.insetGrouped)
+    .moshReadableWidth()
+    .navigationTitle(pair.fullName)
+    .navigationBarTitleDisplayMode(.inline)
   }
 }

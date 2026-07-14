@@ -78,7 +78,7 @@ struct MoshlauncherView: View {
 
   @Environment(\.horizontalSizeClass) private var hSize
 
-  private var tint: Color { Color(UIColor.moshroomTint) }
+  private var tint: Color { .moshTint }
   private var cardBackground: Color { Color(UIColor.secondarySystemGroupedBackground) }
 
   var body: some View {
@@ -105,9 +105,9 @@ struct MoshlauncherView: View {
       .navigationTitle("Moshroom")
       .navigationBarTitleDisplayMode(.inline)
       .toolbar {
-        ToolbarItem(placement: .navigationBarTrailing) {
+        MoshNavBarItem(placement: .navigationBarTrailing) {
           Button(action: onClose) {
-            Image(systemName: "xmark").font(.system(size: 15, weight: .semibold))
+            MoshNavGlyph(systemName: "xmark")
           }
           .accessibilityLabel("Close")
         }

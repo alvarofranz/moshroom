@@ -91,7 +91,8 @@ struct NewKeyView: View {
         footer: Text("Moshroom creates PKCS#8 public and private keys, with AES 256 bit encryption. Use \"ssh-copy-id [name]\" to copy the public key to the server.")
       ) { }
     }
-    .listStyle(GroupedListStyle())
+    .listStyle(.insetGrouped)
+    .moshReadableWidth()
     .toolbar {
       MoshNavBarItem(placement: .navigationBarLeading) {
         Button(action: onCancel) { MoshNavLabel(title: "Cancel") }
@@ -101,7 +102,8 @@ struct NewKeyView: View {
           .disabled(!_state.isValid)
       }
     }
-    .navigationBarTitle("New \(_state.keyType.shortName) Key")
+    .navigationTitle("New \(_state.keyType.shortName) Key")
+    .navigationBarTitleDisplayMode(.inline)
     .alert(errorMessage: $_state.errorMessage)
     .onAppear(perform: {
       FixedTextField.becomeFirstReponder(id: "keyName")

@@ -64,7 +64,9 @@ struct BindingConfigView: View {
       _bindingRow(binding, keyCode: KeyCode.optionLeft)
       _bindingRow(binding, keyCode: KeyCode.commandLeft)
     }
-    .listStyle(GroupedListStyle())
-    .navigationBarTitle(title)
+    .listStyle(.insetGrouped)
+    .moshReadableWidth()
+    .navigationTitle(title)
+    .navigationBarTitleDisplayMode(.inline)
   }
 }

@@ -264,7 +264,7 @@ struct KeyDetailsView: View {
             })
             Button(action: _removeCertificate, label: {
               Label("Remove", systemImage: "minus.circle")
-            }).accentColor(.red)
+            }).tint(.moshTint)
           }
         } else {
           Section() {
@@ -301,13 +301,15 @@ struct KeyDetailsView: View {
       Section() {
         Button(
           action: _deleteCard,
-          label: { Label("Delete", systemImage: "trash").foregroundColor(.red)}
+          label: { Label("Delete", systemImage: "trash").foregroundColor(.moshTint)}
         )
-          .accentColor(.red)
+          .tint(.moshTint)
       }
     }
-    .listStyle(GroupedListStyle())
+    .listStyle(.insetGrouped)
+    .moshReadableWidth()
     .navigationTitle("Key Info")
+    .navigationBarTitleDisplayMode(.inline)
     .toolbar {
       MoshNavBarItem(placement: .navigationBarTrailing) {
         Button(action: _saveCard) { MoshNavLabel(title: "Save") }

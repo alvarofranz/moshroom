@@ -95,23 +95,19 @@ struct HostListView: View {
   var body: some View {
     Group {
       if _state.list.isEmpty {
-        EmptyStateView(
-          action:Button(
-            action: _addHost,
-            label: { Label("Add new Host", systemImage: "plus") }
-          ),
-          systemIconName: "server.rack"
-        )
+        MoshEmptyState(
+          icon: "server.rack",
+          title: "Your hosts",
+          message: "Save a server once — alias, address, user and key — and connect from anywhere with one tap."
+        ) {
+          Button(action: _addHost) { Label("Add new Host", systemImage: "plus") }
+        }
       } else {
         Group {
           if _state.filteredList.isEmpty {
-            EmptyStateView(
-              action:Button(
-                action: _addHost,
-                label: { Label("Add new Host", systemImage: "plus") }
-              ),
-              systemIconName: "server.rack"
-            )
+            MoshEmptyState(icon: "server.rack", title: "No hosts match") {
+              Button(action: _addHost) { Label("Add new Host", systemImage: "plus") }
+            }
           } else {
               List {
                 ForEach(Array(_state.filteredList.enumerated()), id: \.element.alias) { index, card in
@@ -127,7 +123,8 @@ struct HostListView: View {
                     })
                 }.onDelete(perform: _state.deleteHosts)
               }
-              .listStyle(InsetGroupedListStyle())
+              .listStyle(.insetGrouped)
+              .moshReadableWidth()
               .toolbar {
                 MoshNavBarItem(placement: .navigationBarTrailing) {
                   HStack(spacing: 8) {
@@ -158,7 +155,8 @@ struct HostListView: View {
         .searchable(text: $_state.filterQuery)
       }
     }
-    .navigationBarTitle("Hosts")
+    .navigationTitle("Hosts")
+    .navigationBarTitleDisplayMode(.inline)
     // An iCloud pull can land while this screen is open — refresh so synced hosts appear live.
     .onReceive(NotificationCenter.default.publisher(for: HostsCloudMirror.didChangeNotification)) { _ in
       _state.reloadHosts()

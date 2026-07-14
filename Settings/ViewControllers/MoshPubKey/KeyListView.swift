@@ -63,7 +63,7 @@ struct KeyRow: View {
               .font(.system(.subheadline))
           } else {
             Image(systemName: "exclamationmark.triangle.fill")
-              .foregroundColor(.yellow)
+              .foregroundColor(.orange)
           }
         }
       },
@@ -120,7 +120,7 @@ struct NewKeyMenuContentView: View {
         UITableView.appearance().sectionFooterHeight = 0
       }
       .navigationTitle("New Key")
-      .navigationBarTitleDisplayMode(.large)
+      .navigationBarTitleDisplayMode(.inline)
       .toolbar {
         MoshNavBarItem(placement: .navigationBarTrailing) {
           Button {
@@ -243,13 +243,12 @@ private extension NewKeyMenuContentView {
   //MARK: Fast New Key properties
   func baseCellTitle(_ content: String) -> some View {
     Text(content)
-      .font(.system(size: 16, weight: .semibold))
-      .frame(height: 14)
+      .font(.headline)
   }
 
   func baseCellSubtitle(_ content: String) -> some View {
     Text(content)
-      .font(.system(size: 14, weight: .regular))
+      .font(.subheadline)
       .foregroundStyle(Color.secondary)
   }
 
@@ -269,7 +268,7 @@ private extension NewKeyMenuContentView {
     HStack {
       Text(title)
         .foregroundStyle(Color(tintColor))
-        .font(.system(size: 16))
+        .font(.body)
       Spacer()
     }
       // .background(Color.gray.opacity(0.2))
@@ -295,11 +294,13 @@ struct KeyListView: View {
   var body: some View {
     Group {
       if _state.list.isEmpty {
-        EmptyStateHandlerView(
-          action: toggleNewKeyView,
-          title: "Add Key",
-          systemIconName: "key"
-        )
+        MoshEmptyState(
+          icon: "key",
+          title: "Your identity keys",
+          message: "Create or import SSH keys. Keychain-backed keys are end-to-end encrypted and follow your devices."
+        ) {
+          Button(action: toggleNewKeyView) { Label("Add Key", systemImage: "plus") }
+        }
       } else {
         List {
           Section {
@@ -309,7 +310,7 @@ struct KeyListView: View {
           } header: {
             if _state.list.contains(where: { !$0.isAccessible }) {
               HStack {
-                Image(systemName: "exclamationmark.triangle.fill").foregroundColor(.yellow)
+                Image(systemName: "exclamationmark.triangle.fill").foregroundColor(.orange)
                 Text("The Private Key component of some identities is missing. The Public Key is still available so keys can be recycled at the server.")
               }
             }
@@ -339,7 +340,8 @@ struct KeyListView: View {
     .onReceive(NotificationCenter.default.publisher(for: HostsCloudMirror.keysDidChangeNotification)) { _ in
       _state.reloadCards()
     }
-    .listStyle(InsetGroupedListStyle())
+    .listStyle(.insetGrouped)
+    .moshReadableWidth()
     .toolbar {
       MoshNavBarItem(placement: .navigationBarTrailing) {
         HStack(spacing: 8) {
@@ -355,7 +357,8 @@ struct KeyListView: View {
         }
       }
     }
-    .navigationBarTitle("Keys")
+    .navigationTitle("Keys")
+    .navigationBarTitleDisplayMode(.inline)
     .fileImporter(
       isPresented: $_state.filePickerIsPresented,
       allowedContentTypes: [.text, .data, .item],

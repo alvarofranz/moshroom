@@ -69,7 +69,9 @@ struct AgentForwardPromptPickerView: View {
         }
       }
     }
-    .listStyle(InsetGroupedListStyle())
+    .listStyle(.insetGrouped)
+    .moshReadableWidth()
     .navigationTitle("Agent Forwarding")
+    .navigationBarTitleDisplayMode(.inline)
   }
 }

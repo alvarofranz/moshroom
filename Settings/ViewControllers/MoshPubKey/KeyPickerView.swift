@@ -63,8 +63,10 @@ struct KeyPickerView: View {
           }
       }
     }
-    .listStyle(InsetGroupedListStyle())
+    .listStyle(.insetGrouped)
+    .moshReadableWidth()
     .navigationTitle("Select a Key")
+    .navigationBarTitleDisplayMode(.inline)
     .onAppear {
       // Make sure the key selection can only be based on the canonical list.
       currentKey = currentKey.filter { key in _list.contains(where: { $0.id == key }) }

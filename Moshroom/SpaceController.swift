@@ -193,8 +193,9 @@ class SpaceController: UIViewController {
 
   @objc private func _setupAppearance() {
     self.view.tintColor = .moshroomTint
-    // Moshroom follows the system light/dark style.
-    overrideUserInterfaceStyle = .unspecified
+    // Moshroom has exactly ONE theme: dark. Info.plist pins UIUserInterfaceStyle app-wide;
+    // this re-asserts it at the root VC so nothing presented from here can drift.
+    overrideUserInterfaceStyle = .dark
   }
 
   // Keep the strips reserved for the floating Moshkeys (and the hairline border around the

@@ -118,7 +118,9 @@ struct MoshCustomOptionsPickerView: View {
         }
       }
     }
-    .listStyle(InsetGroupedListStyle())
+    .listStyle(.insetGrouped)
+    .moshReadableWidth()
     .navigationTitle("Mosh Options")
+    .navigationBarTitleDisplayMode(.inline)
   }
 }

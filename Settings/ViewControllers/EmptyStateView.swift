@@ -26,95 +26,41 @@ import Foundation
 import UIKit
 import SwiftUI
 
-struct EmptyStateHandlerView: View {
-  
-  let action: (() -> Void)
+/// THE empty state — one look for every "nothing here yet" screen in the app (hosts, keys,
+/// vault, 2FA, shortcuts…): a mushroom-red icon, a short title, an optional explainer and an
+/// optional action, centered at a readable width.
+struct MoshEmptyState<Action: View>: View {
+  let icon: String
   let title: String
-  let systemIconName: String
-  
-  init(action: @escaping (() -> Void), title: String, systemIconName: String) {
-    self.title = title
-    self.action = action
-    self.systemIconName = systemIconName
-  }
-  
-  var body: some View {
-    VStack {
-      Spacer()
-      VStack {
-        HStack {
-          Label(title, systemImage: "plus")
-            .labelStyle(.titleAndIcon)
-            .font(.system(size: 18.5))
-        }
-        Image(systemName: systemIconName).imageScale(.large).opacity(0.7)
-          .padding(.init(top: 12, leading: 0, bottom: 20, trailing: 0))
-      }
-      .foregroundStyle(Color(.moshroomTint))
-      .onTapGesture {
-        action()
-      }
-      Spacer()
-    }
-  }
-}
+  var message: String = ""
+  @ViewBuilder let action: () -> Action
 
-struct EmptyStateView<Action: View>: View {
-  
-  let action: Action
-  let systemIconName: String
-  let description: String
-  let learnMoreURL: URL?
-  
-  init(action: Action, systemIconName: String, description: String = "", learnMoreURL: URL? = nil) {
-    self.action = action
-    self.systemIconName = systemIconName
-    self.description = description
-    self.learnMoreURL = learnMoreURL
-  }
-  
   var body: some View {
-    VStack {
-      Spacer()
-      
-      Image(systemName: systemIconName)
-        .resizable()
-        .scaledToFit()
-        .frame(width: 80, height: 80)
-        .foregroundColor(.accentColor)
-        .padding(.bottom, 12)
-      
-      if !description.isEmpty {
-        Text(description)
+    VStack(spacing: 14) {
+      Image(systemName: icon)
+        .font(.system(size: 44))
+        .foregroundColor(.moshTint)
+      Text(title).font(.title3.weight(.semibold))
+      if !message.isEmpty {
+        Text(message)
           .font(.callout)
           .foregroundColor(.secondary)
           .multilineTextAlignment(.center)
-          .padding(.horizontal, 20)
+          .fixedSize(horizontal: false, vertical: true)
       }
-      
-      action
+      action()
         .font(.headline)
-        .foregroundColor(.accentColor)
-        .padding(.top, 12)
-      
-      Spacer()
-      
-      Divider()
-        .padding(.horizontal, 40)
-      
-      if let learnMoreURL = learnMoreURL {
-        Button(action: {
-          UIApplication.shared.open(learnMoreURL, options: [:], completionHandler: nil)
-        }) {
-          Text("Learn More")
-            .font(.footnote)
-            .underline()
-            .foregroundColor(Color(.moshroomTint))
-        }
-        .padding(.top, 8)
-        .padding(.bottom, 20)
-      }
+        .foregroundColor(.moshTint)
+        .padding(.top, 6)
     }
-    .padding()
+    .padding(32)
+    .frame(maxWidth: 420)
+    .frame(maxWidth: .infinity, maxHeight: .infinity)
+  }
+}
+
+extension MoshEmptyState where Action == EmptyView {
+  init(icon: String, title: String, message: String = "") {
+    self.init(icon: icon, title: title, message: message, action: { EmptyView() })
   }
 }

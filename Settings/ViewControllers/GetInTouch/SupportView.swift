@@ -57,7 +57,9 @@ struct SupportView: View {
         }
       }
     }
-    .listStyle(.grouped)
+    .listStyle(.insetGrouped)
+    .moshReadableWidth()
     .navigationTitle("Support")
+    .navigationBarTitleDisplayMode(.inline)
   }
 }

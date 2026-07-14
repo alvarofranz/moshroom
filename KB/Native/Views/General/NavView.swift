@@ -62,14 +62,26 @@ extension View {
   }
 }
 
+extension View {
+  /// Caps full-screen list/form content at a readable column on big canvases (iPad 13", Mac) —
+  /// the same 640pt column the launcher and Quick Connect use. The sides match the grouped-list
+  /// background so the cap reads as margins, not bands.
+  func moshReadableWidth() -> some View {
+    self
+      .frame(maxWidth: 640)
+      .frame(maxWidth: .infinity)
+      .background(Color(UIColor.systemGroupedBackground))
+  }
+}
+
 // MARK: - Moshroom nav-bar house style
 
 /// The house style for every SwiftUI nav-bar button: a white round chip with near-black ink —
 /// the same look as the floating quick keys (`moshkeyRoundButton` in Moshkeys.swift), so buttons
 /// read identically on iOS and Mac.
 enum MoshNavChip {
-  static let fill = Color(UIColor(white: 0.97, alpha: 0.92))
-  static let ink = Color(UIColor(white: 0.12, alpha: 1))
+  static let fill = Color(Moshstyle.chipFill)
+  static let ink = Color(Moshstyle.ink)
   static let diameter: CGFloat = 34
 }
 

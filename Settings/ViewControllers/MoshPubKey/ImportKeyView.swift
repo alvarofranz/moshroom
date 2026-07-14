@@ -68,7 +68,8 @@ struct ImportKeyView: View {
         footer: Text("Moshroom imports the key and stores it as PKCS#8, with AES 256 bit encryption. Use \"ssh-copy-id [name]\" to copy the public key to the server.")
       ) { }
     }
-    .listStyle(GroupedListStyle())
+    .listStyle(.insetGrouped)
+    .moshReadableWidth()
     .toolbar {
       MoshNavBarItem(placement: .navigationBarLeading) {
         Button(action: onCancel) { MoshNavLabel(title: "Cancel") }
@@ -82,7 +83,8 @@ struct ImportKeyView: View {
           .disabled(!state.isValid)
       }
     }
-    .navigationBarTitle("Import \(state.keyType) Key")
+    .navigationTitle("Import \(state.keyType) Key")
+    .navigationBarTitleDisplayMode(.inline)
     .alert(errorMessage: $state.errorMessage)
   }
 }

@@ -68,7 +68,8 @@ struct KBConfigView: View {
             config: self.config,
             commandsMode: true
           )
-          .navigationBarTitle("Shortcuts")
+          .navigationTitle("Shortcuts")
+          .navigationBarTitleDisplayMode(.inline)
         }
         HStack {
           Toggle("Custom Keyboards", isOn: customKeyboards)
@@ -90,12 +91,15 @@ struct KBConfigView: View {
             config: self.config,
             commandsMode: false
           )
-          .navigationBarTitle("Presses")
+          .navigationTitle("Presses")
+          .navigationBarTitleDisplayMode(.inline)
         }
       }
     }
-    .listStyle(GroupedListStyle())
-    .navigationBarTitle("Keyboard")
+    .listStyle(.insetGrouped)
+    .moshReadableWidth()
+    .navigationTitle("Keyboard")
+    .navigationBarTitleDisplayMode(.inline)
     .toolbar {
       MoshNavBarItem(placement: .navigationBarTrailing) {
         Button(

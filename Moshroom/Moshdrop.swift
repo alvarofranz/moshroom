@@ -137,7 +137,7 @@ final class MoshdropAttachment: NSTextAttachment {
                          withConfiguration: UIImage.SymbolConfiguration(pointSize: 13, weight: .regular))
     return UIGraphicsImageRenderer(size: CGSize(width: width, height: height)).image { _ in
       let rect = CGRect(x: 0, y: 0, width: width, height: height)
-      UIColor.moshroomTint.withAlphaComponent(0.14).setFill()
+      UIColor.moshroomTint.withAlphaComponent(Moshstyle.faintTintAlpha).setFill()
       UIBezierPath(roundedRect: rect, cornerRadius: 7).fill()
       symbol?.withTintColor(.moshroomTint, renderingMode: .alwaysOriginal)
         .draw(in: CGRect(x: pad, y: (height - iconSide) / 2, width: iconSide, height: iconSide))

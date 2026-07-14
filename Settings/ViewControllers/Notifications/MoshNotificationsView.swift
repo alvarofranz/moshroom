@@ -41,8 +41,10 @@ struct MoshNotificationsView: View {
         Toggle("'Notify' notifications", isOn: $notification.notifyNotifications)
       }
     }
-    .listStyle(GroupedListStyle())
-    .navigationBarTitle("Notifications")
+    .listStyle(.insetGrouped)
+    .moshReadableWidth()
+    .navigationTitle("Notifications")
+    .navigationBarTitleDisplayMode(.inline)
   }
 }
 

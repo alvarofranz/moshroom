@@ -60,17 +60,19 @@ struct SettingsView: View {
         } details: {
           DefaultAgentSettingsView()
         }
-        RowWithStoryBoardId(content: {
+        Row {
           HStack {
             Label("Default User", systemImage: "person")
             Spacer()
             Text(_defaultUser).foregroundColor(.secondary)
           }
-        }, storyBoardId: "MoshDefaultUserViewController")
+        } details: {
+          MoshDefaultUserView()
+        }
       } header: {
         Text("Connect")
       } footer: {
-        Text("Everything needed to reach your machines: identity keys, saved hosts (alias, address, user, key and per-host options) and the SSH agent defaults. Default User fills in when a host doesn't set its own.")
+        Text("Identity keys, saved hosts and SSH agent defaults.")
       }
 
       Section {
@@ -92,7 +94,7 @@ struct SettingsView: View {
       } header: {
         Text("Terminal")
       } footer: {
-        Text("How the terminal looks and behaves: theme, font and size; hardware-keyboard modifiers and shortcuts; and what happens when a program rings the bell or posts a notification.")
+        Text("Theme, font and size; keyboard shortcuts; bell and notifications.")
       }
 
       Section {
@@ -108,7 +110,7 @@ struct SettingsView: View {
       } header: {
         Text("Moshxplore")
       } footer: {
-        Text("Text size for the file viewer and editor — the content you read and edit. The rest of the explorer (lists, buttons, labels) uses a standard size that looks right on every device.")
+        Text("Text size for the file viewer and editor content.")
       }
 
       Section {
@@ -122,7 +124,7 @@ struct SettingsView: View {
       } header: {
         Text("Security")
       } footer: {
-        Text("When on, Moshroom asks for Face ID (or your device passcode) to open the app, and hides its contents in the app switcher. Your keys, passwords and 2FA codes are always stored in the keychain regardless of this setting.")
+        Text("Ask for Face ID or your passcode to open Moshroom, and hide its contents in the app switcher.")
       }
 
       Section {
@@ -168,7 +170,7 @@ struct SettingsView: View {
         Text("Sync with iCloud")
       } footer: {
         Text(_iCloudAvailable
-             ? "One switch for everything. Your hosts, keys, snippets, passwords and 2FA codes sync across your devices: settings and metadata through iCloud Drive, and every secret (key material, host and vault passwords, 2FA seeds) through your iCloud Keychain — end-to-end encrypted, so Apple can't read them and they survive reinstalls. Secure Enclave keys never leave this device. Edit the same item on two devices and the newest edit wins; a conflict merges both sides and never deletes anything. Turning sync off stops syncing from here on — whatever already reached your other devices stays there."
+             ? "One switch for everything: hosts, keys, snippets, passwords and 2FA codes follow your devices — secrets end-to-end encrypted through your iCloud Keychain. Secure Enclave keys never leave this device."
              : "Sign in to iCloud to sync your hosts, keys, snippets, passwords and 2FA codes across your devices.")
       }
 
@@ -189,7 +191,7 @@ struct SettingsView: View {
       } header: {
         Text("About & Support")
       } footer: {
-        Text("The app version, bundled licenses, and the project's home on GitHub for questions, ideas and bug reports.")
+        Text("The app version, bundled licenses, and the project's home on GitHub.")
       }
     }
     .onAppear {
@@ -210,8 +212,11 @@ struct SettingsView: View {
     .onReceive(_clock) { now in
       _now = now   // keeps the "2m ago" label honest while the screen sits open
     }
-    .listStyle(.grouped)
+    .listStyle(.insetGrouped)
+    .moshReadableWidth()
     .navigationTitle("Settings")
+    .navigationBarTitleDisplayMode(.inline)
+    .tint(.moshTint)
 
   }
 
@@ -222,5 +227,37 @@ struct SettingsView: View {
     if seconds < 3600 { return "\(seconds / 60)m ago" }
     if seconds < 86400 { return "\(seconds / 3600)h ago" }
     return "\(seconds / 86400)d ago"
+  }
+}
+
+// The Default User editor — plain SwiftUI in the house style (replaces the old storyboard table).
+// Spaces are stripped as you type, like the host alias field; saved on the way out, and only when
+// non-empty (matching the previous behavior).
+struct MoshDefaultUserView: View {
+  @State private var _name = MoshroomDefaults.defaultUserName() ?? ""
+
+  var body: some View {
+    List {
+      Section {
+        TextField("Username", text: $_name)
+          .autocorrectionDisabled()
+          .textInputAutocapitalization(.never)
+          .onChange(of: _name) { value in
+            let sanitized = value.replacingOccurrences(of: " ", with: "")
+            if sanitized != value { _name = sanitized }
+          }
+      } footer: {
+        Text("Used to connect when a host doesn't set its own user.")
+      }
+    }
+    .listStyle(.insetGrouped)
+    .moshReadableWidth()
+    .navigationTitle("Default User")
+    .navigationBarTitleDisplayMode(.inline)
+    .onDisappear {
+      guard !_name.isEmpty else { return }
+      MoshroomDefaults.setDefaultUserName(_name)
+      MoshroomDefaults.save()
+    }
   }
 }
