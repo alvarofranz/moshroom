@@ -152,13 +152,17 @@ private struct CopyChip: View {
       UINotificationFeedbackGenerator().notificationOccurred(.success)
       DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) { withAnimation { copied = false } }
     } label: {
+      // Stable layout: the label text never changes width (no "Copied" swap that shifts the row),
+      // and the icon flips to a green check in place — the same "copied" cue as the 2FA list.
       HStack(spacing: 6) {
-        Text(copied ? "Copied" : text)
-          .font(mono ? .system(.body, design: .monospaced) : .body)
-          .foregroundColor(copied ? .moshTint : .primary)
+        if !text.isEmpty {
+          Text(text)
+            .font(mono ? .system(.body, design: .monospaced) : .body)
+            .foregroundColor(.primary)
+        }
         Image(systemName: copied ? "checkmark" : "doc.on.doc")
           .font(.footnote)
-          .foregroundColor(.secondary)
+          .foregroundColor(copied ? .moshGreen : .secondary)
       }
     }
     .buttonStyle(.plain)
@@ -446,27 +450,34 @@ private struct MoshTOTPRow: View {
     HStack(alignment: .center, spacing: 14) {
       VStack(alignment: .leading, spacing: 2) {
         Text(account.title)
+          .lineLimit(1)
+          .truncationMode(.tail)
         if !account.subtitle.isEmpty {
           Text(account.subtitle).font(.footnote).foregroundColor(.secondary)
+            .lineLimit(1)
+            .truncationMode(.tail)
         }
       }
-      Spacer()
-      HStack(spacing: 10) {
+      Spacer(minLength: 12)
+      // Fixed-width slot for the "copied" check: it is ALWAYS reserved, so toggling it only swaps
+      // the glyph in place — the code never moves and the title never reflows.
+      ZStack {
         if copied {
           Image(systemName: "checkmark.circle.fill")
             .font(.title2)
             .foregroundColor(.moshGreen)
             .transition(.opacity.combined(with: .scale))
         }
-        Text(grouped(code))
-          .font(.system(size: 32, weight: .semibold, design: .monospaced))
-          .foregroundColor(expiring ? .red : .moshGreen)
-          .monospacedDigit()
-          .minimumScaleFactor(0.7)
-          .lineLimit(1)
-          .opacity(dim ? 0.4 : 1)
-          .animation(.easeInOut(duration: 0.4), value: dim)
       }
+      .frame(width: 26)
+      Text(grouped(code))
+        .font(.system(size: 32, weight: .semibold, design: .monospaced))
+        .foregroundColor(expiring ? .red : .moshGreen)
+        .monospacedDigit()
+        .lineLimit(1)
+        .fixedSize()   // the code keeps its full size; a long title truncates instead of shrinking it
+        .opacity(dim ? 0.4 : 1)
+        .animation(.easeInOut(duration: 0.4), value: dim)
     }
     .padding(.vertical, 10)
   }

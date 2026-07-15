@@ -398,9 +398,6 @@ enum MoshxploreStyle {
   static func font(_ size: CGFloat, _ weight: UIFont.Weight = .regular) -> UIFont {
     .systemFont(ofSize: size, weight: weight)
   }
-  static func monoFont(_ size: CGFloat, _ weight: UIFont.Weight = .regular) -> UIFont {
-    .monospacedSystemFont(ofSize: size, weight: weight)
-  }
   static func inset(_ base: CGFloat) -> CGFloat { base }
 }
 

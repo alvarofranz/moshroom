@@ -121,6 +121,16 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
 
     suggestionsHeight = suggestionsScroll.heightAnchor.constraint(equalToConstant: 0)
 
+    // The control bar rides just above the software keyboard on iOS. On the Mac there is no
+    // software keyboard, so the keyboard layout guide is an unreliable anchor (it can resolve to
+    // the wrong edge under .overFullScreen and hide the bar) — pin it to the safe-area bottom so
+    // Back / Snips / Attach / Send are ALWAYS on screen.
+    #if targetEnvironment(macCatalyst)
+    let controlsBottom = controls.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -8)
+    #else
+    let controlsBottom = controls.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor, constant: -8)
+    #endif
+
     NSLayoutConstraint.activate([
       textView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
       textView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
@@ -141,7 +151,7 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
       // A little breathing room above the keyboard.
       controls.leadingAnchor.constraint(equalTo: view.leadingAnchor),
       controls.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-      controls.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor, constant: -8),
+      controlsBottom,
       controls.heightAnchor.constraint(equalToConstant: 50),
     ])
 
