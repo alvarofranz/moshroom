@@ -28,6 +28,13 @@ import SwiftUI
 // sync end-to-end across the user's devices when "Sync with iCloud" is on. Clean, native SwiftUI —
 // looks right on iPhone, iPad and Mac.
 
+extension Color {
+  // The ONE green in an otherwise all-mushroom-red app: a live, valid 2FA code reads green
+  // (and the "copied" check uses the same green). A code only turns red — blinking — in its last
+  // 5 seconds, as the one "about to regenerate" cue.
+  static let moshGreen = Color(red: 0.22, green: 0.80, blue: 0.40)
+}
+
 // MARK: - Root
 
 struct MoshvaultRootView: View {
@@ -73,6 +80,65 @@ struct MoshvaultRootView: View {
 
 // MARK: - Shared bits
 
+// A clean search field that lives right under the tabs (not buried in the nav-bar drawer).
+// Same look on both tabs — rounded dark fill, glyph, live clear button.
+private struct MoshSearchField: View {
+  @Binding var text: String
+  var prompt: String
+  @FocusState private var focused: Bool
+
+  var body: some View {
+    HStack(spacing: 8) {
+      Image(systemName: "magnifyingglass")
+        .foregroundColor(.secondary)
+      TextField(prompt, text: $text)
+        .textFieldStyle(.plain)
+        .autocorrectionDisabled()
+        .textInputAutocapitalization(.never)
+        .submitLabel(.search)
+        .focused($focused)
+      if !text.isEmpty {
+        Button { text = "" } label: {
+          Image(systemName: "xmark.circle.fill").foregroundColor(.secondary)
+        }
+        .buttonStyle(.plain)
+        .transition(.opacity)
+      }
+    }
+    .padding(.horizontal, 12)
+    .padding(.vertical, 9)
+    .background(RoundedRectangle(cornerRadius: 11, style: .continuous).fill(Color(.tertiarySystemFill)))
+    // Match the inset-grouped list's own horizontal section margin so the field lines up
+    // edge-for-edge with the card below it.
+    .padding(.horizontal, 20)
+    .padding(.top, 8)
+    .animation(.easeInOut(duration: 0.15), value: text.isEmpty)
+  }
+}
+
+extension View {
+  // Shrink an inset-grouped list's default top inset so a search field placed directly above it
+  // reads as attached to the card. contentMargins is iOS 17+; on 16 the default spacing stands.
+  @ViewBuilder func moshListTopInset(_ v: CGFloat) -> some View {
+    if #available(iOS 17.0, *) {
+      self.contentMargins(.top, v, for: .scrollContent)
+    } else {
+      self
+    }
+  }
+}
+
+// Shown when a search filters everything out.
+private struct MoshNoMatches: View {
+  var body: some View {
+    VStack(spacing: 10) {
+      Image(systemName: "magnifyingglass").font(.system(size: 34)).foregroundColor(.secondary)
+      Text("No matches").font(.headline).foregroundColor(.secondary)
+    }
+    .frame(maxWidth: .infinity, maxHeight: .infinity)
+  }
+}
+
 // A tappable "Copied" flash used across both tabs.
 private struct CopyChip: View {
   let text: String
@@ -104,7 +170,16 @@ private struct CopyChip: View {
 struct MoshvaultPasswordsView: View {
   @State private var entries: [MoshVaultEntry] = []
   @State private var editing: MoshVaultEntry?
-  @State private var isNew = false
+  @State private var query = ""
+
+  private var filtered: [MoshVaultEntry] {
+    guard !query.isEmpty else { return entries }
+    let q = query.lowercased()
+    return entries.filter {
+      $0.service.lowercased().contains(q) || $0.username.lowercased().contains(q)
+        || $0.email.lowercased().contains(q) || $0.url.lowercased().contains(q)
+    }
+  }
 
   var body: some View {
     Group {
@@ -115,40 +190,49 @@ struct MoshvaultPasswordsView: View {
           message: "Keep your service logins here — service, username, email, password, notes and URL. Everything is stored in your iCloud Keychain, end-to-end encrypted, and follows your devices when iCloud sync is on."
         )
       } else {
-        List {
-          ForEach(entries) { entry in
-            Button { isNew = false; editing = entry } label: {
-              VStack(alignment: .leading, spacing: 2) {
-                Text(entry.service.isEmpty ? "Untitled" : entry.service)
-                  .foregroundColor(.primary)
-                if !entry.subtitle.isEmpty {
-                  Text(entry.subtitle).font(.footnote).foregroundColor(.secondary)
+        VStack(spacing: 0) {
+          MoshSearchField(text: $query, prompt: "Search passwords")
+          List {
+            ForEach(filtered) { entry in
+              Button { editing = entry } label: {
+                VStack(alignment: .leading, spacing: 2) {
+                  Text(entry.service.isEmpty ? "Untitled" : entry.service)
+                    .foregroundColor(.primary)
+                  if !entry.subtitle.isEmpty {
+                    Text(entry.subtitle).font(.footnote).foregroundColor(.secondary)
+                  }
                 }
               }
+              // Right-click (Mac) / long-press (iOS) — the Mac has no swipe, so edit & delete live here too.
+              .contextMenu {
+                Button { editing = entry } label: { Label("Edit", systemImage: "pencil") }
+                Button(role: .destructive) { deleteEntries([entry]) } label: { Label("Delete", systemImage: "trash") }
+              }
             }
+            .onDelete { deleteEntries($0.map { filtered[$0] }) }
           }
-          .onDelete(perform: delete)
+          .listStyle(.insetGrouped)
+          .moshListTopInset(2)   // trim the list's default top inset so the card sits under the search field
+          .overlay { if filtered.isEmpty { MoshNoMatches() } }
         }
-        .listStyle(.insetGrouped)
         .moshReadableWidth()
       }
     }
     .toolbar {
       MoshNavBarItem(placement: .navigationBarLeading) {
-        Button { isNew = true; editing = MoshVaultEntry() } label: { MoshNavGlyph(systemName: "plus") }
+        Button { editing = MoshVaultEntry() } label: { MoshNavGlyph(systemName: "plus") }
           .accessibilityLabel("Add password")
       }
     }
     .onAppear(perform: reload)
     .sheet(item: $editing, onDismiss: reload) { entry in
-      MoshvaultPasswordEditor(entry: entry, isNew: isNew)
+      MoshvaultPasswordEditor(entry: entry)
     }
   }
 
   private func reload() { entries = MoshVaultStore.shared.all() }
 
-  private func delete(_ set: IndexSet) {
-    let targets = set.map { entries[$0] }
+  private func deleteEntries(_ targets: [MoshVaultEntry]) {
     LocalAuth.shared.authenticate(callback: { ok in
       if ok { targets.forEach { MoshVaultStore.shared.delete($0) } }
       reload()
@@ -159,8 +243,11 @@ struct MoshvaultPasswordsView: View {
 private struct MoshvaultPasswordEditor: View {
   @Environment(\.dismiss) private var dismiss
   @State var entry: MoshVaultEntry
-  let isNew: Bool
   @State private var revealPassword = false
+
+  // Derive "new vs edit" from the store, not a passed-in flag — the flag raced with the sheet
+  // presentation and showed "Edit Password" on a brand-new entry.
+  private var isNew: Bool { !MoshVaultStore.shared.all().contains { $0.id == entry.id } }
 
   var body: some View {
     NavigationStack {
@@ -201,7 +288,8 @@ private struct MoshvaultPasswordEditor: View {
       .navigationBarTitleDisplayMode(.inline)
       .toolbar {
         MoshNavBarItem(placement: .cancellationAction) {
-          Button { dismiss() } label: { MoshNavLabel(title: "Cancel") }
+          Button { dismiss() } label: { MoshNavGlyph(systemName: "xmark") }
+            .accessibilityLabel("Cancel")
         }
         MoshNavBarItem(placement: .confirmationAction) {
           Button { MoshVaultStore.shared.save(entry); dismiss() } label: { MoshNavLabel(title: "Save") }
@@ -232,8 +320,18 @@ struct MoshvaultTOTPView: View {
   @State private var showingScan = false
   @State private var showingMigrate = false
   @State private var banner: String?
+  @State private var query = ""
+  @State private var copiedID: String?
   private let tick = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
   @State private var now = Date()
+
+  private var filtered: [MoshTOTPAccount] {
+    guard !query.isEmpty else { return accounts }
+    let q = query.lowercased()
+    return accounts.filter {
+      $0.title.lowercased().contains(q) || $0.subtitle.lowercased().contains(q)
+    }
+  }
 
   var body: some View {
     Group {
@@ -244,21 +342,32 @@ struct MoshvaultTOTPView: View {
           message: "Add your two-factor (2FA) codes here. Scan a QR code, migrate from Google Authenticator, or enter a setup key by hand. Codes are generated on-device and the accounts sync through your iCloud Keychain."
         )
       } else {
-        List {
-          if let banner {
-            Text(banner).font(.footnote).foregroundColor(.secondary)
+        VStack(spacing: 0) {
+          MoshSearchField(text: $query, prompt: "Search codes")
+          List {
+            if let banner {
+              Text(banner).font(.footnote).foregroundColor(.secondary)
+            }
+            ForEach(filtered) { account in
+              MoshTOTPRow(account: account, now: now, copied: copiedID == account.id)
+                .contentShape(Rectangle())
+                .onTapGesture { copyCode(account) }
+                .swipeActions(edge: .trailing) {
+                  Button(role: .destructive) { delete(account) } label: { Label("Delete", systemImage: "trash") }
+                  Button { editing = account } label: { Label("Edit", systemImage: "pencil") }.tint(.gray)
+                }
+                // Mac has no swipe — right-click gives the same edit & delete.
+                .contextMenu {
+                  Button { editing = account } label: { Label("Edit", systemImage: "pencil") }
+                  Button { copyCode(account) } label: { Label("Copy code", systemImage: "doc.on.doc") }
+                  Button(role: .destructive) { delete(account) } label: { Label("Delete", systemImage: "trash") }
+                }
+            }
           }
-          ForEach(accounts) { account in
-            MoshTOTPRow(account: account, now: now)
-              .contentShape(Rectangle())
-              .onTapGesture { copyCode(account) }
-              .swipeActions(edge: .trailing) {
-                Button(role: .destructive) { delete(account) } label: { Label("Delete", systemImage: "trash") }
-                Button { editing = account } label: { Label("Edit", systemImage: "pencil") }.tint(.gray)
-              }
-          }
+          .listStyle(.insetGrouped)
+          .moshListTopInset(2)   // trim the list's default top inset so the card sits under the search field
+          .overlay { if filtered.isEmpty { MoshNoMatches() } }
         }
-        .listStyle(.insetGrouped)
         .moshReadableWidth()
       }
     }
@@ -277,6 +386,7 @@ struct MoshvaultTOTPView: View {
                 .frame(width: MoshNavChip.diameter, height: MoshNavChip.diameter)
                 .contentShape(Rectangle())
             }
+            .menuIndicator(.hidden)   // no system disclosure caret bleeding through the + glyph
           )
           .accessibilityLabel("Add 2FA account")
       }
@@ -305,8 +415,12 @@ struct MoshvaultTOTPView: View {
   private func copyCode(_ account: MoshTOTPAccount) {
     UIPasteboard.general.string = MoshTOTP.code(for: account)
     UINotificationFeedbackGenerator().notificationOccurred(.success)
-    banner = "Copied \(account.title) code"
-    DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) { if banner?.hasPrefix("Copied") == true { banner = nil } }
+    // A green check appears left of the code for 2s — no banner, nothing shifts.
+    withAnimation { copiedID = account.id }
+    let id = account.id
+    DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+      if copiedID == id { withAnimation { copiedID = nil } }
+    }
   }
 
   private func delete(_ account: MoshTOTPAccount) {
@@ -320,32 +434,41 @@ struct MoshvaultTOTPView: View {
 private struct MoshTOTPRow: View {
   let account: MoshTOTPAccount
   let now: Date
+  let copied: Bool
 
   var body: some View {
     let code = MoshTOTP.code(for: account, at: now)
     let remaining = MoshTOTP.secondsRemaining(for: account, at: now)
-    HStack(spacing: 14) {
+    // Green while the code is live; red and blinking (once a second) only in the last 5 seconds,
+    // as the single "about to regenerate" cue — no bar, no clock.
+    let expiring = remaining <= 5
+    let dim = expiring && Int(now.timeIntervalSince1970) % 2 == 0
+    HStack(alignment: .center, spacing: 14) {
       VStack(alignment: .leading, spacing: 2) {
         Text(account.title)
         if !account.subtitle.isEmpty {
           Text(account.subtitle).font(.footnote).foregroundColor(.secondary)
         }
-        Text(grouped(code))
-          .font(.system(.title3, design: .monospaced).weight(.semibold))
-          .foregroundColor(.moshTint)
       }
       Spacer()
-      ZStack {
-        Circle().stroke(Color.secondary.opacity(0.25), lineWidth: 3)
-        Circle()
-          .trim(from: 0, to: CGFloat(remaining) / CGFloat(max(1, account.period)))
-          .stroke(Color.moshTint, style: StrokeStyle(lineWidth: 3, lineCap: .round))
-          .rotationEffect(.degrees(-90))
-        Text("\(remaining)").font(.caption2.monospacedDigit()).foregroundColor(.secondary)
+      HStack(spacing: 10) {
+        if copied {
+          Image(systemName: "checkmark.circle.fill")
+            .font(.title2)
+            .foregroundColor(.moshGreen)
+            .transition(.opacity.combined(with: .scale))
+        }
+        Text(grouped(code))
+          .font(.system(size: 32, weight: .semibold, design: .monospaced))
+          .foregroundColor(expiring ? .red : .moshGreen)
+          .monospacedDigit()
+          .minimumScaleFactor(0.7)
+          .lineLimit(1)
+          .opacity(dim ? 0.4 : 1)
+          .animation(.easeInOut(duration: 0.4), value: dim)
       }
-      .frame(width: 30, height: 30)
     }
-    .padding(.vertical, 4)
+    .padding(.vertical, 10)
   }
 
   private func grouped(_ code: String) -> String {
@@ -394,7 +517,8 @@ private struct MoshTOTPManualEntry: View {
       .navigationBarTitleDisplayMode(.inline)
       .toolbar {
         MoshNavBarItem(placement: .cancellationAction) {
-          Button { dismiss() } label: { MoshNavLabel(title: "Cancel") }
+          Button { dismiss() } label: { MoshNavGlyph(systemName: "xmark") }
+            .accessibilityLabel("Cancel")
         }
         MoshNavBarItem(placement: .confirmationAction) {
           Button { MoshTOTPStore.shared.save(account); dismiss() } label: { MoshNavLabel(title: "Save") }
@@ -439,7 +563,8 @@ private struct MoshTOTPScanSheet: View {
       .navigationBarTitleDisplayMode(.inline)
       .toolbar {
         MoshNavBarItem(placement: .cancellationAction) {
-          Button { dismiss() } label: { MoshNavLabel(title: "Cancel") }
+          Button { dismiss() } label: { MoshNavGlyph(systemName: "xmark") }
+            .accessibilityLabel("Cancel")
         }
       }
     }
@@ -474,7 +599,8 @@ private struct MoshTOTPMigrateSheet: View {
       .navigationBarTitleDisplayMode(.inline)
       .toolbar {
         MoshNavBarItem(placement: .cancellationAction) {
-          Button { dismiss() } label: { MoshNavLabel(title: "Cancel") }
+          Button { dismiss() } label: { MoshNavGlyph(systemName: "xmark") }
+            .accessibilityLabel("Cancel")
         }
         MoshNavBarItem(placement: .confirmationAction) {
           Button { finish() } label: { MoshNavLabel(title: "Import") }

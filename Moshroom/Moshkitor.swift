@@ -90,10 +90,15 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
     textView.textColor = .label
     textView.allowsEditingTextAttributes = false
     textView.textContainerInset = UIEdgeInsets(top: 14, left: 12, bottom: 14, right: 12)
-    textView.autocapitalizationType = .sentences
-    textView.autocorrectionType = .yes
-    textView.smartQuotesType = .yes
-    textView.smartDashesType = .yes
+    // A terminal composer must NEVER touch what you type: no autocorrect, no spell underlines,
+    // no smart quotes/dashes (curly quotes corrupt commands), no auto-capitalization ("clear"
+    // must never become "Clear"). What you write is exactly what the agent gets.
+    textView.autocapitalizationType = .none
+    textView.autocorrectionType = .no
+    textView.spellCheckingType = .no
+    textView.smartQuotesType = .no
+    textView.smartDashesType = .no
+    textView.smartInsertDeleteType = .no
     textView.keyboardDismissMode = .interactive
     textView.alwaysBounceVertical = true
     textView.translatesAutoresizingMaskIntoConstraints = false

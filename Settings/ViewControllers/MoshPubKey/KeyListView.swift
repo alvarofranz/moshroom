@@ -97,6 +97,7 @@ struct KeySortView: View {
             .frame(width: MoshNavChip.diameter, height: MoshNavChip.diameter)
             .contentShape(Rectangle())
         }
+        .menuIndicator(.hidden)   // no system disclosure caret over the house chip
       )
   }
 }
