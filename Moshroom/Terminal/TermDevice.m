@@ -244,16 +244,6 @@ static int __sizeOfIncompleteSequenceAtTheEnd(const char *buffer, size_t len) {
   [self.view pasteString:input];
 }
 
-- (void)writeIn:(NSString *)input
-{
-  [self write:input];
-}
-
-
-- (void)writeOut:(NSString *)output {
-  fprintf(_stream.out, "%s", output.UTF8String);
-}
-
 - (void)close
 {
   _delegate = NULL;

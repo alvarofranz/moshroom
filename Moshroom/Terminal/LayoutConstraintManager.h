@@ -46,9 +46,6 @@ NS_ASSUME_NONNULL_BEGIN
 
 // Note: Keyboard handling is now automatic via constraint priorities
 
-// Update keyboard layout guide (for window changes)
-- (void)updateKeyboardLayoutGuide:(nullable UIKeyboardLayoutGuide *)keyboardGuide;
-
 // Get current constraint constants for debugging
 
 @end

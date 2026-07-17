@@ -89,13 +89,11 @@
 - (void)blur;
 
 - (void)write:(NSString *)input;
-- (void)writeIn:(NSString *)input;
 - (void)writeInDirectly:(NSString *)input;
 // Send text as a bracketed paste (via the terminal's paste path — framed with ESC[200~/201~ when
 // the remote program enabled bracketed-paste mode) rather than as raw keystrokes. Wraps the view's
 // `pasteString:`. Named to avoid Swift's `paste`-family import collision with UIResponder.
 - (void)sendBracketedPaste:(NSString *)input;
-- (void)writeOut:(NSString *)output;
 - (void)close;
 
 

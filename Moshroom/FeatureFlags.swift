@@ -35,10 +35,6 @@ struct PublishingOptions: OptionSet, CustomStringConvertible, CustomDebugStringC
   static let legacyTestFlight = Self.init(rawValue: 1 << 4)
   static let legacyAppStore   = Self.init(rawValue: 1 << 5)
   
-  static let all: Self = [.developer, .testFlight, .appStore, .legacyDeveloper, .legacyTestFlight, .legacyAppStore]
-  
-  static let legacy: Self = [.legacyDeveloper, .legacyTestFlight, .legacyAppStore]
-  
 #if MOSHROOM_LEGACY_PUBLISHING_OPTION_DEVELOPER
   static var current: Self  = .legacyDeveloper
 #elseif MOSHROOM_LEGACY_PUBLISHING_OPTION_TESTFLIGHT

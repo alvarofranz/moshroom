@@ -336,16 +336,6 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
   [_webView evaluateJavaScript:term_setCursorBlink(state) completionHandler:nil];
 }
 
-- (void)setBoldAsBright:(BOOL)state
-{
-  [_webView evaluateJavaScript:term_setBoldAsBright(state) completionHandler:nil];
-}
-
-- (void)setBoldEnabled:(NSUInteger)state
-{
-  [_webView evaluateJavaScript:term_setBoldEnabled(state) completionHandler:nil];
-}
-
 - (void)increaseFontSize
 {
   if (_layoutLocked) {
@@ -797,22 +787,6 @@ static NSString * _sanitizeTextForClipboard(NSString *text) {
           [script componentsJoinedByString:@"\n"]
                                 injectionTime:WKUserScriptInjectionTimeAtDocumentEnd
                              forMainFrameOnly:YES];
-}
-
-- (void)applyTheme:(NSString *)themeName {
-  NSString *themeContent = [[MoshTheme withName: themeName ?: [MoshroomDefaults selectedThemeName]] content];
-  if (themeContent) {
-    // Apply the theme, then re-point the page <html>/<body> at the new screen background and
-    // re-sync the native side (webView + scrollView colours) — so the no-black-strip guarantee
-    // holds across theme changes too, not just at launch.
-    NSString *script = [NSString stringWithFormat:
-      @"(function(){%@})();"
-      @"try{document.body.style.backgroundColor=document.documentElement.style.backgroundColor=t.scrollPort_.screen_.style.backgroundColor;}catch(e){}",
-      themeContent];
-    [_webView evaluateJavaScript:script completionHandler:^(id result, NSError *error) {
-      [self _syncTerminalState];
-    }];
-  }
 }
 
 - (void)terminate
