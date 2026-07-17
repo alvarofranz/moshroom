@@ -88,6 +88,8 @@ class MCPSessionPayload : TermSessionPayload {
 
   func resumeFromSuspended() {
     guard let session = self._session else { return }
+    // The suspend is over — the command loop may clear the marker again on the next real exit.
+    session.moshroomAppSuspending = false
     // Inject snapshot back into the live session's params, then clear.
     if let snapshot = _snapshot {
       session.sessionParams.putEncodedState(snapshot)
@@ -100,6 +102,10 @@ class MCPSessionPayload : TermSessionPayload {
 
   func suspend() {
     guard let session = self._session else { return }
+    // Mark the suspend BEFORE the child is checkpointed: the child (mosh) terminates as part of
+    // the suspend and the command loop, seeing it end, would otherwise clear the child marker and
+    // strand the resume at Quick Connect. Set here (suspend thread), cleared on resume.
+    session.moshroomAppSuspending = true
     session.suspend()
     // Extract snapshot from params. After this, params are clean config.
     _snapshot = session.sessionParams.takeEncodedState()

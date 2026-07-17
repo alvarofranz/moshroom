@@ -35,6 +35,7 @@
 
 #import "MoshroomPaths.h"
 
+
 #include <ios_system/ios_system.h>
 
 #include "ios_error.h"
@@ -80,12 +81,12 @@
     if ([@"mosh" isEqualToString:self.sessionParams.childSessionType] && self.sessionParams.hasEncodedState) {
       MoshParams *moshParams = (MoshParams *)self.sessionParams.childSessionParams;
 
-      self.moshroomChildSuspended = NO;
       MoshroomMosh *mosh = [[MoshroomMosh alloc] initWithMcpSession: self device:_device andParams:moshParams];
       _childSession = mosh;
       [_childSession executeAttachedWithArgs:@""];
       _childSession = nil;
-      if (self.sessionParams.hasEncodedState || self.moshroomChildSuspended) {
+      // Re-suspended before it ever settled, or still has state: keep everything for the resume.
+      if (self.sessionParams.hasEncodedState || self.moshroomAppSuspending) {
         return;
       }
       // The resumed session ended for real — back to a plain local shell (see _runCommand).
@@ -97,7 +98,7 @@
       _childSession = mosh;
       [_childSession executeAttachedWithArgs:@""];
       _childSession = nil;
-      if (self.sessionParams.hasEncodedState) {
+      if (self.sessionParams.hasEncodedState || self.moshroomAppSuspending) {
         return;
       }
       [self _clearChildSession];
@@ -201,15 +202,19 @@
   setlocale(LC_ALL, "UTF-8");
   setlocale(LC_CTYPE, "UTF-8");
   
-  self.moshroomChildSuspended = NO;
+  // Only an app-driven background suspend keeps the child alive across the return (see the
+  // chokepoint below + the payload's suspend). Any other return — clean exit, dropped link, or a
+  // leftover PERIODIC state checkpoint mosh writes during normal operation — is a real end: fall
+  // through to the chokepoint, which clears the marker. Gating the return on hasEncodedState (as
+  // an earlier fix did) mistook a periodic checkpoint for a suspend and re-stranded the tab.
   if ([cmd isEqualToString:@"mosh"]) {
     [self _runMoshWithArgs:cmdline];
-    if (self.sessionParams.hasEncodedState || self.moshroomChildSuspended) {
+    if (self.moshroomAppSuspending) {
       return NO;
     }
   } else if ([cmd isEqualToString:@"mosh1"]) {
     [self _runMosh1WithArgs:cmdline];
-    if (self.sessionParams.hasEncodedState) {
+    if (self.moshroomAppSuspending) {
       return NO;
     }
   } else if ([cmd isEqualToString:@"ssh2"]) {
@@ -254,11 +259,19 @@
     setlocale(LC_CTYPE, "UTF-8");
   }
   
-  // Reaching this point means any child session ENDED for real (the suspended cases returned
-  // above): this tab is a plain local shell again. Without the clear, the child marker outlived
-  // the session, the tab never read as a fresh shell again, and neither the fresh-start reset nor
-  // the quick-connect card ever came back after an exit (the tab sat "hung" on the stale
-  // "Connecting to…" transcript). No-op when no child ran.
+  // The app is putting this session to sleep (background checkpoint), not a real end: the child
+  // (mosh) terminated its runloop as part of the suspend, but its marker + params MUST survive so
+  // the resume can relaunch it. Bail without clearing or re-arming the local prompt. The one
+  // reliable "this is a suspend, not an exit" signal is this flag, set by the payload's suspend
+  // BEFORE the child dies — not how the child returned (an app suspend kills mosh abruptly, so its
+  // own return path never runs).
+  if (self.moshroomAppSuspending) {
+    return NO;
+  }
+  // Reaching this point means any child session ENDED for real: this tab is a plain local shell
+  // again. Without the clear, the child marker outlived the session, the tab never read as a fresh
+  // shell again, and neither the fresh-start reset nor the quick-connect card ever came back after
+  // an exit (the tab sat "hung" on the stale "Connecting to…" transcript). No-op when no child ran.
   [self _clearChildSession];
 
   if (_device) {
@@ -356,7 +369,7 @@
   // duplicate args
   NSString *str = [NSString stringWithFormat:@"%@", args];
   [_childSession executeAttachedWithArgs:str];
-  
+
   _childSession = nil;
 }
 
