@@ -117,6 +117,40 @@ private struct MoshSearchField: View {
   }
 }
 
+// A sheet's own header row — a white-chip ✕ (leading), a centred title, and an optional trailing
+// chip (Save / Import). Lives INSIDE the sheet content, NOT in a .toolbar: a formSheet's toolbar
+// on Mac Catalyst does not deliver taps to custom chip buttons (the content does — verified live),
+// so every Moshvault sheet drives close/confirm from here instead. Close/confirm are plain Buttons
+// exactly like the in-form eye/copy chips that work.
+struct MoshSheetHeader<Trailing: View>: View {
+  let title: String
+  let onClose: () -> Void
+  @ViewBuilder var trailing: () -> Trailing
+
+  var body: some View {
+    ZStack {
+      Text(title)
+        .font(.system(size: 17, weight: .semibold))
+        .foregroundColor(.primary)
+      HStack {
+        Button(action: onClose) { MoshNavGlyph(systemName: "xmark") }
+          .buttonStyle(.plain)
+          .accessibilityLabel("Close")
+        Spacer()
+        trailing()
+      }
+    }
+    .padding(.horizontal, 16)
+    .padding(.vertical, 12)
+  }
+}
+
+extension MoshSheetHeader where Trailing == EmptyView {
+  init(title: String, onClose: @escaping () -> Void) {
+    self.init(title: title, onClose: onClose, trailing: { EmptyView() })
+  }
+}
+
 extension View {
   // Shrink an inset-grouped list's default top inset so a search field placed directly above it
   // reads as attached to the card. contentMargins is iOS 17+; on 16 the default spacing stands.
@@ -239,7 +273,7 @@ struct MoshvaultPasswordsView: View {
       }
     }
     .onAppear(perform: reload)
-    .sheet(item: $editing, onDismiss: reload) { entry in
+    .fullScreenCover(item: $editing, onDismiss: reload) { entry in
       MoshvaultPasswordEditor(entry: entry)
     }
     .fileImporter(isPresented: $importPicker, allowedContentTypes: [.xml, .init(filenameExtension: "xml") ?? .xml]) { result in
@@ -312,7 +346,13 @@ private struct MoshvaultPasswordEditor: View {
   private var isNew: Bool { !MoshVaultStore.shared.all().contains { $0.id == entry.id } }
 
   var body: some View {
-    NavigationStack {
+    VStack(spacing: 0) {
+      MoshSheetHeader(title: isNew ? "New Password" : "Edit Password", onClose: { dismiss() }) {
+        Button { MoshVaultStore.shared.save(entry); dismiss() } label: { MoshNavLabel(title: "Save") }
+          .buttonStyle(.plain)
+          .disabled(entry.isEmpty)
+          .opacity(entry.isEmpty ? 0.4 : 1)
+      }
       Form {
         Section {
           labeledField("Service", text: $entry.service)
@@ -346,20 +386,9 @@ private struct MoshvaultPasswordEditor: View {
           TextEditor(text: $entry.notes).frame(minHeight: 90)
         }
       }
-      .navigationTitle(isNew ? "New Password" : "Edit Password")
-      .navigationBarTitleDisplayMode(.inline)
-      .toolbar {
-        MoshNavBarItem(placement: .cancellationAction) {
-          Button { dismiss() } label: { MoshNavGlyph(systemName: "xmark") }
-            .accessibilityLabel("Cancel")
-        }
-        MoshNavBarItem(placement: .confirmationAction) {
-          Button { MoshVaultStore.shared.save(entry); dismiss() } label: { MoshNavLabel(title: "Save") }
-            .disabled(entry.isEmpty)
-        }
-      }
-      .tint(.moshTint)
     }
+    .background(Color(.systemGroupedBackground).ignoresSafeArea())
+    .tint(.moshTint)
   }
 
   private func labeledField(_ title: String, text: Binding<String>, keyboard: UIKeyboardType = .default) -> some View {
@@ -455,16 +484,16 @@ struct MoshvaultTOTPView: View {
     }
     .onReceive(tick) { now = $0 }
     .onAppear(perform: reload)
-    .sheet(isPresented: $showingManual, onDismiss: reload) { MoshTOTPManualEntry() }
-    .sheet(item: $editing, onDismiss: reload) { MoshTOTPManualEntry(existing: $0) }
-    .sheet(isPresented: $showingScan, onDismiss: reload) {
+    .fullScreenCover(isPresented: $showingManual, onDismiss: reload) { MoshTOTPManualEntry() }
+    .fullScreenCover(item: $editing, onDismiss: reload) { MoshTOTPManualEntry(existing: $0) }
+    .fullScreenCover(isPresented: $showingScan, onDismiss: reload) {
       MoshTOTPScanSheet { uri in
         guard let acc = MoshTOTP.parse(uri: uri) else { return false }
         MoshTOTPStore.shared.save(acc)
         return true
       }
     }
-    .sheet(isPresented: $showingMigrate, onDismiss: reload) {
+    .fullScreenCover(isPresented: $showingMigrate, onDismiss: reload) {
       MoshTOTPMigrateSheet { added, skipped in
         banner = "Imported \(added) account\(added == 1 ? "" : "s")"
           + (skipped > 0 ? " · \(skipped) HOTP skipped" : "")
@@ -559,7 +588,13 @@ private struct MoshTOTPManualEntry: View {
   }
 
   var body: some View {
-    NavigationStack {
+    VStack(spacing: 0) {
+      MoshSheetHeader(title: isNew ? "New 2FA Account" : "Edit 2FA Account", onClose: { dismiss() }) {
+        Button { MoshTOTPStore.shared.save(account); dismiss() } label: { MoshNavLabel(title: "Save") }
+          .buttonStyle(.plain)
+          .disabled(!MoshTOTP.isValidSecret(account.secret))
+          .opacity(MoshTOTP.isValidSecret(account.secret) ? 1 : 0.4)
+      }
       Form {
         Section("Account") {
           field("Issuer", text: $account.issuer)
@@ -582,20 +617,9 @@ private struct MoshTOTPManualEntry: View {
           Stepper("Period: \(account.period)s", value: $account.period, in: 15...60, step: 15)
         }
       }
-      .navigationTitle(isNew ? "New 2FA Account" : "Edit 2FA Account")
-      .navigationBarTitleDisplayMode(.inline)
-      .toolbar {
-        MoshNavBarItem(placement: .cancellationAction) {
-          Button { dismiss() } label: { MoshNavGlyph(systemName: "xmark") }
-            .accessibilityLabel("Cancel")
-        }
-        MoshNavBarItem(placement: .confirmationAction) {
-          Button { MoshTOTPStore.shared.save(account); dismiss() } label: { MoshNavLabel(title: "Save") }
-            .disabled(!MoshTOTP.isValidSecret(account.secret))
-        }
-      }
-      .tint(.moshTint)
     }
+    .background(Color(.systemGroupedBackground).ignoresSafeArea())
+    .tint(.moshTint)
   }
 
   private func field(_ title: String, text: Binding<String>) -> some View {
@@ -613,13 +637,13 @@ private struct MoshTOTPScanSheet: View {
   @State private var error: String?
 
   var body: some View {
-    NavigationStack {
+    VStack(spacing: 0) {
+      MoshSheetHeader(title: "Scan QR Code", onClose: { dismiss() })
       ZStack {
         MoshQRScannerView(
           onFound: { payload in if onScan(payload) { dismiss() } },
           onError: { error = $0 }
         )
-        .ignoresSafeArea(edges: .bottom)
         VStack {
           Spacer()
           Text(error ?? "Point the camera at a 2FA QR code")
@@ -628,15 +652,8 @@ private struct MoshTOTPScanSheet: View {
             .padding(.bottom, 28)
         }
       }
-      .navigationTitle("Scan QR Code")
-      .navigationBarTitleDisplayMode(.inline)
-      .toolbar {
-        MoshNavBarItem(placement: .cancellationAction) {
-          Button { dismiss() } label: { MoshNavGlyph(systemName: "xmark") }
-            .accessibilityLabel("Cancel")
-        }
-      }
     }
+    .background(Color.black.ignoresSafeArea())
   }
 }
 
@@ -652,10 +669,15 @@ private struct MoshTOTPMigrateSheet: View {
   @State private var error: String?
 
   var body: some View {
-    NavigationStack {
+    VStack(spacing: 0) {
+      MoshSheetHeader(title: "Migrate 2FA", onClose: { dismiss() }) {
+        Button { finish() } label: { MoshNavLabel(title: "Import") }
+          .buttonStyle(.plain)
+          .disabled(collected.isEmpty)
+          .opacity(collected.isEmpty ? 0.4 : 1)
+      }
       ZStack {
         MoshQRScannerView(onFound: handle, onError: { error = $0 })
-          .ignoresSafeArea(edges: .bottom)
         VStack {
           Spacer()
           Text(error ?? status)
@@ -664,19 +686,8 @@ private struct MoshTOTPMigrateSheet: View {
             .padding(.horizontal, 24).padding(.bottom, 24)
         }
       }
-      .navigationTitle("Migrate 2FA")
-      .navigationBarTitleDisplayMode(.inline)
-      .toolbar {
-        MoshNavBarItem(placement: .cancellationAction) {
-          Button { dismiss() } label: { MoshNavGlyph(systemName: "xmark") }
-            .accessibilityLabel("Cancel")
-        }
-        MoshNavBarItem(placement: .confirmationAction) {
-          Button { finish() } label: { MoshNavLabel(title: "Import") }
-            .disabled(collected.isEmpty)
-        }
-      }
     }
+    .background(Color.black.ignoresSafeArea())
   }
 
   private func handle(_ payload: String) {
