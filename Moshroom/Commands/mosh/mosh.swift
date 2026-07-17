@@ -71,11 +71,8 @@ enum MoshError: Error, LocalizedError {
   var isRunloopRunning = false
   // The host's "Command on connect", captured on a fresh connect (never on a restore).
   private var pendingCommandOnConnect: String? = nil
-  // Stamped when the app asks this session to suspend (background checkpoint). Distinguishes
-  // "mosh_main returned because the app suspended it" (keep the encoded state for the resume)
-  // from "the session ended" (drop it) — see the end of moshMain.
-  private var suspendRequestedAt: Date? = nil
-  // True once the client actually answered a suspend request with a state checkpoint. A suspend
+  // True once the client actually answered a suspend request with a state checkpoint (the one
+  // reliable "this return is a suspend, not an end" signal — see the end of moshMain). A suspend
   // REQUEST alone must not protect the state: if the client missed the escape and the session
   // then ended for real, keeping the state would resurrect the exit hang.
   private var suspendCheckpointed = false
@@ -280,22 +277,21 @@ enum MoshError: Error, LocalizedError {
     )
 
     // mosh_main returning means the session is OVER (clean exit, escape-quit, or kill) in every
-    // case except one: the app-driven suspend, which checkpoints state and returns moments after
-    // suspend() asked for it. A stale checkpoint must never survive a real session end — MCPSession
-    // reads leftover encoded state as "suspended, do not re-arm the prompt", which stranded the tab
-    // on the dead transcript (the "Connecting to…" lie) after every clean mosh exit. So the state
-    // is kept only when the client ANSWERED a suspend request with a checkpoint AND the return
-    // happened promptly after the request; a checkpointed session that kept living and ended much
-    // later is a real end and clears.
-    let promptlyAfterRequest = suspendRequestedAt.map { Date().timeIntervalSince($0) < 10 } ?? false
-    let suspended = suspendCheckpointed && promptlyAfterRequest
-    if !suspended {
+    // case except one: the app-driven suspend. The one reliable signal for that is the client
+    // having ANSWERED our suspend request with a state checkpoint: this instance's mosh_main
+    // returns exactly once, right after that checkpoint. Deliberately NO wall-clock window here:
+    // a slow return (the Mac mid-sleep, a busy client, the 2s suspend wait timing out first)
+    // must not reclassify a suspend as a "real end", which wiped every idle tab back to Quick
+    // Connect. A stale checkpoint from a REAL end still clears: a real exit never answers a
+    // suspend request, so suspendCheckpointed stays false and the leftover state is dropped
+    // (that leftover was what stranded tabs on the dead "Connecting to…" transcript).
+    if !suspendCheckpointed {
       _ = (self.sessionParams as? MoshParams)?.takeEncodedState()
     }
     // Tell MCPSession explicitly (it runs right after the session thread joins): the payload's
     // suspend may already have extracted the checkpoint, so hasEncodedState alone cannot tell
     // "suspended" apart from "ended" on its side.
-    mcpSession.moshroomChildSuspended = suspended
+    mcpSession.moshroomChildSuspended = suspendCheckpointed
 
     return 0
   }
@@ -526,7 +522,6 @@ enum MoshError: Error, LocalizedError {
 
   @objc public override func suspend() {
     if sshCancellable == nil {
-      suspendRequestedAt = Date()
       suspendSemaphore = DispatchSemaphore(value: 0)
       // MOSH-ESC C-z
       self.device.write(String("\(self.escapeKey)\u{1a}"))
