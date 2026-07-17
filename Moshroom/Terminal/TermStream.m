@@ -46,13 +46,6 @@
   return fdopen(dup(fileno(_in)), "rb");
 }
 
-- (void)closeIn {
-  if (_in) {
-    fflush(_in);
-    fclose(_in);
-    _in = NULL;
-  }
-}
 
 - (instancetype) duplicate {
   TermStream *dupe = [[TermStream alloc] init];

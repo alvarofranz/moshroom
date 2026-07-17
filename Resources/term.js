@@ -152,7 +152,12 @@ function term_setupDefaults() {
   term_set('audible-bell-sound', '');
   term_set('receive-encoding', 'raw'); // we are UTF8
   term_set('allow-images-inline', true); // need to make it work
-  term_set('scroll-wheel-may-send-arrow-keys', true)
+  // Never translate wheel/swipe into arrow keys on the alternate screen. At a shell prompt
+  // inside tmux/mosh (alt screen, no mouse reporting) every wheel tick became \x1bOA/\x1bOB:
+  // it cycled the shell history under the user's finger and, split at tmux's escape-time,
+  // leaked literal "[A"/"[B" onto the command line. TUIs that want scroll ask for mouse
+  // reporting and get real wheel reports; that path does not depend on this preference.
+  term_set('scroll-wheel-may-send-arrow-keys', false);
 }
 
 function term_processKB(str) {
@@ -344,35 +349,30 @@ function term_paste(str) {
 
 var _utf8TextDecoder = new TextDecoder('utf8');
 function term_write_b64(b64str) {
-  var bytes = base64js.toByteArray(b64str); // b64_to_uint8_array(b64str);
+  var bytes = base64js.toByteArray(b64str);
   var data = _utf8TextDecoder.decode(bytes);
   t.interpret(data);
 };
 
-function b64_to_uint8_array(b64Str) {
-  var s = atob(b64Str);
-  var len = s.length;
-  var res = new Uint8Array(len);
-  for (var i = 0; i < len; i++) {
-    res[i] = s.charCodeAt(i);
+// Back at the local moshroom> prompt after a child command (ssh/mosh) returned: whatever modes
+// the dead session latched must not outlive it. A mosh killed mid-"Connecting..." (or any TUI
+// that never restored the screen) leaves the alternate screen, a hidden cursor or mouse
+// reporting armed, and with them a prompt where swipes feed a phantom TUI and taps miss the
+// composer. Display state only, idempotent; after a clean exit this is a no-op.
+function term_sanitizeModes() {
+  if (!t || !t.vt || !t.screen_) {
+    return;
   }
-  return res;
-}
-
-function term_clear() {
-  t.clear();
-}
-
-function term_reset() {
-  t.reset();
-}
-
-function term_focus() {
-  t.onFocusChange__(true);
-}
-
-function term_blur() {
-  t.onFocusChange__(false);
+  if (!t.isPrimaryScreen()) {
+    t.setAlternateMode(false);
+  }
+  t.setCursorVisible(true);
+  t.vt.mouseReport = t.vt.MOUSE_REPORT_DISABLED;
+  t.setVTScrollRegion(null, null);
+  t.setWraparound(true);
+  // The pen too: a child that died mid-output with SGR attributes latched (reverse video, a
+  // background color) must not paint the local prompt with them.
+  t.primaryScreen_.textAttributes.reset();
 }
 
 function _setTermCoordinates(event, x, y) {
@@ -466,15 +466,22 @@ function term_tapAt(x, y) {
   return {action: 'none', input: input};
 }
 
-// The tap row vs the cursor row, both in viewport terms — the scrollback offset math keeps this
-// correct while scrolled (a tap on history text is never "the input line").
+// The tap row vs the cursor row, decided by ON-SCREEN GEOMETRY: the cursor node is positioned
+// by the same rendering pipeline as the text, so its client rect is the one truth that cannot
+// drift from what the user sees (a tap on scrolled-away history still never matches: the node
+// is parked off-viewport then). The previous row arithmetic (scrollback length + cursor row -
+// top row index) went stale the moment the alternate screen accumulated scrollback of its own:
+// the strict row equality failed and a tap on a mosh/tmux input line stopped opening the
+// composer, falling through to selection instead.
 function _moshroomTapOnCursorRow(y) {
-  if (!t.options_.cursorVisible) {
+  if (!t.options_.cursorVisible || !t.cursorNode_ || !t.cursorNode_.getBoundingClientRect) {
     return false;
   }
-  var vrow = Math.floor((y - t.scrollPort_.visibleRowTopMargin) / t.scrollPort_.characterSize.height);
-  var cursorVRow = t.scrollbackRows_.length + t.screen_.cursorPosition.row - t.scrollPort_.getTopRowIndex();
-  return vrow === cursorVRow;
+  var r = t.cursorNode_.getBoundingClientRect();
+  if (!r || r.height <= 0) {
+    return false;
+  }
+  return y >= r.top && y < r.bottom;
 }
 
 // Find a URL in the rendered text under (x, y). Pure DOM read — no selection is created, no
@@ -642,10 +649,6 @@ function term_decreaseFontSize() {
   term_setFontSize(size - 1 + 'px');
 }
 
-function term_resetFontSize() {
-  term_setFontSize();
-}
-
 function term_setFontSize(size) {
   term_set('font-size', size);
   _postMessage('fontSizeChanged', {size: parseInt(size)});
@@ -671,19 +674,6 @@ function term_appendUserCss(css) {
   style.appendChild(document.createTextNode(css));
 
   document.head.appendChild(style);
-}
-
-function term_loadFontFromCss(url, name) {
-  WebFont.load({
-    custom: {
-      families: [name],
-      urls: [url],
-    },
-    active: function() {
-      t.syncFontFamily();
-    },
-  });
-  term_setFontFamily(name);
 }
 
 function term_getCurrentSelection() {
@@ -864,10 +854,4 @@ function term_applySexyTheme(theme) {
 
 function term_setAutoCarriageReturn(state) {
   t.setAutoCarriageReturn(state);
-}
-
-function term_restore() {
-  t.primaryScreen_.textAttributes.reset();
-  t.setVTScrollRegion(null, null);
-  t.setCursorVisible(true);
 }

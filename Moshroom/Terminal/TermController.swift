@@ -183,6 +183,7 @@ class TermController: UIViewController {
     return (mcp.sessionParams?.childSessionType ?? "").isEmpty
   }
 
+
   // The saved host THIS tab is connected to (via Quick Connect or a typed ssh/mosh) — Moshdrop's
   // upload target, per-tab so independent tabs never clobber each other. nil at the local prompt.
   var moshroomConnectedHost: String? = nil {

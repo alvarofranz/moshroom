@@ -644,10 +644,10 @@ final class MoshtabsController: UIViewController {
 
   private func _close(tab key: UUID) {
     guard let sc = space else { return }
-    // Closing the last tab spins up a fresh shell + Quick Connect — land the user there.
-    let wasLast = sc.moshroomTabs().count <= 1
+    // Closing the last tab leaves the zero-tab empty state behind this modal (no tab is ever
+    // auto-resurrected); keep Tabs open so New tab is one tap away.
     sc.moshroomClose(tab: key)
-    if wasLast { _dismiss() } else { reload() }
+    reload()
   }
 
   @objc private func _rowLongPressed(_ g: UILongPressGestureRecognizer) {

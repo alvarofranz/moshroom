@@ -50,7 +50,6 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)updateKeyboardLayoutGuide:(nullable UIKeyboardLayoutGuide *)keyboardGuide;
 
 // Get current constraint constants for debugging
-- (UIEdgeInsets)currentInsets;
 
 @end
 

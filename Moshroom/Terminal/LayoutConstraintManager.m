@@ -177,14 +177,6 @@
     return UIEdgeInsetsMake(margin, margin, margin, margin);
 }
 
-- (UIEdgeInsets)currentInsets {
-    return UIEdgeInsetsMake(
-        self.topConstraint.constant,
-        self.leadingConstraint.constant,
-        -self.trailingConstraint.constant,
-        -self.bottomConstraint.constant
-    );
-}
 
 + (MoshLayoutMode) deviceDefaultLayoutMode {
   DeviceInfo *device = [DeviceInfo shared];

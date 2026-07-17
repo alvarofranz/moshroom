@@ -96,7 +96,6 @@
 // `pasteString:`. Named to avoid Swift's `paste`-family import collision with UIResponder.
 - (void)sendBracketedPaste:(NSString *)input;
 - (void)writeOut:(NSString *)output;
-- (void)writeOutLn:(NSString *)output;
 - (void)close;
 
 

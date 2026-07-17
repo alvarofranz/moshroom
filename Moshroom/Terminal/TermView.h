@@ -85,6 +85,7 @@ extern NSString * TermViewReadyNotificationKey;
 - (void)setWidth:(NSInteger)count;
 - (void)setFontSize:(NSNumber *)newSize;
 - (void)write:(NSString *)data;
+- (void)moshroomSanitizeModes;
 - (void)processKB:(NSString *)str;
 - (void)setCursorBlink:(BOOL)state;
 - (void)setBoldAsBright:(BOOL)state;
@@ -114,6 +115,4 @@ extern NSString * TermViewReadyNotificationKey;
 
 // Layout state
 - (MoshLayoutMode)currentLayoutMode;
-- (BOOL)isLayoutLocked;
-- (void)toggleLayoutLock;
 @end

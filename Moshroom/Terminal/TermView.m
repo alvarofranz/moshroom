@@ -377,12 +377,10 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
 
 - (void)focus {
   _gestureInteraction.focused = YES;
-//  [_webView evaluateJavaScript:term_focus() completionHandler:nil];
 }
 
 - (void)blur {
   _gestureInteraction.focused = NO;
-//  [_webView evaluateJavaScript:term_blur() completionHandler:nil];
 }
 
 - (void)processKB:(NSString *)str {
@@ -413,6 +411,40 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
     
     NSString *jsScript = term_write(buffer);
     [self _evalJSScript:jsScript];
+  });
+}
+
+// Moshroom: reset latched display modes (alternate screen, hidden cursor, mouse reporting,
+// scroll region) once a child session has returned to the local prompt. Serialized behind the
+// output pipeline: it runs only after every byte the dying child wrote has been interpreted,
+// so a half-flushed final frame can never re-dirty the state right after the reset.
+- (void)moshroomSanitizeModes
+{
+  // 40 retries x 50ms = a 2s patience window. Weak self + a cap, because a webview torn down
+  // mid-eval never fires its completion, _jsIsBusy would stay YES, and an uncapped strong retry
+  // chain would spin forever and keep the closed tab's TermView alive.
+  [self _moshroomSanitizeModesAttempt:40];
+}
+
+- (void)_moshroomSanitizeModesAttempt:(int)attemptsLeft
+{
+  __weak typeof(self) weakSelf = self;
+  dispatch_async(_jsQueue, ^{
+    typeof(self) sself = weakSelf;
+    if (!sself) {
+      return;
+    }
+    if (sself->_jsIsBusy || sself->_jsBuffer.length > 0) {
+      if (attemptsLeft <= 0) {
+        return;
+      }
+      dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(50 * NSEC_PER_MSEC)), sself->_jsQueue, ^{
+        [weakSelf _moshroomSanitizeModesAttempt:attemptsLeft - 1];
+      });
+      return;
+    }
+    sself->_jsIsBusy = YES;
+    [sself _evalJSScript:@"term_sanitizeModes();"];
   });
 }
 
@@ -538,12 +570,6 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
   _isReady = YES;
   [_device viewIsReady];
   [[NSNotificationCenter defaultCenter] postNotificationName:TermViewReadyNotificationKey object:self];
-
-//  if (_gestureInteraction.focused) {
-//    [_webView evaluateJavaScript:term_focus() completionHandler:nil];
-//  } else {
-//    [_webView evaluateJavaScript:term_blur() completionHandler:nil];
-//  }
 
   // On a jettison-recovery ready there is no cover view any more — guard it.
   if (_coverView) {
@@ -824,18 +850,6 @@ static NSString * _sanitizeTextForClipboard(NSString *text) {
     return self.termUIState.layoutMode;
   }
   return MoshLayoutModeDefault;
-}
-
--(BOOL)isLayoutLocked {
-  return self.layoutLocked;
-}
-
--(void)toggleLayoutLock {
-  if (self.termUIState.layoutLocked) {
-    [self _unlockLayout];
-  } else {
-    [self _lockLayout];
-  }
 }
 
 // Private methods

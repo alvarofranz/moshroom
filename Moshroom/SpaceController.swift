@@ -48,6 +48,13 @@ class SpaceController: UIViewController {
   // The newest switch requested while a page transition was in flight — replayed (unanimated)
   // when the live transition ends, so a racing tap can never corrupt the page VC. See _installTerm.
   private var _pendingMoveKey: UUID? = nil
+  // Zero tabs is a real state: an empty-state install requested mid-transition replays when the
+  // live transition ends, same discipline as _pendingMoveKey.
+  private var _pendingEmptyInstall = false
+  // True when this controller was rebuilt from a persisted UIState. Distinguishes "the user
+  // closed every tab and that state was restored" (stay at zero tabs) from a launch with nothing
+  // to restore (fresh install / discarded scene), which still starts the first shell.
+  private var _restoredState = false
   // The red tab-switch toast next to the Tabs button (created in Moshkeys.install) + its hide timer.
   var moshroomTabToast: MoshroomTabToast?
   private var _tabToastHide: DispatchWorkItem?
@@ -128,9 +135,14 @@ class SpaceController: UIViewController {
   }
 
   override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
-    // Moshroom: any hardware keystroke means the user is using the terminal — clear the
-    // quick-connect card out of the way.
-    if Moshroom.scratchOnly { dismissMoshnector() }
+    // Moshroom: a hardware keystroke means the user is using the terminal — clear the
+    // quick-connect card out of the way. Only for presses that CARRY CHARACTERS: bare modifier
+    // events (the Cmd of a Cmd+Tab app switch, a stray Shift) used to hide the card "on its own"
+    // seconds after launch, with nothing re-evaluating it afterwards.
+    if Moshroom.scratchOnly,
+       presses.contains(where: { !($0.key?.characters ?? "").isEmpty }) {
+      dismissMoshnector()
+    }
     // Moshroom: the composer may be presented but its text view not yet first responder (the
     // present hand-off). Route the keystroke straight into it so Mac Catalyst never beeps on the
     // key that lands mid-transition.
@@ -291,9 +303,15 @@ class SpaceController: UIViewController {
     _registerForNotifications()
     
     setupOverlayConstraints()
-    
+
     if _viewportsKeys.isEmpty {
-      _newShellAction(animated: false)
+      if _restoredState {
+        // The user closed every tab and that is the state that was persisted: honor it.
+        // No auto-resurrected "shell": the empty state offers New tab instead.
+        _installEmptyState()
+      } else {
+        _newShellAction(animated: false)
+      }
     } else if let key = _currentKey {
       let term: TermController = SessionRegistry.shared[key]
       term.delegate = self
@@ -420,8 +438,11 @@ class SpaceController: UIViewController {
       currentDevice?.blur()
       return
     }
-    
+
     _focusOnShell()
+    // Coming back to the app (Cmd+Tab, window switch) must re-evaluate the quick-connect card:
+    // it is one more idempotent reveal trigger, same contract as viewDidAppear and prompt-ready.
+    if Moshroom.scratchOnly { showMoshnectorIfIdle() }
   }
   
   func _createTerminal(
@@ -466,7 +487,9 @@ class SpaceController: UIViewController {
     SessionRegistry.shared.remove(forKey: currentKey)
     _viewportsKeys.remove(at: idx)
     if _viewportsKeys.isEmpty {
-      _newShellAction(animated: false)
+      // No tabs is a real state, never an auto-resurrected shell: the page VC gets the
+      // empty-state placeholder and New tab (there, or in Moshtabs) brings the next terminal.
+      _installEmptyState()
       return
     }
 
@@ -509,6 +532,7 @@ class SpaceController: UIViewController {
 // MARK: UIStateRestorable
 extension SpaceController: UIStateRestorable {
   func restore(withState state: UIState) {
+    _restoredState = true
     _viewportsKeys = state.keys
     _currentKey = state.currentKey
     if let bgColor = UIColor(codableColor: state.bgColor) {
@@ -555,6 +579,13 @@ extension SpaceController: UIPageViewControllerDelegate {
     // The swipe ended (completed or cancelled) — always release the flag and replay any switch
     // that was requested while it was in flight.
     _spaceControllerAnimating = false
+    if _pendingEmptyInstall {
+      _pendingEmptyInstall = false
+      if _viewportsKeys.isEmpty {
+        _installEmptyState()
+        return
+      }
+    }
     if let pendingKey = _pendingMoveKey {
       _pendingMoveKey = nil
       _moveToShell(key: pendingKey, animated: false)
@@ -990,10 +1021,54 @@ extension SpaceController {
       self._spaceControllerAnimating = false
       completion?(didComplete)
 
+      if self._pendingEmptyInstall {
+        self._pendingEmptyInstall = false
+        if self._viewportsKeys.isEmpty {
+          self._installEmptyState()
+          return
+        }
+      }
       if let pendingKey = self._pendingMoveKey {
         self._pendingMoveKey = nil
         if pendingKey != term.meta.key {
           self._moveToShell(key: pendingKey, animated: false)
+        }
+      }
+    }
+  }
+
+  // Zero tabs: install the empty-state placeholder page. Same serialized discipline as
+  // _installTerm (an unanimated setViewControllers racing a live transition is exactly the
+  // page-VC corruption _installTerm exists to prevent), so a request made mid-flight replays
+  // when the live transition ends.
+  private func _installEmptyState() {
+    _currentKey = nil
+    dismissMoshnector()
+    if _spaceControllerAnimating {
+      _pendingEmptyInstall = true
+      return
+    }
+    _spaceControllerAnimating = true
+    let empty = MoshroomNoTabsController()
+    empty.onNewTab = { [weak self] in self?._newShellAction() }
+    _viewportsController.setViewControllers([empty], direction: .forward, animated: false) { _ in
+      self._spaceControllerAnimating = false
+      // Same replay discipline as the other two completion sites: an empty-install requested
+      // while this one was in flight re-runs (only meaningful if keys are still empty), and a
+      // tab born while the placeholder was installing (New tab racing the close) replays
+      // directly: _moveToShell would bail on the nil _currentKey of the empty state.
+      if self._pendingEmptyInstall {
+        self._pendingEmptyInstall = false
+        if self._viewportsKeys.isEmpty {
+          self._installEmptyState()
+          return
+        }
+      }
+      if let pendingKey = self._pendingMoveKey {
+        self._pendingMoveKey = nil
+        if self._viewportsKeys.contains(pendingKey) {
+          let term: TermController = SessionRegistry.shared[pendingKey]
+          self._installTerm(term, direction: .forward, animated: false)
         }
       }
     }
@@ -1120,13 +1195,14 @@ extension SpaceController {
 
   // A tab's display title: forced custom name, then the connected host's alias (a tab that is an
   // ssh/mosh session to "awesomehost" IS awesomehost to the user), then the program's own OSC title
-  // (opencode / vim / ssh). Unloaded, unconnected tabs have no live title, so "shell".
+  // (opencode / vim / ssh). An unconnected tab has no live title and says so honestly: it is the
+  // quick-connect canvas, not a "shell" (that name read as a phantom session in the tab list).
   func moshroomTitle(for key: UUID) -> String {
     let term: TermController = SessionRegistry.shared[key]
     let custom = (term.meta.customName ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
     let connected = (term.meta.connectedHost ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
     let osc = (term.termView.title ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-    return !custom.isEmpty ? custom : !connected.isEmpty ? connected : (osc.isEmpty ? "shell" : osc)
+    return !custom.isEmpty ? custom : !connected.isEmpty ? connected : (osc.isEmpty ? "not connected" : osc)
   }
 
   /// The open terminal tabs, in order, each with its display title and whether it is active.
@@ -1159,7 +1235,10 @@ extension SpaceController {
     _moveToShell(idx: idx, animated: false)
   }
 
-  func moshroomNewTab() { _newShellAction() }
+  // Unanimated on purpose: the new tab is born BEHIND the dismissing Moshtabs modal, and an
+  // animated page-VC transition racing that dismiss is the documented "lost tab" corruption
+  // (same reason moshroomSwitch installs with no animation).
+  func moshroomNewTab() { _newShellAction(animated: false) }
 
   // Rename a tab. On save, persist the forced name and call `onDone` so the caller can refresh
   // the Tabs pad. An empty name clears the override (back to the program's own title).
@@ -1186,5 +1265,68 @@ extension SpaceController {
     guard let idx = _viewportsKeys.firstIndex(of: key) else { return }
     if key != _currentKey { _moveToShell(idx: idx, animated: false) }
     _closeCurrentSpace()
+  }
+}
+
+// MARK: - Zero-tab empty state
+
+// The page shown when the last tab closes (or a zero-tab state restores): the house empty-state
+// look (MoshEmptyState's metrics) in plain UIKit, on a dark canvas. No tab is auto-resurrected:
+// New tab (here, in Moshtabs, or Cmd+T) brings the next terminal through _createTerminal.
+// UIKit on purpose: a UIHostingController child inside the page VC rendered nothing on Catalyst.
+final class MoshroomNoTabsController: UIViewController {
+  var onNewTab: (() -> Void)?
+
+  override func viewDidLoad() {
+    super.viewDidLoad()
+    view.backgroundColor = .systemBackground
+
+    let icon = UIImageView(image: UIImage(
+      systemName: "rectangle.stack",
+      withConfiguration: UIImage.SymbolConfiguration(pointSize: 44, weight: .regular)))
+    icon.tintColor = .moshroomTint
+
+    let title = UILabel()
+    title.text = "No open tabs"
+    title.font = .systemFont(ofSize: 20, weight: .semibold)
+    title.textColor = .label
+
+    let message = UILabel()
+    message.text = "Open a tab to start a session."
+    message.font = .preferredFont(forTextStyle: .callout)
+    message.textColor = .secondaryLabel
+    message.textAlignment = .center
+    message.numberOfLines = 0
+
+    let newTab = moshButton()
+    var cfg = UIButton.Configuration.plain()
+    cfg.image = UIImage(systemName: "plus",
+                        withConfiguration: UIImage.SymbolConfiguration(pointSize: 14, weight: .semibold))
+    cfg.imagePadding = 8
+    var attr = AttributeContainer()
+    attr.font = UIFont.preferredFont(forTextStyle: .headline)
+    cfg.attributedTitle = AttributedString("New tab", attributes: attr)
+    cfg.baseForegroundColor = .moshroomTint
+    newTab.configuration = cfg
+    newTab.tintColor = .moshroomTint
+    #if targetEnvironment(macCatalyst)
+    newTab.preferredBehavioralStyle = .pad
+    #endif
+    newTab.addAction(UIAction { [weak self] _ in self?.onNewTab?() }, for: .touchUpInside)
+
+    let stack = UIStackView(arrangedSubviews: [icon, title, message, newTab])
+    stack.axis = .vertical
+    stack.alignment = .center
+    stack.spacing = 14
+    stack.setCustomSpacing(20, after: message)
+    stack.translatesAutoresizingMaskIntoConstraints = false
+    view.addSubview(stack)
+    NSLayoutConstraint.activate([
+      stack.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+      stack.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+      stack.widthAnchor.constraint(lessThanOrEqualToConstant: 420),
+      stack.leadingAnchor.constraint(greaterThanOrEqualTo: view.leadingAnchor, constant: 32),
+      stack.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -32),
+    ])
   }
 }

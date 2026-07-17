@@ -31,7 +31,6 @@
 
 - (FILE*)openTTY;
 - (void)close;
-- (void)closeIn;
 
 - (instancetype)duplicate;
 

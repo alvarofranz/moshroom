@@ -34,6 +34,11 @@
 
 @property (strong) MCPParams *sessionParams;
 @property (readonly) dispatch_queue_t cmdQueue;
+// Set by the mosh child right before mosh_main returns: YES when the return was an app-driven
+// suspend (keep the child marker and encoded state for the resume), NO when the session ended
+// for real. Explicit on purpose: inferring "suspended" from hasEncodedState races the session
+// payload's takeEncodedState (it extracts the checkpoint into its snapshot on suspend).
+@property (nonatomic) BOOL moshroomChildSuspended;
 
 - (void)registerSSHClient:(id __weak)sshClient;
 - (void)unregisterSSHClient:(id __weak)sshClient;

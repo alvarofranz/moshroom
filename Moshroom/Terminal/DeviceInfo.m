@@ -75,48 +75,8 @@
       || [marketingName containsString:@"(M4)"]
       || [marketingName containsString:@"(M5)"]
       || [marketingName hasPrefix:@"Mac"];
-
-    _hasAppleSilicon = [marketingName hasPrefix:@"iPad Pro (11-inch) (3rd generation)"]
-      || [marketingName hasPrefix:@"iPad Pro (11-inch) (4th generation)"]
-      || [marketingName hasPrefix:@"iPad Pro (12.9-inch) (5th generation)"]
-      || [marketingName hasPrefix:@"iPad Pro (12.9-inch) (6th generation)"]
-      || [marketingName hasPrefix:@"iPad Air (5th generation)"]
-      || [marketingName containsString:@"(M2)"]
-      || [marketingName containsString:@"(M4)"]
-      || [marketingName containsString:@"(M5)"];
   }
   return self;
-}
-
-- (NSString *)onMyDevice {
-  if ([self.marketingName hasPrefix:@"iPad"]) {
-    return @"On My iPad";
-  }
-  if ([self.marketingName hasPrefix:@"iPhone"]) {
-    return @"On My iPhone";
-  }
-  
-  return @"On My Device";
-}
-
-- (NSString *)deviceIcon {
-  if ([self.marketingName hasPrefix:@"iPad"]) {
-    if (_hasCorners) {
-      return @"ipad.gen2";
-    } else {
-      return @"ipad.gen1";
-    }
-  }
-  
-  if (_hasDynamicIsland) {
-    return @"iphone.gen3";
-  }
-  
-  if (_hasNotch) {
-    return @"iphone.gen2";
-  }
-  
-  return @"iphone.gen1";
 }
 
 -(NSString *)marketingName {

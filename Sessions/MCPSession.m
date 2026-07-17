@@ -80,13 +80,16 @@
     if ([@"mosh" isEqualToString:self.sessionParams.childSessionType] && self.sessionParams.hasEncodedState) {
       MoshParams *moshParams = (MoshParams *)self.sessionParams.childSessionParams;
 
+      self.moshroomChildSuspended = NO;
       MoshroomMosh *mosh = [[MoshroomMosh alloc] initWithMcpSession: self device:_device andParams:moshParams];
       _childSession = mosh;
       [_childSession executeAttachedWithArgs:@""];
       _childSession = nil;
-      if (self.sessionParams.hasEncodedState) {
+      if (self.sessionParams.hasEncodedState || self.moshroomChildSuspended) {
         return;
       }
+      // The resumed session ended for real — back to a plain local shell (see _runCommand).
+      [self _clearChildSession];
     }
     if ([@"mosh1" isEqualToString:self.sessionParams.childSessionType] && self.sessionParams.hasEncodedState) {
       MoshSession *mosh = [[MoshSession alloc] initWithDevice:_device andParams:self.sessionParams.childSessionParams];
@@ -97,23 +100,28 @@
       if (self.sessionParams.hasEncodedState) {
         return;
       }
+      [self _clearChildSession];
     }
     NSString *initialCommand = self.sessionParams.initialCommand;
     if (initialCommand.length > 0) {
       [self enqueueCommand:initialCommand];
       return;
     }
+    // A resumed child that ended for real falls through to here: sanitize the display modes the
+    // dead session may have latched, exactly like the post-command path in _runCommand does.
+    // No-op on a plain fresh boot.
+    [_device.view moshroomSanitizeModes];
     #if TARGET_OS_MACCATALYST
       MoshHosts *localhost = [MoshHosts withHost:@"localhost"];
       if (localhost) {
         NSString *sshcmd = [NSString stringWithFormat: @"ssh -A %@", localhost.host];
         [self enqueueCommand:sshcmd];
       } else {
-        [_device prompt:@"moshroom> " secure:NO shell:YES]; [self _postPromptReady];
+        [_device prompt:@"" secure:NO shell:YES]; [self _postPromptReady];
       }
     #else
     if (_device) {
-      [_device prompt:@"moshroom> " secure:NO shell:YES]; [self _postPromptReady];
+      [_device prompt:@"" secure:NO shell:YES]; [self _postPromptReady];
     }
     #endif
   });
@@ -122,11 +130,13 @@
 // Moshroom: reprint the idle prompt after the terminal web view recovered from a jettison (its
 // rendered transcript is gone). Display-only — the OSC prompt escape re-arms term.js's shell
 // prompt mode; the command readline path (readlineListener) is untouched. No-op mid-command.
+// NOTE the shell prompt renders NO text by design (the OSC handler only arms the line editor,
+// see the MoshroomPrompt shell branch): the prompt string is empty everywhere on purpose.
 - (void)moshroomReprintPromptIfIdle {
   if ([self isRunningCmd]) {
     return;
   }
-  [_device prompt:@"moshroom> " secure:NO shell:YES];
+  [_device prompt:@"" secure:NO shell:YES];
   [self _postPromptReady];
 }
 
@@ -191,9 +201,10 @@
   setlocale(LC_ALL, "UTF-8");
   setlocale(LC_CTYPE, "UTF-8");
   
+  self.moshroomChildSuspended = NO;
   if ([cmd isEqualToString:@"mosh"]) {
     [self _runMoshWithArgs:cmdline];
-    if (self.sessionParams.hasEncodedState) {
+    if (self.sessionParams.hasEncodedState || self.moshroomChildSuspended) {
       return NO;
     }
   } else if ([cmd isEqualToString:@"mosh1"]) {
@@ -243,13 +254,24 @@
     setlocale(LC_CTYPE, "UTF-8");
   }
   
+  // Reaching this point means any child session ENDED for real (the suspended cases returned
+  // above): this tab is a plain local shell again. Without the clear, the child marker outlived
+  // the session, the tab never read as a fresh shell again, and neither the fresh-start reset nor
+  // the quick-connect card ever came back after an exit (the tab sat "hung" on the stale
+  // "Connecting to…" transcript). No-op when no child ran.
+  [self _clearChildSession];
+
   if (_device) {
+    // A child (ssh/mosh/TUI) may have died without restoring the screen: never hand the user a
+    // prompt still trapped in the dead session's modes (alternate screen, mouse reporting armed,
+    // hidden cursor). Runs after the child's last output has been interpreted; no-op on a clean exit.
+    [_device.view moshroomSanitizeModes];
     // TODO At the moment this is just a prompt instead of a readline. This needs to be fixed.
     // And bc of that, we need to check that there is a device. The MCP may be killed, but the loop here may still
     // try to write to the device.
-    [_device prompt:@"moshroom> " secure:NO shell:YES]; [self _postPromptReady];
+    [_device prompt:@"" secure:NO shell:YES]; [self _postPromptReady];
   }
-  
+
   return YES;
 }
 
@@ -299,6 +321,14 @@
   }
 
   ios_setAllowedPaths(allowedPaths);
+}
+
+// A child session (mosh/ssh2/…) finished for real: drop its marker so the tab reads as a plain
+// local shell again. The marker's only purpose is resuming a LIVE (suspended) session.
+- (void)_clearChildSession
+{
+  self.sessionParams.childSessionType = nil;
+  self.sessionParams.childSessionParams = nil;
 }
 
 - (void)_runSSHCopyIDWithArgs:(NSString *)args

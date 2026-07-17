@@ -254,10 +254,6 @@ static int __sizeOfIncompleteSequenceAtTheEnd(const char *buffer, size_t len) {
   fprintf(_stream.out, "%s", output.UTF8String);
 }
 
-- (void)writeOutLn:(NSString *)output {
-  fprintf(_stream.out, "%s\n", output.UTF8String);
-}
-
 - (void)close
 {
   _delegate = NULL;
