@@ -22,6 +22,7 @@
 ////////////////////////////////////////////////////////////////////////////////
 
 import SwiftUI
+import UniformTypeIdentifiers
 
 // Moshvault UI — the credentials hub. Two tabs: Passwords (a KeePass-style vault) and 2FA (a TOTP
 // authenticator). Both are backed by the iCloud Keychain via MoshVaultStore / MoshTOTPStore, so they
@@ -175,6 +176,9 @@ struct MoshvaultPasswordsView: View {
   @State private var entries: [MoshVaultEntry] = []
   @State private var editing: MoshVaultEntry?
   @State private var query = ""
+  @State private var importPicker = false
+  @State private var importing = false
+  @State private var importResult: String?
 
   private var filtered: [MoshVaultEntry] {
     guard !query.isEmpty else { return entries }
@@ -192,7 +196,9 @@ struct MoshvaultPasswordsView: View {
           icon: "lock.rectangle.stack",
           title: "Your password vault",
           message: "Keep your service logins here — service, username, email, password, notes and URL. Everything is stored in your iCloud Keychain, end-to-end encrypted, and follows your devices when iCloud sync is on."
-        )
+        ) {
+          Button { importPicker = true } label: { Label("Import from KeePass XML", systemImage: "square.and.arrow.down") }
+        }
       } else {
         VStack(spacing: 0) {
           MoshSearchField(text: $query, prompt: "Search passwords")
@@ -227,14 +233,66 @@ struct MoshvaultPasswordsView: View {
         Button { editing = MoshVaultEntry() } label: { MoshNavGlyph(systemName: "plus") }
           .accessibilityLabel("Add password")
       }
+      MoshNavBarItem(placement: .navigationBarTrailing) {
+        Button { importPicker = true } label: { MoshNavGlyph(systemName: "square.and.arrow.down") }
+          .accessibilityLabel("Import from KeePass XML")
+      }
     }
     .onAppear(perform: reload)
     .sheet(item: $editing, onDismiss: reload) { entry in
       MoshvaultPasswordEditor(entry: entry)
     }
+    .fileImporter(isPresented: $importPicker, allowedContentTypes: [.xml, .init(filenameExtension: "xml") ?? .xml]) { result in
+      if case .success(let url) = result { runImport(from: url) }
+    }
+    .overlay {
+      if importing {
+        ZStack {
+          Color.black.opacity(0.35).ignoresSafeArea()
+          VStack(spacing: 12) {
+            ProgressView()
+            Text("Importing…").font(.callout).foregroundColor(.secondary)
+          }
+          .padding(24)
+          .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+        }
+      }
+    }
+    .alert("Import", isPresented: Binding(get: { importResult != nil }, set: { if !$0 { importResult = nil } })) {
+      Button("OK", role: .cancel) { importResult = nil }
+    } message: {
+      Text(importResult ?? "")
+    }
   }
 
   private func reload() { entries = MoshVaultStore.shared.all() }
+
+  // Parse a KeePass XML export and merge it into the vault. The file's bytes flow straight into the
+  // keychain-backed store on a background task; nothing is shown or logged except the final count.
+  private func runImport(from url: URL) {
+    importing = true
+    Task.detached {
+      let scoped = url.startAccessingSecurityScopedResource()
+      defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+      let outcome: String
+      do {
+        let data = try Data(contentsOf: url)
+        let parsed = try MoshKeePassImport.parse(data: data)
+        let added = MoshVaultStore.shared.importEntries(parsed)
+        let skipped = parsed.count - added
+        outcome = added == 0
+          ? "No new passwords to import (all \(parsed.count) already in the vault)."
+          : "Imported \(added) password\(added == 1 ? "" : "s")\(skipped > 0 ? ", skipped \(skipped) already present" : "")."
+      } catch {
+        outcome = (error as? LocalizedError)?.errorDescription ?? "Import failed."
+      }
+      await MainActor.run {
+        importing = false
+        importResult = outcome
+        reload()
+      }
+    }
+  }
 
   private func deleteEntries(_ targets: [MoshVaultEntry]) {
     LocalAuth.shared.authenticate(callback: { ok in

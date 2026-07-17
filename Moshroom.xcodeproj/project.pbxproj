@@ -56,6 +56,7 @@
 		4F1BE6B40B272F061AE4F1B3 /* MoshTOTP.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7FA3AE9788EBBCC6CC508DC7 /* MoshTOTP.swift */; };
 		6505E62CB6D107BB1A6BD743 /* MoshAppLock.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4AEFEAD2A92BC23EAA24608 /* MoshAppLock.swift */; };
 		6FC592DE4C53465F168780DD /* MoshvaultStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD90DF8630790330363141DB /* MoshvaultStore.swift */; };
+		4E4C3E1C30F5C7847D50730D /* MoshKeePassImport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C49E33DE5F6D53D660F92F7 /* MoshKeePassImport.swift */; };
 		7D77D389B2B7444BEB3C0FDD /* MoshOTPMigration.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5CD8824356AF0F7187BB21D /* MoshOTPMigration.swift */; };
 		803B99D72582869200DC99C8 /* MoshNotificationsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 803B99D62582869200DC99C8 /* MoshNotificationsView.swift */; };
 		803B99E3258381B200DC99C8 /* SettingsHostingController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 803B99E2258381B200DC99C8 /* SettingsHostingController.swift */; };
@@ -601,6 +602,7 @@
 		D2F64C9525CA99AD00F2225D /* libssh2.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = libssh2.xcframework; path = xcfs/.build/artifacts/xcfs/libssh2/libssh2.xcframework; sourceTree = SOURCE_ROOT; };
 		D4AEFEAD2A92BC23EAA24608 /* MoshAppLock.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MoshAppLock.swift; sourceTree = "<group>"; };
 		DD90DF8630790330363141DB /* MoshvaultStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MoshvaultStore.swift; sourceTree = "<group>"; };
+		1C49E33DE5F6D53D660F92F7 /* MoshKeePassImport.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MoshKeePassImport.swift; sourceTree = "<group>"; };
 		E0F1A2B3C4D5E6F700000001 /* SSHProgname.c */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.c; path = SSHProgname.c; sourceTree = "<group>"; };
 		E4FD3D95B858D8D01DEEE573 /* MoshvaultViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MoshvaultViews.swift; sourceTree = "<group>"; };
 		E5CD8824356AF0F7187BB21D /* MoshOTPMigration.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MoshOTPMigration.swift; sourceTree = "<group>"; };
@@ -739,6 +741,7 @@
 				BD1758AB26EA8C5400AEC545 /* MenuController.swift */,
 				D2A80978270713D200CD0FAF /* FeatureFlags.swift */,
 				DD90DF8630790330363141DB /* MoshvaultStore.swift */,
+				1C49E33DE5F6D53D660F92F7 /* MoshKeePassImport.swift */,
 				7FA3AE9788EBBCC6CC508DC7 /* MoshTOTP.swift */,
 				E5CD8824356AF0F7187BB21D /* MoshOTPMigration.swift */,
 				91424650D3949AA7FB312F37 /* MoshQRScanner.swift */,
@@ -1822,6 +1825,7 @@
 				079635871D0E6602000473B1 /* TermView.m in Sources */,
 				D22278002A26204900D4C708 /* Accumulators.swift in Sources */,
 				6FC592DE4C53465F168780DD /* MoshvaultStore.swift in Sources */,
+				4E4C3E1C30F5C7847D50730D /* MoshKeePassImport.swift in Sources */,
 				4F1BE6B40B272F061AE4F1B3 /* MoshTOTP.swift in Sources */,
 				7D77D389B2B7444BEB3C0FDD /* MoshOTPMigration.swift in Sources */,
 				852D8A7FFFF34395C6EE2E3C /* MoshQRScanner.swift in Sources */,

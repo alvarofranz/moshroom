@@ -195,6 +195,22 @@ final class MoshVaultStore {
     var e = e; e.lastModified = Date(); return store.upsert(e)
   }
   func delete(_ e: MoshVaultEntry) { store.delete(id: e.id) }
+
+  // Import many at once (e.g. a KeePass export), de-duping against what's already in the vault by
+  // (service, username, email, url, password) so a repeated import doesn't pile up copies. Mirrors
+  // MoshTOTPStore.importAccounts. Returns how many were newly added.
+  @discardableResult func importEntries(_ incoming: [MoshVaultEntry]) -> Int {
+    func key(_ e: MoshVaultEntry) -> String {
+      [e.service, e.username, e.email, e.url, e.password].joined(separator: "\u{1}").lowercased()
+    }
+    var seen = Set(all().map(key))
+    var added = 0
+    for var e in incoming where !e.isEmpty && !seen.contains(key(e)) {
+      e.lastModified = Date()
+      if store.upsert(e) { added += 1; seen.insert(key(e)) }
+    }
+    return added
+  }
 }
 
 final class MoshTOTPStore {
