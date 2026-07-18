@@ -221,6 +221,23 @@ private struct MoshNoMatches: View {
   }
 }
 
+// Put a vault secret on the clipboard with the least exposure that still lets the user paste it:
+// keep it on THIS device only (no Universal Clipboard sync to their other Macs/iPhones) and let the
+// OS auto-clear it after a short window, so a copied password/code doesn't linger for the next app
+// that reads the pasteboard. Values never touch anything but the local clipboard.
+enum MoshClipboard {
+  static func copy(_ value: String, clearAfter seconds: TimeInterval = 90) {
+    guard !value.isEmpty else { return }
+    UIPasteboard.general.setItems(
+      [["public.utf8-plain-text": value]],
+      options: [
+        .localOnly: true,
+        .expirationDate: Date(timeIntervalSinceNow: seconds),
+      ]
+    )
+  }
+}
+
 // A tappable "Copied" flash used across both tabs.
 private struct CopyChip: View {
   let text: String
@@ -229,7 +246,7 @@ private struct CopyChip: View {
   @State private var copied = false
   var body: some View {
     Button {
-      UIPasteboard.general.string = value
+      MoshClipboard.copy(value)
       withAnimation { copied = true }
       UINotificationFeedbackGenerator().notificationOccurred(.success)
       DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) { withAnimation { copied = false } }
@@ -380,7 +397,7 @@ private struct MoshvaultPasswordEditor: View {
     HStack {
       Button {
         guard !text.wrappedValue.isEmpty else { return }
-        UIPasteboard.general.string = text.wrappedValue
+        MoshClipboard.copy(text.wrappedValue)
         UINotificationFeedbackGenerator().notificationOccurred(.success)
         withAnimation { copiedField = title }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
@@ -471,7 +488,8 @@ struct MoshvaultTOTPView: View {
   private func reload() { accounts = MoshTOTPStore.shared.all() }
 
   private func copyCode(_ account: MoshTOTPAccount) {
-    UIPasteboard.general.string = MoshTOTP.code(for: account)
+    // A code only lives ~30s; clear it from the clipboard fast so a stale one can't be pasted later.
+    MoshClipboard.copy(MoshTOTP.code(for: account), clearAfter: 30)
     UINotificationFeedbackGenerator().notificationOccurred(.success)
     // A green check appears left of the code for 2s — no banner, nothing shifts.
     withAnimation { copiedID = account.id }
