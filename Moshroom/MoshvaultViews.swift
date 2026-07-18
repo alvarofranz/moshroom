@@ -22,9 +22,8 @@
 ////////////////////////////////////////////////////////////////////////////////
 
 import SwiftUI
-import UniformTypeIdentifiers
 
-// Moshvault UI — the credentials hub. Two tabs: Passwords (a KeePass-style vault) and 2FA (a TOTP
+// Moshvault UI — the credentials hub. Two tabs: Passwords (a personal password vault) and 2FA (a TOTP
 // authenticator). Both are backed by the iCloud Keychain via MoshVaultStore / MoshTOTPStore, so they
 // sync end-to-end across the user's devices when "Sync with iCloud" is on. Clean, native SwiftUI —
 // looks right on iPhone, iPad and Mac.
@@ -44,38 +43,97 @@ struct MoshvaultRootView: View {
   let onClose: () -> Void
   @State private var section: Section = .passwords
 
+  // Presentation state lives HERE, at the root, so the editor covers fill the whole vault. Moshvault
+  // draws its own header in-content (no window toolbar): on Mac Catalyst a NavigationStack toolbar
+  // renders in the window title bar, which a fullScreenCover does NOT cover — the editor would leave
+  // the vault's +/✕ chrome showing above it and their taps would fight the modal. In-content header +
+  // root-owned covers means the modal is truly full-screen and every chip is a plain, tappable Button.
+  @State private var editingPassword: MoshVaultEntry?
+  @State private var editingTOTP: MoshTOTPAccount?
+  @State private var showingManualTOTP = false
+  @State private var showingScan = false
+  @State private var showingMigrate = false
+  @State private var reloadTick = 0
+  @State private var totpBanner: String?
+
   var body: some View {
-    NavigationStack {
-      VStack(spacing: 0) {
-        Picker("Section", selection: $section) {
-          Text("Passwords").tag(Section.passwords)
-          Text("2FA").tag(Section.twofa)
-        }
-        .pickerStyle(.segmented)
-        .padding(.horizontal)
-        .padding(.vertical, 10)
-        .frame(maxWidth: 520)
-
-        Divider()
-
-        switch section {
-        case .passwords: MoshvaultPasswordsView()
-        case .twofa:     MoshvaultTOTPView()
-        }
+    VStack(spacing: 0) {
+      header
+      Picker("Section", selection: $section) {
+        Text("Passwords").tag(Section.passwords)
+        Text("2FA").tag(Section.twofa)
       }
-      .frame(maxWidth: .infinity)
-      .navigationTitle("Moshvault")
-      .navigationBarTitleDisplayMode(.inline)
-      .toolbar {
-        MoshNavBarItem(placement: .navigationBarTrailing) {
-          Button(action: onClose) {
-            MoshNavGlyph(systemName: "xmark")
-          }
-          .accessibilityLabel("Close")
-        }
+      .pickerStyle(.segmented)
+      .padding(.horizontal)
+      .padding(.bottom, 10)
+      .frame(maxWidth: 520)
+
+      Divider()
+
+      switch section {
+      case .passwords:
+        MoshvaultPasswordsView(reloadTick: reloadTick, onEdit: { editingPassword = $0 })
+      case .twofa:
+        MoshvaultTOTPView(reloadTick: reloadTick, banner: totpBanner, onEdit: { editingTOTP = $0 })
       }
     }
+    .frame(maxWidth: .infinity, maxHeight: .infinity)
+    .background(Color(.systemGroupedBackground).ignoresSafeArea())
     .tint(.moshTint)
+    .fullScreenCover(item: $editingPassword, onDismiss: bumpReload) { MoshvaultPasswordEditor(entry: $0) }
+    .fullScreenCover(item: $editingTOTP, onDismiss: bumpReload) { MoshTOTPManualEntry(existing: $0) }
+    .fullScreenCover(isPresented: $showingManualTOTP, onDismiss: bumpReload) { MoshTOTPManualEntry() }
+    .fullScreenCover(isPresented: $showingScan, onDismiss: bumpReload) {
+      MoshTOTPScanSheet { uri in
+        guard let acc = MoshTOTP.parse(uri: uri) else { return false }
+        MoshTOTPStore.shared.save(acc)
+        return true
+      }
+    }
+    .fullScreenCover(isPresented: $showingMigrate, onDismiss: bumpReload) {
+      MoshTOTPMigrateSheet { added, skipped in
+        totpBanner = "Imported \(added) account\(added == 1 ? "" : "s")"
+          + (skipped > 0 ? " · \(skipped) HOTP skipped" : "")
+      }
+    }
+  }
+
+  private func bumpReload() { reloadTick += 1 }
+
+  // The vault's own header: add (leading, per-tab) · "Moshvault" (centred) · close (trailing). All
+  // plain in-content chips, so taps land reliably on Mac (see the note on the state above).
+  private var header: some View {
+    ZStack {
+      Text("Moshvault")
+        .font(.system(size: 17, weight: .semibold))
+        .foregroundColor(.primary)
+      HStack {
+        if section == .passwords {
+          Button { editingPassword = MoshVaultEntry() } label: { MoshNavGlyph(systemName: "plus") }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Add password")
+        } else {
+          MoshNavGlyph(systemName: "plus")
+            .overlay(
+              Menu {
+                Button { showingScan = true } label: { Label("Scan QR Code", systemImage: "qrcode.viewfinder") }
+                Button { showingMigrate = true } label: { Label("Migrate from Google Authenticator", systemImage: "square.and.arrow.down.on.square") }
+                Button { showingManualTOTP = true } label: { Label("Enter Setup Key", systemImage: "keyboard") }
+              } label: {
+                Color.clear.frame(width: MoshNavChip.diameter, height: MoshNavChip.diameter).contentShape(Rectangle())
+              }
+              .menuIndicator(.hidden)
+            )
+            .accessibilityLabel("Add 2FA account")
+        }
+        Spacer()
+        Button(action: onClose) { MoshNavGlyph(systemName: "xmark") }
+          .buttonStyle(.plain)
+          .accessibilityLabel("Close")
+      }
+    }
+    .padding(.horizontal, 16)
+    .padding(.vertical, 12)
   }
 }
 
@@ -109,10 +167,11 @@ private struct MoshSearchField: View {
     .padding(.horizontal, 12)
     .padding(.vertical, 9)
     .background(RoundedRectangle(cornerRadius: 11, style: .continuous).fill(Color(.tertiarySystemFill)))
-    // Match the inset-grouped list's own horizontal section margin so the field lines up
-    // edge-for-edge with the card below it.
+    // Line up with the inset-grouped list's own horizontal section margin, so the fixed search bar
+    // sits edge-for-edge under the card above it. Its 11pt rounding is intentionally smaller than
+    // the card's — the search reads as a compact control docked below the list.
     .padding(.horizontal, 20)
-    .padding(.top, 8)
+    .padding(.vertical, 8)
     .animation(.easeInOut(duration: 0.15), value: text.isEmpty)
   }
 }
@@ -148,18 +207,6 @@ struct MoshSheetHeader<Trailing: View>: View {
 extension MoshSheetHeader where Trailing == EmptyView {
   init(title: String, onClose: @escaping () -> Void) {
     self.init(title: title, onClose: onClose, trailing: { EmptyView() })
-  }
-}
-
-extension View {
-  // Shrink an inset-grouped list's default top inset so a search field placed directly above it
-  // reads as attached to the card. contentMargins is iOS 17+; on 16 the default spacing stands.
-  @ViewBuilder func moshListTopInset(_ v: CGFloat) -> some View {
-    if #available(iOS 17.0, *) {
-      self.contentMargins(.top, v, for: .scrollContent)
-    } else {
-      self
-    }
   }
 }
 
@@ -207,12 +254,10 @@ private struct CopyChip: View {
 // MARK: - Passwords
 
 struct MoshvaultPasswordsView: View {
+  let reloadTick: Int
+  let onEdit: (MoshVaultEntry) -> Void
   @State private var entries: [MoshVaultEntry] = []
-  @State private var editing: MoshVaultEntry?
   @State private var query = ""
-  @State private var importPicker = false
-  @State private var importing = false
-  @State private var importResult: String?
 
   private var filtered: [MoshVaultEntry] {
     guard !query.isEmpty else { return entries }
@@ -230,15 +275,12 @@ struct MoshvaultPasswordsView: View {
           icon: "lock.rectangle.stack",
           title: "Your password vault",
           message: "Keep your service logins here — service, username, email, password, notes and URL. Everything is stored in your iCloud Keychain, end-to-end encrypted, and follows your devices when iCloud sync is on."
-        ) {
-          Button { importPicker = true } label: { Label("Import from KeePass XML", systemImage: "square.and.arrow.down") }
-        }
+        )
       } else {
         VStack(spacing: 0) {
-          MoshSearchField(text: $query, prompt: "Search passwords")
           List {
             ForEach(filtered) { entry in
-              Button { editing = entry } label: {
+              Button { onEdit(entry) } label: {
                 VStack(alignment: .leading, spacing: 2) {
                   Text(entry.service.isEmpty ? "Untitled" : entry.service)
                     .foregroundColor(.primary)
@@ -249,84 +291,25 @@ struct MoshvaultPasswordsView: View {
               }
               // Right-click (Mac) / long-press (iOS) — the Mac has no swipe, so edit & delete live here too.
               .contextMenu {
-                Button { editing = entry } label: { Label("Edit", systemImage: "pencil") }
+                Button { onEdit(entry) } label: { Label("Edit", systemImage: "pencil") }
                 Button(role: .destructive) { deleteEntries([entry]) } label: { Label("Delete", systemImage: "trash") }
               }
             }
             .onDelete { deleteEntries($0.map { filtered[$0] }) }
           }
           .listStyle(.insetGrouped)
-          .moshListTopInset(2)   // trim the list's default top inset so the card sits under the search field
           .overlay { if filtered.isEmpty { MoshNoMatches() } }
+          // The search field is FIXED at the bottom, under the list, matching the card's rounding.
+          MoshSearchField(text: $query, prompt: "Search passwords")
         }
         .moshReadableWidth()
       }
     }
-    .toolbar {
-      MoshNavBarItem(placement: .navigationBarLeading) {
-        Button { editing = MoshVaultEntry() } label: { MoshNavGlyph(systemName: "plus") }
-          .accessibilityLabel("Add password")
-      }
-      MoshNavBarItem(placement: .navigationBarTrailing) {
-        Button { importPicker = true } label: { MoshNavGlyph(systemName: "square.and.arrow.down") }
-          .accessibilityLabel("Import from KeePass XML")
-      }
-    }
     .onAppear(perform: reload)
-    .fullScreenCover(item: $editing, onDismiss: reload) { entry in
-      MoshvaultPasswordEditor(entry: entry)
-    }
-    .fileImporter(isPresented: $importPicker, allowedContentTypes: [.xml, .init(filenameExtension: "xml") ?? .xml]) { result in
-      if case .success(let url) = result { runImport(from: url) }
-    }
-    .overlay {
-      if importing {
-        ZStack {
-          Color.black.opacity(0.35).ignoresSafeArea()
-          VStack(spacing: 12) {
-            ProgressView()
-            Text("Importing…").font(.callout).foregroundColor(.secondary)
-          }
-          .padding(24)
-          .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
-        }
-      }
-    }
-    .alert("Import", isPresented: Binding(get: { importResult != nil }, set: { if !$0 { importResult = nil } })) {
-      Button("OK", role: .cancel) { importResult = nil }
-    } message: {
-      Text(importResult ?? "")
-    }
+    .onChange(of: reloadTick) { _ in reload() }
   }
 
   private func reload() { entries = MoshVaultStore.shared.all() }
-
-  // Parse a KeePass XML export and merge it into the vault. The file's bytes flow straight into the
-  // keychain-backed store on a background task; nothing is shown or logged except the final count.
-  private func runImport(from url: URL) {
-    importing = true
-    Task.detached {
-      let scoped = url.startAccessingSecurityScopedResource()
-      defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-      let outcome: String
-      do {
-        let data = try Data(contentsOf: url)
-        let parsed = try MoshKeePassImport.parse(data: data)
-        let added = MoshVaultStore.shared.importEntries(parsed)
-        let skipped = parsed.count - added
-        outcome = added == 0
-          ? "No new passwords to import (all \(parsed.count) already in the vault)."
-          : "Imported \(added) password\(added == 1 ? "" : "s")\(skipped > 0 ? ", skipped \(skipped) already present" : "")."
-      } catch {
-        outcome = (error as? LocalizedError)?.errorDescription ?? "Import failed."
-      }
-      await MainActor.run {
-        importing = false
-        importResult = outcome
-        reload()
-      }
-    }
-  }
 
   private func deleteEntries(_ targets: [MoshVaultEntry]) {
     LocalAuth.shared.authenticate(callback: { ok in
@@ -340,6 +323,7 @@ private struct MoshvaultPasswordEditor: View {
   @Environment(\.dismiss) private var dismiss
   @State var entry: MoshVaultEntry
   @State private var revealPassword = false
+  @State private var copiedField: String?
 
   // Derive "new vs edit" from the store, not a passed-in flag — the flag raced with the sheet
   // presentation and showed "Edit Password" on a brand-new entry.
@@ -351,7 +335,6 @@ private struct MoshvaultPasswordEditor: View {
         Button { MoshVaultStore.shared.save(entry); dismiss() } label: { MoshNavLabel(title: "Save") }
           .buttonStyle(.plain)
           .disabled(entry.isEmpty)
-          .opacity(entry.isEmpty ? 0.4 : 1)
       }
       Form {
         Section {
@@ -391,9 +374,29 @@ private struct MoshvaultPasswordEditor: View {
     .tint(.moshTint)
   }
 
+  // Tapping the label (left column) copies that field's value — a green check flashes in its place
+  // for 1.2s. The text field itself stays editable; only the label is the copy target.
   private func labeledField(_ title: String, text: Binding<String>, keyboard: UIKeyboardType = .default) -> some View {
     HStack {
-      Text(title).foregroundColor(.secondary).frame(width: 92, alignment: .leading)
+      Button {
+        guard !text.wrappedValue.isEmpty else { return }
+        UIPasteboard.general.string = text.wrappedValue
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
+        withAnimation { copiedField = title }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+          if copiedField == title { withAnimation { copiedField = nil } }
+        }
+      } label: {
+        HStack(spacing: 4) {
+          Text(title).foregroundColor(copiedField == title ? .moshGreen : .secondary)
+          if copiedField == title {
+            Image(systemName: "checkmark").font(.caption2).foregroundColor(.moshGreen)
+          }
+        }
+        .frame(width: 92, alignment: .leading)
+        .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
       TextField(title, text: text)
         .keyboardType(keyboard)
         .autocorrectionDisabled()
@@ -405,12 +408,10 @@ private struct MoshvaultPasswordEditor: View {
 // MARK: - 2FA
 
 struct MoshvaultTOTPView: View {
+  let reloadTick: Int
+  let banner: String?
+  let onEdit: (MoshTOTPAccount) -> Void
   @State private var accounts: [MoshTOTPAccount] = []
-  @State private var editing: MoshTOTPAccount?
-  @State private var showingManual = false
-  @State private var showingScan = false
-  @State private var showingMigrate = false
-  @State private var banner: String?
   @State private var query = ""
   @State private var copiedID: String?
   private let tick = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
@@ -434,7 +435,6 @@ struct MoshvaultTOTPView: View {
         )
       } else {
         VStack(spacing: 0) {
-          MoshSearchField(text: $query, prompt: "Search codes")
           List {
             if let banner {
               Text(banner).font(.footnote).foregroundColor(.secondary)
@@ -445,60 +445,27 @@ struct MoshvaultTOTPView: View {
                 .onTapGesture { copyCode(account) }
                 .swipeActions(edge: .trailing) {
                   Button(role: .destructive) { delete(account) } label: { Label("Delete", systemImage: "trash") }
-                  Button { editing = account } label: { Label("Edit", systemImage: "pencil") }.tint(.gray)
+                  Button { onEdit(account) } label: { Label("Edit", systemImage: "pencil") }.tint(.gray)
                 }
                 // Mac has no swipe — right-click gives the same edit & delete.
                 .contextMenu {
-                  Button { editing = account } label: { Label("Edit", systemImage: "pencil") }
+                  Button { onEdit(account) } label: { Label("Edit", systemImage: "pencil") }
                   Button { copyCode(account) } label: { Label("Copy code", systemImage: "doc.on.doc") }
                   Button(role: .destructive) { delete(account) } label: { Label("Delete", systemImage: "trash") }
                 }
             }
           }
           .listStyle(.insetGrouped)
-          .moshListTopInset(2)   // trim the list's default top inset so the card sits under the search field
           .overlay { if filtered.isEmpty { MoshNoMatches() } }
+          // Search fixed at the bottom, under the list (matches the Passwords tab).
+          MoshSearchField(text: $query, prompt: "Search codes")
         }
         .moshReadableWidth()
       }
     }
-    .toolbar {
-      MoshNavBarItem(placement: .navigationBarLeading) {
-        // The chip is OUR view and the Menu rides on top with a clear label — a visible Menu
-        // label gets re-rendered washed-out/off-centre by the Mac Catalyst toolbar (see KeySortView).
-        MoshNavGlyph(systemName: "plus")
-          .overlay(
-            Menu {
-              Button { showingScan = true } label: { Label("Scan QR Code", systemImage: "qrcode.viewfinder") }
-              Button { showingMigrate = true } label: { Label("Migrate from Google Authenticator", systemImage: "square.and.arrow.down.on.square") }
-              Button { showingManual = true } label: { Label("Enter Setup Key", systemImage: "keyboard") }
-            } label: {
-              Color.clear
-                .frame(width: MoshNavChip.diameter, height: MoshNavChip.diameter)
-                .contentShape(Rectangle())
-            }
-            .menuIndicator(.hidden)   // no system disclosure caret bleeding through the + glyph
-          )
-          .accessibilityLabel("Add 2FA account")
-      }
-    }
     .onReceive(tick) { now = $0 }
     .onAppear(perform: reload)
-    .fullScreenCover(isPresented: $showingManual, onDismiss: reload) { MoshTOTPManualEntry() }
-    .fullScreenCover(item: $editing, onDismiss: reload) { MoshTOTPManualEntry(existing: $0) }
-    .fullScreenCover(isPresented: $showingScan, onDismiss: reload) {
-      MoshTOTPScanSheet { uri in
-        guard let acc = MoshTOTP.parse(uri: uri) else { return false }
-        MoshTOTPStore.shared.save(acc)
-        return true
-      }
-    }
-    .fullScreenCover(isPresented: $showingMigrate, onDismiss: reload) {
-      MoshTOTPMigrateSheet { added, skipped in
-        banner = "Imported \(added) account\(added == 1 ? "" : "s")"
-          + (skipped > 0 ? " · \(skipped) HOTP skipped" : "")
-      }
-    }
+    .onChange(of: reloadTick) { _ in reload() }
   }
 
   private func reload() { accounts = MoshTOTPStore.shared.all() }
@@ -526,6 +493,11 @@ private struct MoshTOTPRow: View {
   let account: MoshTOTPAccount
   let now: Date
   let copied: Bool
+  // The code is drawn at its full size and never shrinks, so on a narrow (compact) iPhone a big
+  // code steals width from the issuer/account column and squeezes it. Use a slightly smaller code
+  // there so the left column — the labels the user actually reads — gets the room. Mac/iPad (regular)
+  // keep the large 32pt code.
+  @Environment(\.horizontalSizeClass) private var sizeClass
 
   var body: some View {
     let code = MoshTOTP.code(for: account, at: now)
@@ -558,7 +530,7 @@ private struct MoshTOTPRow: View {
       }
       .frame(width: 26)
       Text(grouped(code))
-        .font(.system(size: 32, weight: .semibold, design: .monospaced))
+        .font(.system(size: sizeClass == .compact ? 26 : 32, weight: .semibold, design: .monospaced))
         .foregroundColor(expiring ? .red : .moshGreen)
         .monospacedDigit()
         .lineLimit(1)
@@ -593,7 +565,6 @@ private struct MoshTOTPManualEntry: View {
         Button { MoshTOTPStore.shared.save(account); dismiss() } label: { MoshNavLabel(title: "Save") }
           .buttonStyle(.plain)
           .disabled(!MoshTOTP.isValidSecret(account.secret))
-          .opacity(MoshTOTP.isValidSecret(account.secret) ? 1 : 0.4)
       }
       Form {
         Section("Account") {
@@ -624,7 +595,7 @@ private struct MoshTOTPManualEntry: View {
 
   private func field(_ title: String, text: Binding<String>) -> some View {
     HStack {
-      Text(title).foregroundColor(.secondary).frame(width: 80, alignment: .leading)
+      Text(title).foregroundColor(.secondary).frame(width: 100, alignment: .leading)
       TextField(title, text: text).autocorrectionDisabled()
     }
   }
@@ -667,14 +638,14 @@ private struct MoshTOTPMigrateSheet: View {
   @State private var batchSize = 0
   @State private var status = "Point the camera at the Google Authenticator export QR"
   @State private var error: String?
+  @State private var done = false   // once the batch is complete, ignore further scans + show the result
 
   var body: some View {
     VStack(spacing: 0) {
       MoshSheetHeader(title: "Migrate 2FA", onClose: { dismiss() }) {
-        Button { finish() } label: { MoshNavLabel(title: "Import") }
+        Button { complete() } label: { MoshNavLabel(title: "Import") }
           .buttonStyle(.plain)
-          .disabled(collected.isEmpty)
-          .opacity(collected.isEmpty ? 0.4 : 1)
+          .disabled(collected.isEmpty || done)
       }
       ZStack {
         MoshQRScannerView(onFound: handle, onError: { error = $0 })
@@ -691,25 +662,40 @@ private struct MoshTOTPMigrateSheet: View {
   }
 
   private func handle(_ payload: String) {
+    guard !done else { return }
     guard let result = MoshOTPMigration.parse(uri: payload) else {
       error = "That isn't a Google Authenticator export code."
       return
     }
     error = nil
+    // A batch can span several QR codes; ignore a re-scan of one we already have, but give a haptic
+    // + a fresh "Scanned X of Y" the moment a NEW code lands — the last QR used to trigger the import
+    // and close instantly, so it read as "nothing happened" (fixed 2026-07-18).
+    let isNew = collected[result.batchIndex] == nil
     batchSize = result.batchSize
     collected[result.batchIndex] = result.accounts
     skipped = max(skipped, result.skippedHOTP)
+    guard isNew else { return }
+    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
     if collected.count >= batchSize {
-      finish()
+      complete()
     } else {
       status = "Scanned \(collected.count) of \(batchSize) — scan the next QR code"
     }
   }
 
-  private func finish() {
+  // Import what's collected and confirm ON SCREEN before closing, so the final QR gets visible
+  // feedback instead of an instant dismiss.
+  private func complete() {
+    guard !done else { return }
+    done = true
     let all = collected.values.flatMap { $0 }
     let added = MoshTOTPStore.shared.importAccounts(all)
-    onDone(added, skipped)
-    dismiss()
+    UINotificationFeedbackGenerator().notificationOccurred(.success)
+    status = "Imported \(added) account\(added == 1 ? "" : "s") ✓"
+    DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+      onDone(added, skipped)
+      dismiss()
+    }
   }
 }
