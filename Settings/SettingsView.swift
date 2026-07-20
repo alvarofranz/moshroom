@@ -263,8 +263,7 @@ struct MoshDefaultUserView: View {
     }
     .listStyle(.insetGrouped)
     .moshReadableWidth()
-    .navigationTitle("Default User")
-    .navigationBarTitleDisplayMode(.inline)
+    .moshHubChromeBack(title: "Default User")
     .onDisappear {
       guard !_name.isEmpty else { return }
       MoshroomDefaults.setDefaultUserName(_name)

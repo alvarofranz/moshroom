@@ -71,7 +71,6 @@ struct AgentForwardPromptPickerView: View {
     }
     .listStyle(.insetGrouped)
     .moshReadableWidth()
-    .navigationTitle("Agent Forwarding")
-    .navigationBarTitleDisplayMode(.inline)
+    .moshHubChromeBack(title: "Agent Forwarding")
   }
 }

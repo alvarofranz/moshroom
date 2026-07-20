@@ -150,8 +150,7 @@ struct StyleCustomizationView: View {
       .listStyle(.insetGrouped)
       .moshReadableWidth()
     }
-    .navigationTitle("Style")
-    .navigationBarTitleDisplayMode(.inline)
+    .moshHubChromeBack(title: "Style")
     .onAppear {
       if !isLoaded {
         ensureEditableStyle()

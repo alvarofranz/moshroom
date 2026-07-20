@@ -43,8 +43,7 @@ struct MoshNotificationsView: View {
     }
     .listStyle(.insetGrouped)
     .moshReadableWidth()
-    .navigationTitle("Notifications")
-    .navigationBarTitleDisplayMode(.inline)
+    .moshHubChromeBack(title: "Notifications")
   }
 }
 

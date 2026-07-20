@@ -68,8 +68,6 @@ struct KBConfigView: View {
             config: self.config,
             commandsMode: true
           )
-          .navigationTitle("Shortcuts")
-          .navigationBarTitleDisplayMode(.inline)
         }
         HStack {
           Toggle("Custom Keyboards", isOn: customKeyboards)
@@ -91,27 +89,21 @@ struct KBConfigView: View {
             config: self.config,
             commandsMode: false
           )
-          .navigationTitle("Presses")
-          .navigationBarTitleDisplayMode(.inline)
         }
       }
     }
     .listStyle(.insetGrouped)
     .moshReadableWidth()
-    .navigationTitle("Keyboard")
-    .navigationBarTitleDisplayMode(.inline)
-    .toolbar {
-      MoshNavBarItem(placement: .navigationBarTrailing) {
-        Button(
-          action: {
-            MoshroomDefaults.setDisableCustomKeyboards(false)
-            MoshroomDefaults.save()
-            self._enableCustomKeyboards = !MoshroomDefaults.disableCustomKeyboards()
-            self.config.reset()
-          },
-          label: { MoshNavLabel(title: "Reset") }
-        )
-      }
+    .moshHubChromeBack(title: "Keyboard") {
+      Button(
+        action: {
+          MoshroomDefaults.setDisableCustomKeyboards(false)
+          MoshroomDefaults.save()
+          self._enableCustomKeyboards = !MoshroomDefaults.disableCustomKeyboards()
+          self.config.reset()
+        },
+        label: { MoshNavLabel(title: "Reset") }
+      )
     }
     .onReceive(config.objectWillChange.debounce(for: 0.5, scheduler: RunLoop.main)) {
       KBTracker.shared.save(config: self.config)

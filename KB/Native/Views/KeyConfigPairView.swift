@@ -39,7 +39,6 @@ struct KeyConfigPairView: View {
     }
     .listStyle(.insetGrouped)
     .moshReadableWidth()
-    .navigationTitle(pair.fullName)
-    .navigationBarTitleDisplayMode(.inline)
+    .moshHubChromeBack(title: pair.fullName)
   }
 }

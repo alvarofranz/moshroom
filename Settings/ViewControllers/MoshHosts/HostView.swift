@@ -235,8 +235,7 @@ struct FieldTextArea: View {
           .disableAutocorrection(true)
           .disabled(!_enabled)
           .padding(12)
-          .navigationTitle(_label)
-          .navigationBarTitleDisplayMode(.inline)
+          .moshHubChromeBack(title: _label)
       }
     )
   }
@@ -384,25 +383,19 @@ struct HostView: View {
     .listStyle(.insetGrouped)
     .moshReadableWidth()
     .alert(errorMessage: $_errorMessage)
-    .toolbar {
-      MoshNavBarItem(placement: .navigationBarLeading) {
-        Button(action: {
-          _nav.navController.popViewController(animated: true)
-        }) { MoshNavLabel(title: "Discard") }
-      }
-      MoshNavBarItem(placement: .navigationBarTrailing) {
-        Button(action: {
-          // A validation failure shows the alert and keeps the editor open — never save a bad host.
-          guard _validate() else { return }
-          _saveHost()
-          _reloadList()
-          _nav.navController.popViewController(animated: true)
-        }) { MoshNavLabel(title: "Save") }
-      }
-    }
-    .navigationBarBackButtonHidden(true)
-    .navigationTitle(_host == nil ? "New Host" : "Host")
-    .navigationBarTitleDisplayMode(.inline)
+    .moshHubChrome(title: _host == nil ? "New Host" : "Host", leading: {
+      Button(action: {
+        _nav.navController.popViewController(animated: true)
+      }) { MoshNavLabel(title: "Discard") }
+    }, trailing: {
+      Button(action: {
+        // A validation failure shows the alert and keeps the editor open — never save a bad host.
+        guard _validate() else { return }
+        _saveHost()
+        _reloadList()
+        _nav.navController.popViewController(animated: true)
+      }) { MoshNavLabel(title: "Save") }
+    })
     .onAppear {
       if !_loaded {
         loadHost()

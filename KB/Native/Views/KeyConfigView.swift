@@ -31,8 +31,7 @@ struct KeyConfigView: View {
     List { KeySection(key: key) }
     .listStyle(.insetGrouped)
     .moshReadableWidth()
-    .navigationTitle(key.fullName)
-    .navigationBarTitleDisplayMode(.inline)
+    .moshHubChromeBack(title: key.fullName)
   }
   
 }

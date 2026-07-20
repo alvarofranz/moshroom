@@ -175,6 +175,8 @@ struct MoshHubHeader<Leading: View, Trailing: View>: View {
         Spacer()
         trailing()
       }
+      // Every header button is a flat house chip — no Mac Catalyst bordered-button platter behind it.
+      .moshCatalystPlainButtons()
     }
     .padding(.horizontal, 16)
     .padding(.vertical, 12)

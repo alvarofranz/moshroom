@@ -66,7 +66,6 @@ struct BindingConfigView: View {
     }
     .listStyle(.insetGrouped)
     .moshReadableWidth()
-    .navigationTitle(title)
-    .navigationBarTitleDisplayMode(.inline)
+    .moshHubChromeBack(title: title)
   }
 }

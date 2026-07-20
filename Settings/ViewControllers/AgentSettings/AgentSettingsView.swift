@@ -49,8 +49,7 @@ struct DefaultAgentSettingsView: View {
           }
       }
     }
-    .navigationTitle("Default Agent")
-    .navigationBarTitleDisplayMode(.inline)
+    .moshHubChromeBack(title: "Default Agent")
     .onAppear {
       if agentSettings == nil {
         do {
@@ -164,8 +163,7 @@ struct AgentSettingsPromptPickerView: View {
     }
     .listStyle(.insetGrouped)
     .moshReadableWidth()
-    .navigationTitle("Agent Forwarding")
-    .navigationBarTitleDisplayMode(.inline)
+    .moshHubChromeBack(title: "Agent Forwarding")
   }
 }
 

@@ -120,7 +120,6 @@ struct MoshCustomOptionsPickerView: View {
     }
     .listStyle(.insetGrouped)
     .moshReadableWidth()
-    .navigationTitle("Mosh Options")
-    .navigationBarTitleDisplayMode(.inline)
+    .moshHubChromeBack(title: "Mosh Options")
   }
 }

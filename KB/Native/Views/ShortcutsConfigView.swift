@@ -56,6 +56,7 @@ struct ActionsList: View {
     }
     .listStyle(.insetGrouped)
     .moshReadableWidth()
+    .moshHubChromeBack(title: "Action")
   }
 
   private func _rowCustomSequence() -> some View {
@@ -127,6 +128,7 @@ struct CustomSequenceView: View {
     }
     .listStyle(.insetGrouped)
     .moshReadableWidth()
+    .moshHubChromeBack(title: "Custom Sequence")
     .onChange(of: mode) { _ in
       input = ""
     }
@@ -272,47 +274,43 @@ struct ShortcutConfigView: View {
           }
         }
       }
-    .navigationBarBackButtonHidden(true)
-    .toolbar {
-      MoshNavBarItem(placement: .navigationBarLeading) {
-        Button(action: {
-          _done()
-        }) { MoshNavLabel(title: isComplete ? "Done" : "Cancel") }
-      }
-      MoshNavBarItem(placement: .navigationBarTrailing) {
-        Group {
-          if !isNew {
-            if draft.isInDefaultCommandList {
-              if draft.isCleared {
-                Button(action: {
-                  if let original = KeyShortcut.defaultFor(self.draft) {
-                    self.shortcut?.modifiers = original.modifiers
-                    self.shortcut?.input = original.input
-                  }
-                  self.nav.navController.popViewController(animated: true)
-                  self.config.touch()
-                }) { MoshNavLabel(title: "Set Default") }
-              } else {
-                Button(action: {
-                  self.shortcut?.input = ""
-                  self.shortcut?.modifiers = []
-                  self.nav.navController.popViewController(animated: true)
-                  self.config.touch()
-                }) { MoshNavLabel(title: "Clear") }
-              }
-            } else {
+    .listStyle(.insetGrouped)
+    .moshReadableWidth()
+    .moshHubChrome(title: "Shortcut", leading: {
+      Button(action: {
+        _done()
+      }) { MoshNavLabel(title: isComplete ? "Done" : "Cancel") }
+    }, trailing: {
+      Group {
+        if !isNew {
+          if draft.isInDefaultCommandList {
+            if draft.isCleared {
               Button(action: {
-                self.config.shortcuts.removeAll(where: { $0 === self.shortcut })
+                if let original = KeyShortcut.defaultFor(self.draft) {
+                  self.shortcut?.modifiers = original.modifiers
+                  self.shortcut?.input = original.input
+                }
                 self.nav.navController.popViewController(animated: true)
                 self.config.touch()
-              }) { MoshNavLabel(title: "Delete") }
+              }) { MoshNavLabel(title: "Set Default") }
+            } else {
+              Button(action: {
+                self.shortcut?.input = ""
+                self.shortcut?.modifiers = []
+                self.nav.navController.popViewController(animated: true)
+                self.config.touch()
+              }) { MoshNavLabel(title: "Clear") }
             }
+          } else {
+            Button(action: {
+              self.config.shortcuts.removeAll(where: { $0 === self.shortcut })
+              self.nav.navController.popViewController(animated: true)
+              self.config.touch()
+            }) { MoshNavLabel(title: "Delete") }
           }
         }
       }
-    }
-    .listStyle(.insetGrouped)
-    .moshReadableWidth()
+    })
     .background(KeyCaptureView(shortcut: draft))
   }
 
@@ -345,10 +343,17 @@ struct ShortcutsConfigView: View {
 
   var body: some View {
     let list = _list
-    if list.isEmpty {
-      return AnyView(_emptyView())
-    } else {
-      return AnyView(_tableView(list: list))
+    Group {
+      if list.isEmpty {
+        _emptyView()
+      } else {
+        _tableView(list: list)
+      }
+    }
+    .moshHubChromeBack(title: commandsMode ? "Shortcuts" : "Presses") {
+      if !list.isEmpty {
+        Button(action: _addAction) { MoshNavLabel(title: "Add") }
+      }
     }
   }
 
@@ -387,11 +392,6 @@ struct ShortcutsConfigView: View {
     }
     .listStyle(.insetGrouped)
     .moshReadableWidth()
-    .toolbar {
-      MoshNavBarItem(placement: .navigationBarTrailing) {
-        Button(action: _addAction) { MoshNavLabel(title: "Add") }
-      }
-    }
   }
 
   private func _addAction() {

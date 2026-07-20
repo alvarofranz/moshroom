@@ -59,7 +59,6 @@ struct SupportView: View {
     }
     .listStyle(.insetGrouped)
     .moshReadableWidth()
-    .navigationTitle("Support")
-    .navigationBarTitleDisplayMode(.inline)
+    .moshHubChromeBack(title: "Support")
   }
 }

@@ -308,13 +308,9 @@ struct KeyDetailsView: View {
     }
     .listStyle(.insetGrouped)
     .moshReadableWidth()
-    .navigationTitle("Key Info")
-    .navigationBarTitleDisplayMode(.inline)
-    .toolbar {
-      MoshNavBarItem(placement: .navigationBarTrailing) {
-        Button(action: _saveCard) { MoshNavLabel(title: "Save") }
-          .disabled(_saveIsDisabled)
-      }
+    .moshHubChromeBack(title: "Key Info") {
+      Button(action: _saveCard) { MoshNavLabel(title: "Save") }
+        .disabled(_saveIsDisabled)
     }
     .fileImporter(
       isPresented: $_filePickerIsPresented,
