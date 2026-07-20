@@ -82,7 +82,24 @@ struct MoshlauncherView: View {
   private var cardBackground: Color { Color(UIColor.secondarySystemGroupedBackground) }
 
   var body: some View {
-    NavigationStack {
+    // No NavigationStack / system nav bar on purpose: a nav bar makes Mac Catalyst grow the window
+    // title bar, which shoves the traffic lights and title DOWN when the launcher opens (the chrome
+    // "jumps" and the view looks less compact). Drawing our own in-content header keeps the title bar
+    // exactly as compact as the terminal and Moshvault. The close ✕ sits top-RIGHT, the same spot as
+    // the top-bar button that opened the launcher, so it reads as the same control toggling.
+    VStack(spacing: 0) {
+      HStack {
+        Text("Moshroom")
+          .font(.system(size: 17, weight: .semibold))
+          .foregroundColor(.primary)
+        Spacer()
+        Button(action: onClose) { MoshNavGlyph(systemName: "xmark") }
+          .buttonStyle(.plain)
+          .accessibilityLabel("Close")
+      }
+      .padding(.horizontal, 16)
+      .padding(.vertical, 12)
+
       ScrollView {
         if hSize == .compact {
           // iPhone: full-width cards, stacked.
@@ -100,16 +117,6 @@ struct MoshlauncherView: View {
           .padding(28)
           .frame(maxWidth: 900)
           .frame(maxWidth: .infinity)
-        }
-      }
-      .navigationTitle("Moshroom")
-      .navigationBarTitleDisplayMode(.inline)
-      .toolbar {
-        MoshNavBarItem(placement: .navigationBarTrailing) {
-          Button(action: onClose) {
-            MoshNavGlyph(systemName: "xmark")
-          }
-          .accessibilityLabel("Close")
         }
       }
     }
