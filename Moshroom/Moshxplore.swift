@@ -1666,11 +1666,26 @@ final class MoshxploreController: UIViewController {
   override func viewDidLoad() {
     super.viewDidLoad()
     view.backgroundColor = MoshxploreStyle.screen   // adaptive — dark theme gets the Settings look
-    navigationItem.title = "Moshxplore"
-    // Same close as every hub: the house white-chip ✕. (Not named `_close` — that selector
-    // collides with a private Apple API and App Store upload rejects it.)
-    navigationItem.rightBarButtonItem = moshNavChipBarItem(
-      icon: "xmark", target: self, action: #selector(_closeMoshxplore))
+
+    // Compact in-content header (no system nav bar) — the launcher / Moshtabs / Moshvault pattern, so
+    // the Mac window title bar stays as compact as the terminal and nothing jumps when Moshxplore opens.
+    // Title on the left, close ✕ top-right (the same spot as the button that opened it). Not named
+    // `_close` — that selector collides with a private Apple API and App Store upload rejects it.
+    let header = UIView()
+    header.translatesAutoresizingMaskIntoConstraints = false
+    let titleLabel = UILabel()
+    titleLabel.text = "Moshxplore"
+    titleLabel.font = .systemFont(ofSize: 17, weight: .semibold)
+    titleLabel.textColor = .label
+    titleLabel.translatesAutoresizingMaskIntoConstraints = false
+    let close = moshkeyRoundButton(diameter: 34)
+    close.layer.shadowOpacity = 0
+    close.setMoshIcon("xmark", pointSize: 15, weight: .semibold)
+    close.addTarget(self, action: #selector(_closeMoshxplore), for: .touchUpInside)
+    close.translatesAutoresizingMaskIntoConstraints = false
+    header.addSubview(titleLabel)
+    header.addSubview(close)
+    view.addSubview(header)
 
     explorer.savedHosts = { [weak self] in self?.space?.moshroomSavedHostAliases ?? [] }
     explorer.device = { [weak self] in self?.space?.currentDevice }
@@ -1684,9 +1699,18 @@ final class MoshxploreController: UIViewController {
     view.addSubview(explorer)
 
     NSLayoutConstraint.activate([
-      // The explorer owns the whole screen; each step manages its own margins. The bottom rides
-      // the keyboard guide, so the inline editor is exactly the space above the keyboard.
-      explorer.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+      header.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+      header.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
+      header.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
+      header.heightAnchor.constraint(equalToConstant: 58),
+      titleLabel.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: 16),
+      titleLabel.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+      close.trailingAnchor.constraint(equalTo: header.trailingAnchor, constant: -16),
+      close.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+
+      // The explorer owns the rest of the screen below the header; each step manages its own margins.
+      // The bottom rides the keyboard guide, so the inline editor is exactly the space above the keyboard.
+      explorer.topAnchor.constraint(equalTo: header.bottomAnchor),
       explorer.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
       explorer.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
       explorer.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor),
@@ -1701,6 +1725,13 @@ final class MoshxploreController: UIViewController {
     }
 
     explorer.present(preferredHost: preferredHost)
+  }
+
+  override func viewWillAppear(_ animated: Bool) {
+    super.viewWillAppear(animated)
+    // No system nav bar: our in-content header carries the title + close, and hiding the bar keeps
+    // the Mac title bar compact (see the header note in viewDidLoad).
+    navigationController?.setNavigationBarHidden(true, animated: false)
   }
 
   deinit {
