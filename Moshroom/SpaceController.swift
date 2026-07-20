@@ -177,7 +177,12 @@ class SpaceController: UIViewController {
   // dismisses. Restore what it owns here instead: first responder for hardware keys, and the
   // quick-connect reveal. (Idempotent, so incidental dismissals — alerts, menus — are harmless.)
   override func dismiss(animated flag: Bool, completion: (() -> Void)? = nil) {
-    super.dismiss(animated: flag) { [weak self] in
+    // Moshroom's full-screen surfaces (Settings, Moshxplore, Moshtabs, Moshvault, launcher, composer)
+    // are all .overFullScreen — dismiss them INSTANTLY, never with the slide. The animated slide made
+    // the floating white close chip look like it was flying over the terminal mid-transition. Anything
+    // else routed here (alerts, sheets, system pickers) keeps its normal animation.
+    let animated = (presentedViewController?.modalPresentationStyle == .overFullScreen) ? false : flag
+    super.dismiss(animated: animated) { [weak self] in
       completion?()
       guard let self, Moshroom.scratchOnly else { return }
       self.becomeFirstResponder()
@@ -750,9 +755,28 @@ extension SpaceController {
     case .windowClose: _closeWindowAction()
     case .windowFocusOther: _focusOtherWindowAction()
     case .windowNew: _newWindowAction()
-    case .clipboardCopy: KBTracker.shared.input?.copy(self)
-    case .clipboardCopyRaw: KBTracker.shared.input?.copyRaw(self)
-    case .clipboardPaste: KBTracker.shared.input?.paste(self)
+    // The Edit-menu clipboard key commands (Cmd+C / Cmd+Shift+C / Cmd+V) are registered app-wide with
+    // priority over the system, so they fire here even when a modal (the Moshkitor composer, Settings,
+    // Moshxplore…) is on screen — which used to silently drive the *terminal's* copy/paste behind it.
+    // Route them to what's actually in front instead: the composer, another modal's text field, or —
+    // with nothing presented — the terminal transcript.
+    case .clipboardCopy:
+      if presentedViewController != nil { _forwardEditAction(#selector(UIResponder.copy(_:))) }
+      else { KBTracker.shared.input?.copy(self) }
+    case .clipboardCopyRaw:
+      if presentedViewController != nil { _forwardEditAction(#selector(UIResponder.copy(_:))) }
+      else { KBTracker.shared.input?.copyRaw(self) }
+    case .clipboardPaste:
+      if let composer = _frontComposer {
+        MoshLog.log("paste", "Cmd+V → composer.smartPaste (composer in front)")
+        composer.smartPaste()
+      } else if presentedViewController != nil {
+        MoshLog.log("paste", "Cmd+V → forward paste: to first responder (other modal in front)")
+        _forwardEditAction(#selector(UIResponder.paste(_:)))
+      } else {
+        MoshLog.log("paste", "Cmd+V → open Moshkitor + paste (no modal in front)")
+        openMoshkitorPasting()
+      }
     case .selectionGoogle: KBTracker.shared.input?.googleSelection(self)
     case .selectionStackOverflow: KBTracker.shared.input?.soSelection(self)
     case .selectionShare: KBTracker.shared.input?.shareSelection(self)
@@ -763,7 +787,25 @@ extension SpaceController {
 
     }
   }
-  
+
+  // The Moshkitor composer if it's the frontmost modal AND directly interactive (no picker/snips of
+  // its own on top). nil otherwise — so a clipboard command falls through to the standard responder
+  // chain or the terminal, never into a composer that a sub-sheet has covered.
+  private var _frontComposer: MoshkitorComposer? {
+    guard let nav = presentedViewController as? UINavigationController,
+          let composer = nav.viewControllers.first as? MoshkitorComposer,
+          composer.presentedViewController == nil else { return nil }
+    return composer
+  }
+
+  // Send a standard edit action (copy:/paste:) to the first responder — i.e. let whatever text field
+  // is in front handle it — instead of the terminal. `to: nil` walks the responder chain from the
+  // first responder up; unhandled actions are simply dropped (better than mis-pasting into the shell).
+  @discardableResult
+  private func _forwardEditAction(_ action: Selector) -> Bool {
+    UIApplication.shared.sendAction(action, to: nil, from: self, for: nil)
+  }
+
   @objc func focusOnShellAction() {
     KBTracker.shared.input?.reset()
     _focusOnShell()
@@ -910,7 +952,7 @@ extension SpaceController {
         [weak self] in self?.focusOnShellAction()
       })
       navCtrl.setViewControllers([s], animated: false)
-      self.present(navCtrl, animated: true, completion: nil)
+      self.present(navCtrl, animated: false, completion: nil)   // instant, consistent with dismiss
     }
   }
   

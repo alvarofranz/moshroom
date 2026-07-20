@@ -53,6 +53,9 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
 
   // Optional text to seed the composer with (used by the hardware-keyboard hand-off).
   private let seed: String
+  // Set when Cmd+V opened the composer on a closed editor: drop the clipboard in once, on first
+  // appearance (see viewDidAppear). One-shot so returning from a sub-picker never re-pastes.
+  private var _pastesOnAppear: Bool
 
   // Suggestions strip (command completions), shown above the control bar only when non-empty.
   private let suggestionsScroll = UIScrollView()
@@ -65,10 +68,11 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
   // `ssh`/`mosh` connect and record its host as the next upload target.
   var onSend: ((String) -> Void)?
 
-  init(device: TermDevice, seed: String = "", connectedHost: String? = nil) {
+  init(device: TermDevice, seed: String = "", connectedHost: String? = nil, pasteOnAppear: Bool = false) {
     self.device = device
     self.seed = seed
     self.connectedHost = connectedHost
+    self._pastesOnAppear = pasteOnAppear
     super.init(nibName: nil, bundle: nil)
   }
 
@@ -203,6 +207,12 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
     // after viewWillDisappear already set isClosing — clear it so sends/uploads aren't stuck blocked.
     isClosing = false
     textView.becomeFirstResponder()
+    // Cmd+V opened us on a closed editor — drop the clipboard in now that we're on screen and first
+    // responder. One-shot: a return from a sub-picker must not paste again.
+    if _pastesOnAppear {
+      _pastesOnAppear = false
+      smartPaste()
+    }
   }
 
   override func viewWillDisappear(_ animated: Bool) {
@@ -230,8 +240,9 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
     let back = _barButton(systemImage: "chevron.left", action: #selector(close))
 
     var rightItems: [UIView] = [_barButton(systemImage: "chevron.left.forwardslash.chevron.right", action: #selector(openSnips))]
-    if UIPasteboard.general.hasStrings {
-      rightItems.append(_barButton(systemImage: "doc.on.clipboard", action: #selector(pasteClipboard)))
+    let pb = UIPasteboard.general
+    if pb.hasStrings || pb.hasImages || pb.hasURLs {
+      rightItems.append(_barButton(systemImage: "doc.on.clipboard", action: #selector(smartPaste)))
     }
     rightItems.append(_barButton(systemImage: "paperclip", action: #selector(openMoshdrop)))
     rightItems.append(_barButton(systemImage: "paperplane.fill", action: #selector(sendAndClose)))
@@ -271,10 +282,49 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
     dismiss(animated: true)
   }
 
-  @objc private func pasteClipboard() {
-    guard let s = UIPasteboard.general.string, !s.isEmpty else { return }
+  // Paste, smart about the clipboard. An image or a real (agent-readable) file becomes an inline
+  // Moshdrop attachment — dropped at the cursor exactly like the paperclip, uploaded on send;
+  // anything else pastes as text. This is BOTH the control-bar paste button and where SpaceController
+  // routes Cmd+V while the composer is up (the Edit-menu key command would otherwise paste into the
+  // hidden terminal behind us — see SpaceController._onCommand). All local: nothing uploads until send.
+  @objc func smartPaste() {
+    guard !isSending, isViewLoaded, presentedViewController == nil else {
+      MoshLog.log("paste", "smartPaste skipped (sending=\(isSending) loaded=\(isViewLoaded) subPresented=\(presentedViewController != nil))")
+      return
+    }
     if !textView.isFirstResponder { textView.becomeFirstResponder() }
-    textView.insertText(s)
+
+    let pb = UIPasteboard.general
+    MoshLog.log("paste", "smartPaste: hasImages=\(pb.hasImages) hasStrings=\(pb.hasStrings) hasURLs=\(pb.hasURLs)")
+
+    // An image / file on the clipboard → inline attachment. Materialized into a temp file we own.
+    if let (url, name) = Moshdrop.clipboardAttachable() {
+      defer { try? FileManager.default.removeItem(at: url) }
+      switch Moshdrop.makeAttachment(localURL: url, displayName: name) {
+      case .success(let attachment):
+        let attrs = try? FileManager.default.attributesOfItem(atPath: attachment.localURL.path)
+        let bytes = (attrs?[.size] as? Int) ?? -1
+        MoshLog.log("paste", "attached inline: name=\(attachment.displayName) image=\(attachment.isImage) staged=\(bytes)B")
+        _insertAttachment(attachment)
+        return
+      case .failure(.notReadable):
+        MoshLog.log("paste", "attachable rejected (not agent-readable): \(name)")
+        _composerAlert(title: "Can't attach that",
+                       message: "Moshdrop takes images, PDFs and text/code files — what your agent can read. Not video, audio, archives or apps.")
+        return
+      case .failure(.failed):
+        MoshLog.log("paste", "attach staging failed for \(name) → falling back to text")
+        break   // staging hiccup — fall through and at least paste any text that's there
+      }
+    }
+
+    // Plain text → insert at the cursor. (Length only — never the pasted content.)
+    if let s = UIPasteboard.general.string, !s.isEmpty {
+      MoshLog.log("paste", "inserted text (\(s.count) chars)")
+      textView.insertText(s)
+    } else {
+      MoshLog.log("paste", "nothing pasteable")
+    }
   }
 
   @objc private func openSnips() {
@@ -1000,11 +1050,13 @@ extension SpaceController {
   // Opened by the Moshkeys compose button, by the hardware keyboard once typing exceeds a
   // single probe keystroke, or by a tap on the terminal's input line (the cursor row — see
   // the tap dispatch in WKWebView.swift/term.js). Long-press select/copy is untouched.
-  func openMoshkitor(seed: String = "") {
+  func openMoshkitor(seed: String = "", pasteOnOpen: Bool = false) {
     dismissMoshnector()
     view.subviews.compactMap({ $0 as? MoshkeysBar }).first?.closeIfOpen()
     guard presentedViewController == nil, let device = currentDevice else { return }
-    let composer = MoshkitorComposer(device: device, seed: seed, connectedHost: currentTerm()?.moshroomConnectedHost)
+    let composer = MoshkitorComposer(device: device, seed: seed,
+                                     connectedHost: currentTerm()?.moshroomConnectedHost,
+                                     pasteOnAppear: pasteOnOpen)
     composer.onSend = { [weak self] command in
       // The user ran something in this tab → the terminal now has content; don't pop Quick Connect back.
       self?.currentTerm()?.moshroomUserHasInteracted = true
@@ -1019,10 +1071,20 @@ extension SpaceController {
     // box that no responder dance reliably heals (reproduced live 2026-07-10). Same look, and
     // SpaceController's dismiss override restores what viewDidAppear no longer re-fires for.
     nav.modalPresentationStyle = .overFullScreen
-    // When the hardware keyboard opened it (seed present), skip the present animation so the editor
-    // is on screen and first responder immediately — the ~0.3s slide otherwise leaves a window where
-    // the next keystroke lands with no responder and Mac Catalyst beeps (and drops the key).
-    present(nav, animated: seed.isEmpty)
+    // Always present instantly (no slide) — consistent with every other full-screen surface and with
+    // the instant dismiss (see SpaceController.dismiss). This also keeps the old hardware-keyboard
+    // guarantee: with a seed, the editor must be on screen and first responder immediately, or the
+    // next keystroke lands with no responder and Mac Catalyst beeps (and drops the key).
+    present(nav, animated: false)
+  }
+
+  // Cmd+V while no composer is up: everything the user SENDS goes through Moshkitor, so a paste
+  // opens the composer and drops the clipboard in (see viewDidAppear → smartPaste), rather than
+  // injecting into the read-only transcript. No-op on an empty clipboard so a stray Cmd+V is quiet.
+  func openMoshkitorPasting() {
+    let pb = UIPasteboard.general
+    guard pb.hasStrings || pb.hasImages || pb.hasURLs else { return }
+    openMoshkitor(pasteOnOpen: true)
   }
 
   // Settings = the built-in config screen (same as the `config` command), so everything

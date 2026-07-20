@@ -188,13 +188,18 @@ struct SettingsView: View {
         } details: {
           SupportView()
         }
+
+        ShareLink(item: MoshLog.fileURL) {
+          Label("Export Logs", systemImage: "square.and.arrow.up")
+        }
       } header: {
         Text("About & Support")
       } footer: {
-        Text("The app version, bundled licenses, and the project's home on GitHub.")
+        Text("The app version, bundled licenses, and the project's home on GitHub. Export Logs shares Moshroom's on-device diagnostic log (no passwords or message contents) to help troubleshoot.")
       }
     }
     .onAppear {
+      MoshLog.ensureFileExists()   // so Export Logs always has a real file to share
       _iCloudSyncOn = MoshroomDefaults.isICloudSyncEnabled()
       _requireBiometric = MoshroomDefaults.isRequireBiometricUnlock()
       _defaultUser = MoshroomDefaults.defaultUserName() ?? ""

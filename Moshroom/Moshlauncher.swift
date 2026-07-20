@@ -180,7 +180,7 @@ extension SpaceController {
     let ctrl = MoshlauncherController()
     ctrl.space = self
     ctrl.modalPresentationStyle = .overFullScreen
-    present(ctrl, animated: true)
+    present(ctrl, animated: false)   // instant, no slide (see SpaceController.dismiss)
   }
 
   // Dismiss the launcher, then run `then` (used to open a chosen destination once the launcher is

@@ -158,6 +158,11 @@ function term_setupDefaults() {
   // leaked literal "[A"/"[B" onto the command line. TUIs that want scroll ask for mouse
   // reporting and get real wheel reports; that path does not depend on this preference.
   term_set('scroll-wheel-may-send-arrow-keys', false);
+  // A gentle bump to the client-side scrollback scroll speed (hterm's own pixel-delta wheel path,
+  // the instant local scroll on the normal screen). Default is 1; 2 is noticeably less sluggish
+  // without running away. Kept modest on purpose. Does not touch the alt-screen TUI mouse-report
+  // path (that scroll lives on the remote, over the network).
+  term_set('scroll-wheel-move-multiplier', 2);
 }
 
 function term_processKB(str) {

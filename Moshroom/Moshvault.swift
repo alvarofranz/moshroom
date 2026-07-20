@@ -62,7 +62,7 @@ extension SpaceController {
     ctrl.space = self
     // .overFullScreen keeps the terminal in the window (see openMoshkitor).
     ctrl.modalPresentationStyle = .overFullScreen
-    present(ctrl, animated: true)
+    present(ctrl, animated: false)   // instant, no slide (see SpaceController.dismiss)
   }
 
   func dismissMoshvault() {

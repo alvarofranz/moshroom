@@ -678,7 +678,7 @@ extension SpaceController {
     let nav = UINavigationController(rootViewController: ctrl)
     // .overFullScreen keeps the terminal in the window (see openMoshkitor).
     nav.modalPresentationStyle = .overFullScreen
-    present(nav, animated: true)
+    present(nav, animated: false)   // instant, no slide (see SpaceController.dismiss)
   }
 }
 

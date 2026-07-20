@@ -298,6 +298,73 @@ enum Moshdrop {
       if let mod, mod < cutoff { try? fm.removeItem(at: item) }
     }
   }
+
+  enum AttachError: Error {
+    case notReadable   // not something the agent can read (video/audio/archive/app/…)
+    case failed(Error) // staging/copy failure
+  }
+
+  /// Turn a local file into a staged, ready-to-show inline attachment: the same image compression,
+  /// md5-slug staging and agent-readable gate the picker runs — pure model work, no UI. Shared by the
+  /// Photo/File/Clipboard picker and the composer's Cmd+V smart paste, so there is one code path.
+  static func makeAttachment(localURL: URL, displayName: String) -> Result<MoshdropAttachment, AttachError> {
+    guard isAgentReadable(localURL) else { return .failure(.notReadable) }
+
+    // Images are downsized + re-encoded to JPEG before staging; non-images stage byte-for-byte.
+    let source = compressedImage(at: localURL) ?? localURL
+
+    // Stage under a clean md5 slug name so `~/.moshroom/uploads/` never collects weird filenames.
+    let remoteName = slugName(for: source)
+    let staged = stagingDir().appendingPathComponent(remoteName)
+    do {
+      try? FileManager.default.removeItem(at: staged)
+      try FileManager.default.copyItem(at: source, to: staged)
+    } catch {
+      if source != localURL { try? FileManager.default.removeItem(at: source) }
+      return .failure(.failed(error))
+    }
+    if source != localURL { try? FileManager.default.removeItem(at: source) }   // drop the temp JPEG
+
+    let isImage = (UTType(filenameExtension: staged.pathExtension)?.conforms(to: .image)) ?? false
+    return .success(MoshdropAttachment(localURL: staged, displayName: displayName, isImage: isImage, remoteName: remoteName))
+  }
+
+  /// If the clipboard holds an image or a real file, materialize it into a temp file *we own* and
+  /// return it with a display name; nil when the clipboard is text-only or empty. The caller deletes
+  /// the temp once it has built the attachment. A file (e.g. copied in Finder / Files) is preferred
+  /// over raw image data — it keeps the true name and extension; a screenshot / "Copy Image" with no
+  /// backing file is written out as a PNG. Synchronous; call on the main thread. Never throws: a file
+  /// the sandbox can't read simply falls through to the image/text branch, so paste degrades cleanly.
+  static func clipboardAttachable() -> (url: URL, displayName: String)? {
+    let pb = UIPasteboard.general
+
+    // 1) A real file URL on the pasteboard (public.file-url), stored as its URL string.
+    if pb.contains(pasteboardTypes: [UTType.fileURL.identifier]),
+       let data = pb.data(forPasteboardType: UTType.fileURL.identifier),
+       let str = String(data: data, encoding: .utf8),
+       let fileURL = URL(string: str), fileURL.isFileURL {
+      let scoped = fileURL.startAccessingSecurityScopedResource()
+      defer { if scoped { fileURL.stopAccessingSecurityScopedResource() } }
+      let name = fileURL.lastPathComponent
+      let temp = FileManager.default.temporaryDirectory
+        .appendingPathComponent("paste-\(UUID().uuidString)-\(name)")
+      if (try? FileManager.default.copyItem(at: fileURL, to: temp)) != nil {
+        return (temp, name)
+      }
+      // couldn't read it (sandbox / promise) — fall through to image/text
+    }
+
+    // 2) Raw image data (screenshot, "Copy Image") — write a PNG we own.
+    if pb.hasImages, let image = pb.image, let png = image.pngData() {
+      let temp = FileManager.default.temporaryDirectory
+        .appendingPathComponent("paste-\(UUID().uuidString).png")
+      if (try? png.write(to: temp)) != nil {
+        return (temp, "clipboard.png")
+      }
+    }
+
+    return nil
+  }
 }
 
 // MARK: - Picker (Photos / Files / Clipboard → inline attachment, no upload)
@@ -374,35 +441,19 @@ final class MoshdropPicker: NSObject {
   // MARK: Produce the inline attachment
 
   private func _emit(localURL: URL, displayName: String) {
-    // Only the things the agent can actually read (images / PDFs / text & code). No video, audio,
-    // archives, apps or other binaries.
-    guard Moshdrop.isAgentReadable(localURL) else {
+    switch Moshdrop.makeAttachment(localURL: localURL, displayName: displayName) {
+    case .success(let attachment):
+      onPicked(attachment)
+      finish()
+    case .failure(.notReadable):
+      // Only the things the agent can actually read (images / PDFs / text & code). No video, audio,
+      // archives, apps or other binaries.
       presenter?.moshdropAlert(title: "Can't attach that",
                                message: "Moshdrop takes images, PDFs and text/code files — what your agent can read. Not video, audio, archives or apps.")
-      finish(); return
+      finish()
+    case .failure(.failed(let error)):
+      _fail(error)
     }
-
-    // Images are downsized + re-encoded to JPEG before anything is staged or uploaded, so a multi-MB
-    // photo travels as a couple hundred KB (and HEIC becomes a format the agent can read). Non-images
-    // (PDF, text, code) stage byte-for-byte.
-    let source = Moshdrop.compressedImage(at: localURL) ?? localURL
-
-    // Stage under a clean md5 slug name so `~/.moshroom/uploads/` never collects weird filenames.
-    let remoteName = Moshdrop.slugName(for: source)
-    let staged = Moshdrop.stagingDir().appendingPathComponent(remoteName)
-    do {
-      try? FileManager.default.removeItem(at: staged)
-      try FileManager.default.copyItem(at: source, to: staged)
-    } catch {
-      if source != localURL { try? FileManager.default.removeItem(at: source) }
-      _fail(error); return
-    }
-    if source != localURL { try? FileManager.default.removeItem(at: source) }   // drop the temp JPEG
-
-    let isImage = (UTType(filenameExtension: staged.pathExtension)?.conforms(to: .image)) ?? false
-    let attachment = MoshdropAttachment(localURL: staged, displayName: displayName, isImage: isImage, remoteName: remoteName)
-    onPicked(attachment)
-    finish()
   }
 
   private func _fail(_ error: Error) {
