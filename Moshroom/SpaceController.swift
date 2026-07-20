@@ -181,7 +181,9 @@ class SpaceController: UIViewController {
     // are all .overFullScreen — dismiss them INSTANTLY, never with the slide. The animated slide made
     // the floating white close chip look like it was flying over the terminal mid-transition. Anything
     // else routed here (alerts, sheets, system pickers) keeps its normal animation.
-    let animated = (presentedViewController?.modalPresentationStyle == .overFullScreen) ? false : flag
+    let overFull = presentedViewController?.modalPresentationStyle == .overFullScreen
+    let animated = overFull ? false : flag
+    MoshLog.log("modal", "SpaceController.dismiss invoked (overFullScreen=\(overFull) flag=\(flag) → animated=\(animated))")
     super.dismiss(animated: animated) { [weak self] in
       completion?()
       guard let self, Moshroom.scratchOnly else { return }

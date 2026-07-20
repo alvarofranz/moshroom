@@ -1736,7 +1736,7 @@ extension SpaceController {
   func dismissMoshxplore() {
     guard let ctrl = moshxploreController else { return }
     ctrl.explorer.teardown()
-    ctrl.navigationController?.dismiss(animated: true) { [weak self] in
+    ctrl.navigationController?.dismiss(animated: false) { [weak self] in
       guard let self, Moshroom.scratchOnly else { return }
       // The inline editor may have taken the first responder — reclaim it so hardware-keyboard
       // routing keeps reaching SpaceController (same restore Moshkitor does), then let Quick

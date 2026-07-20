@@ -67,7 +67,7 @@ extension SpaceController {
 
   func dismissMoshvault() {
     guard let ctrl = moshvaultController else { return }
-    ctrl.dismiss(animated: true) { [weak self] in
+    ctrl.dismiss(animated: false) { [weak self] in
       guard let self, Moshroom.scratchOnly else { return }
       // Reclaim first responder for hardware-keyboard routing (same restore Moshxplore/Moshkitor do),
       // then let Quick Connect reappear if this is a fresh idle prompt.

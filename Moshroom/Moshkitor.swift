@@ -279,7 +279,7 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
   // MARK: Actions
 
   @objc private func close() {
-    dismiss(animated: true)
+    dismiss(animated: false)   // instant, no slide (see SpaceController.dismiss)
   }
 
   // Paste, smart about the clipboard. An image or a real (agent-readable) file becomes an inline
@@ -410,7 +410,7 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
     // Trail the Enter so it lands after the paste (outside the bracketed-paste end marker) and the
     // agent doesn't read it as part of the same burst.
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { device?.write("\r") }
-    dismiss(animated: true)
+    dismiss(animated: false)   // instant, no slide (see SpaceController.dismiss)
   }
 
   // The command as the agent will read it: typed text verbatim, each inline attachment swapped

@@ -659,7 +659,7 @@ final class MoshtabsController: UIViewController {
 
   private func _dismiss() {
     let space = self.space
-    navigationController?.dismiss(animated: true) {
+    navigationController?.dismiss(animated: false) {
       guard let space, Moshroom.scratchOnly else { return }
       space.becomeFirstResponder()
       space.showMoshnectorIfIdle()

@@ -188,7 +188,7 @@ extension SpaceController {
   // responder + Quick Connect like the other hubs do.
   func dismissMoshlauncher(then: (() -> Void)? = nil) {
     guard let ctrl = moshlauncherController else { then?(); return }
-    ctrl.dismiss(animated: true) { [weak self] in
+    ctrl.dismiss(animated: false) { [weak self] in
       guard let self else { return }
       if let then {
         then()

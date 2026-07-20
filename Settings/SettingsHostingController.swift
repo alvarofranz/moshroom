@@ -54,7 +54,7 @@ class SettingsHostingController: UIHostingController<NavView<SettingsView>>, UIA
 
   // Not `_close`: that selector name collides with a private Apple API and App Store upload rejects it.
   @objc private func _closeSettings() {
-    dismiss(animated: true) { [onDismiss] in onDismiss?() }
+    dismiss(animated: false) { [onDismiss] in onDismiss?() }   // instant, no slide (house style)
   }
 
   // Delegate method called when the modal is dismissed
