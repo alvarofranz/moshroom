@@ -151,45 +151,53 @@ struct MoshvaultRootView: View {
 struct MoshSearchList<Rows: View>: View {
   @Binding var query: String
   var prompt: String
+  var showSearch: Bool   // only worth a search bar past a threshold (see callers: count > 10)
   var noMatches: Bool
   @ViewBuilder var rows: () -> Rows
   @FocusState private var focused: Bool
 
   var body: some View {
     VStack(spacing: 0) {
-      List { rows() }
+      // Rows sit on the SAME fill as the docked search (transparent rows + one card background), so
+      // the list and the search read as one continuous surface — no black-rows-over-a-grey-box mismatch.
+      List { rows().listRowBackground(Color.clear) }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)   // the card (below) draws the fill, not the list
-        .overlay { if noMatches { MoshNoMatches() } }
+        .overlay { if showSearch && noMatches { MoshNoMatches() } }
 
-      Divider()   // the seam between the list and the docked search
-      HStack(spacing: 8) {
-        Image(systemName: "magnifyingglass").foregroundColor(.secondary)
-        TextField(prompt, text: $query)
-          .textFieldStyle(.plain)
-          .autocorrectionDisabled()
-          .textInputAutocapitalization(.never)
-          .submitLabel(.search)
-          .focused($focused)
-        if !query.isEmpty {
-          Button { query = "" } label: {
-            Image(systemName: "xmark.circle.fill").foregroundColor(.secondary)
+      if showSearch {
+        Divider()   // the seam between the list and the docked search
+        HStack(spacing: 8) {
+          Image(systemName: "magnifyingglass").foregroundColor(.secondary)
+          TextField(prompt, text: $query)
+            .textFieldStyle(.plain)
+            .autocorrectionDisabled()
+            .textInputAutocapitalization(.never)
+            .submitLabel(.search)
+            .focused($focused)
+          if !query.isEmpty {
+            Button { query = "" } label: {
+              Image(systemName: "xmark.circle.fill").foregroundColor(.secondary)
+            }
+            .buttonStyle(.plain)
+            .transition(.opacity)
           }
-          .buttonStyle(.plain)
-          .transition(.opacity)
         }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
       }
-      .padding(.horizontal, 14)
-      .padding(.vertical, 12)
     }
-    .background(Color(.secondarySystemGroupedBackground))
+    // One background for the whole thing — the rows, the empty space, and the docked search all share
+    // it (the grouped background the surface already sits on), so there is no lighter "box" behind the
+    // search or under a short list. Consistent, edge to edge.
+    .background(Color(.systemGroupedBackground))
     .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
     .padding(.horizontal, 16)
     .padding(.top, 4)
     .padding(.bottom, 12)
     .moshReadableWidth()
     .animation(.easeInOut(duration: 0.15), value: query.isEmpty)
-    .onAppear { DispatchQueue.main.async { focused = true } }
+    .onAppear { if showSearch { DispatchQueue.main.async { focused = true } } }
   }
 }
 
@@ -311,7 +319,7 @@ struct MoshvaultPasswordsView: View {
           message: "Keep your service logins here — service, username, email, password, notes and URL. Everything is stored in your iCloud Keychain, end-to-end encrypted, and follows your devices when iCloud sync is on."
         )
       } else {
-        MoshSearchList(query: $query, prompt: "Search passwords", noMatches: filtered.isEmpty) {
+        MoshSearchList(query: $query, prompt: "Search passwords", showSearch: entries.count > 10, noMatches: filtered.isEmpty) {
           ForEach(filtered) { entry in
             Button { onEdit(entry) } label: {
               VStack(alignment: .leading, spacing: 2) {
@@ -461,7 +469,7 @@ struct MoshvaultTOTPView: View {
           message: "Add your two-factor (2FA) codes here. Scan a QR code, migrate from Google Authenticator, or enter a setup key by hand. Codes are generated on-device and the accounts sync through your iCloud Keychain."
         )
       } else {
-        MoshSearchList(query: $query, prompt: "Search codes", noMatches: filtered.isEmpty) {
+        MoshSearchList(query: $query, prompt: "Search codes", showSearch: accounts.count > 10, noMatches: filtered.isEmpty) {
           if let banner {
             Text(banner).font(.footnote).foregroundColor(.secondary)
           }

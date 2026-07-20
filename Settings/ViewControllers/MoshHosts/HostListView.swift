@@ -105,7 +105,7 @@ struct HostListView: View {
       } else {
         // Search docked at the bottom (not in the nav-bar drawer), the same one-card look and
         // autofocus as Moshvault's Passwords / 2FA. No-matches shows in place so the search stays put.
-        MoshSearchList(query: $_state.filterQuery, prompt: "Search hosts", noMatches: _state.filteredList.isEmpty) {
+        MoshSearchList(query: $_state.filterQuery, prompt: "Search hosts", showSearch: _state.list.count > 10, noMatches: _state.filteredList.isEmpty) {
           ForEach(Array(_state.filteredList.enumerated()), id: \.element.alias) { index, card in
             HostRow(card: card, reloadList: _state.reloadHosts)
               .contextMenu(menuItems: {
