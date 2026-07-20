@@ -1738,7 +1738,12 @@ final class MoshxploreController: UIViewController {
     hostsObservers.forEach { NotificationCenter.default.removeObserver($0) }
   }
 
-  @objc private func _closeMoshxplore() { space?.dismissMoshxplore() }
+  // Tear down the SSH session, then dismiss the whole modal stack (launcher + Moshxplore) back to
+  // the terminal in one shot — no flash. (dismissMoshxplore stays for the tab-switch teardown path.)
+  @objc private func _closeMoshxplore() {
+    explorer.teardown()
+    space?.dismiss(animated: false)
+  }
 }
 
 extension SpaceController {
@@ -1752,7 +1757,8 @@ extension SpaceController {
   // Open Moshxplore full screen over the current tab. Defaults to the tab's connected host (if
   // it's a saved one) so a connected session browses itself with one tap; else the host picker.
   func openMoshxplore() {
-    guard presentedViewController == nil else { return }
+    let presenter = moshroomTopPresenter   // stack over the launcher (no dismiss-then-present flash)
+    guard presenter.presentedViewController == nil else { return }
     dismissMoshnector()
     view.subviews.compactMap({ $0 as? MoshkeysBar }).first?.closeIfOpen()
     let ctrl = MoshxploreController()
@@ -1761,7 +1767,7 @@ extension SpaceController {
     let nav = UINavigationController(rootViewController: ctrl)
     // .overFullScreen keeps the terminal in the window (see openMoshkitor).
     nav.modalPresentationStyle = .overFullScreen
-    present(nav, animated: false)   // instant, no slide (see SpaceController.dismiss)
+    presenter.present(nav, animated: false)   // instant, no slide (see SpaceController.dismiss)
   }
 
   func dismissMoshxplore() {

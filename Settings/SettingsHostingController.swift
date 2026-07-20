@@ -25,12 +25,12 @@ import SwiftUI
 import UIKit
 
 
-class SettingsHostingController: UIHostingController<NavView<SettingsView>>, UIAdaptivePresentationControllerDelegate {
-  private let onDismiss: (() -> Void)?
+class SettingsHostingController: UIHostingController<NavView<SettingsView>> {
+  private let onClose: () -> Void
   private let navController: UINavigationController
 
-  private init(navController: UINavigationController, onDismiss: (() -> Void)? = nil) {
-    self.onDismiss = onDismiss
+  private init(navController: UINavigationController, onClose: @escaping () -> Void) {
+    self.onClose = onClose
     self.navController = navController
 
     let rootView = NavView(navController: navController) {
@@ -38,8 +38,6 @@ class SettingsHostingController: UIHostingController<NavView<SettingsView>>, UIA
     }
 
     super.init(rootView: rootView)
-
-    navController.presentationController?.delegate = self
   }
 
   @MainActor @objc required dynamic init?(coder aDecoder: NSCoder) {
@@ -49,24 +47,15 @@ class SettingsHostingController: UIHostingController<NavView<SettingsView>>, UIA
   override func viewDidLoad() {
     super.viewDidLoad()
 
-    // No system nav bar / UIKit close button: Settings now draws its own in-content header (the house
-    // ✕ lives there), so the Mac window title bar stays compact and consistent with every other hub.
+    // No system nav bar / UIKit close button: Settings draws its own in-content header (the house ✕
+    // lives there). Closing dismisses the whole modal stack (launcher + Settings) back to the terminal
+    // in one shot, no flash — `onClose` is wired to SpaceController.dismiss in showConfigAction.
     rootView = NavView(navController: navController) {
-      SettingsView(onClose: { [weak self] in self?._closeSettings() })
+      SettingsView(onClose: { [weak self] in self?.onClose() })
     }
   }
 
-  // Not `_close`: that selector name collides with a private Apple API and App Store upload rejects it.
-  @objc private func _closeSettings() {
-    dismiss(animated: false) { [onDismiss] in onDismiss?() }   // instant, no slide (house style)
-  }
-
-  // Delegate method called when the modal is dismissed
-  func presentationControllerDidDismiss(_ presentationController: UIPresentationController) {
-    onDismiss?()
-  }
-
-  static func createSettings(nav: UINavigationController, onDismiss: (() -> Void)? = nil) -> UIViewController {
-    return SettingsHostingController(navController: nav, onDismiss: onDismiss)
+  static func createSettings(nav: UINavigationController, onClose: @escaping () -> Void) -> UIViewController {
+    return SettingsHostingController(navController: nav, onClose: onClose)
   }
 }

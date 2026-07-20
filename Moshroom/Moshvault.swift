@@ -33,7 +33,7 @@ final class MoshvaultController: UIHostingController<MoshvaultRootView> {
   init() {
     super.init(rootView: MoshvaultRootView(onClose: {}))
     // The close handler needs `self`, so rebuild the root once it exists.
-    rootView = MoshvaultRootView(onClose: { [weak self] in self?.space?.dismissMoshvault() })
+    rootView = MoshvaultRootView(onClose: { [weak self] in self?.space?.dismiss(animated: false) })
   }
 
   @MainActor required dynamic init?(coder aDecoder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -55,14 +55,15 @@ extension SpaceController {
 
   // Open Moshvault full screen over the current tab. Works on any tab; needs no shell/connection.
   func openMoshvault() {
-    guard presentedViewController == nil else { return }
+    let presenter = moshroomTopPresenter   // stack over the launcher (no dismiss-then-present flash)
+    guard presenter.presentedViewController == nil else { return }
     dismissMoshnector()
     view.subviews.compactMap({ $0 as? MoshkeysBar }).first?.closeIfOpen()
     let ctrl = MoshvaultController()
     ctrl.space = self
     // .overFullScreen keeps the terminal in the window (see openMoshkitor).
     ctrl.modalPresentationStyle = .overFullScreen
-    present(ctrl, animated: false)   // instant, no slide (see SpaceController.dismiss)
+    presenter.present(ctrl, animated: false)   // instant, no slide (see SpaceController.dismiss)
   }
 
   func dismissMoshvault() {

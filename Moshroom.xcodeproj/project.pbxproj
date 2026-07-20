@@ -258,9 +258,7 @@
 		D2E66D142695B100007D42AA /* HostListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2E66D132695B100007D42AA /* HostListView.swift */; };
 		D2ED4A6F239BB12E000DC67F /* KeyCaptureView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2ED4A6E239BB12E000DC67F /* KeyCaptureView.swift */; };
 		D2F30EAD205009CD008C5F35 /* base64js.min.js in Resources */ = {isa = PBXBuildFile; fileRef = D2F30EAC205009CD008C5F35 /* base64js.min.js */; };
-		D2F330CA20A6CB840074ADD7 /* help.m in Sources */ = {isa = PBXBuildFile; fileRef = D2F330C920A6CB840074ADD7 /* help.m */; };
-		D2F330CC20A6D98C0074ADD7 /* config.m in Sources */ = {isa = PBXBuildFile; fileRef = D2F330CB20A6D98C0074ADD7 /* config.m */; };
-		D2F330D420A6F1DF0074ADD7 /* clear.m in Sources */ = {isa = PBXBuildFile; fileRef = D2F330D320A6F1DF0074ADD7 /* clear.m */; };
+		D2F330CA20A6CB840074ADD7 /* help.m in Sources */ = {isa = PBXBuildFile; fileRef = D2F330C920A6CB840074ADD7 /* help.m */; };		D2F330D420A6F1DF0074ADD7 /* clear.m in Sources */ = {isa = PBXBuildFile; fileRef = D2F330D320A6F1DF0074ADD7 /* clear.m */; };
 		D2F330D620A6F4F50074ADD7 /* history.m in Sources */ = {isa = PBXBuildFile; fileRef = D2F330D520A6F4F50074ADD7 /* history.m */; };
 		D33F2A08A55DBF275C4708B6 /* Moshvault.swift in Sources */ = {isa = PBXBuildFile; fileRef = CDCA0D3D2CAFCBE1A7627392 /* Moshvault.swift */; };
 		E0F1A2B3C4D5E6F700000002 /* SSHProgname.c in Sources */ = {isa = PBXBuildFile; fileRef = E0F1A2B3C4D5E6F700000001 /* SSHProgname.c */; };
@@ -595,9 +593,7 @@
 		D2E66D132695B100007D42AA /* HostListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostListView.swift; sourceTree = "<group>"; };
 		D2ED4A6E239BB12E000DC67F /* KeyCaptureView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyCaptureView.swift; sourceTree = "<group>"; };
 		D2F30EAC205009CD008C5F35 /* base64js.min.js */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.javascript; path = base64js.min.js; sourceTree = "<group>"; };
-		D2F330C920A6CB840074ADD7 /* help.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = help.m; sourceTree = "<group>"; };
-		D2F330CB20A6D98C0074ADD7 /* config.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = config.m; sourceTree = "<group>"; };
-		D2F330D320A6F1DF0074ADD7 /* clear.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = clear.m; sourceTree = "<group>"; };
+		D2F330C920A6CB840074ADD7 /* help.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = help.m; sourceTree = "<group>"; };		D2F330D320A6F1DF0074ADD7 /* clear.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = clear.m; sourceTree = "<group>"; };
 		D2F330D520A6F4F50074ADD7 /* history.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = history.m; sourceTree = "<group>"; };
 		D2F64C9425CA99AD00F2225D /* openssl.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = openssl.xcframework; path = xcfs/.build/artifacts/xcfs/openssl/openssl.xcframework; sourceTree = SOURCE_ROOT; };
 		D2F64C9525CA99AD00F2225D /* libssh2.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = libssh2.xcframework; path = xcfs/.build/artifacts/xcfs/libssh2/libssh2.xcframework; sourceTree = SOURCE_ROOT; };
@@ -1261,9 +1257,7 @@
 			children = (
 				BD33F77F2AAA426D00CD16EE /* mosh */,
 				07FAB8E925C8E6C500E1CC2C /* ssh */,
-				D2F330D320A6F1DF0074ADD7 /* clear.m */,
-				D2F330CB20A6D98C0074ADD7 /* config.m */,
-				D2F330C920A6CB840074ADD7 /* help.m */,
+				D2F330D320A6F1DF0074ADD7 /* clear.m */,				D2F330C920A6CB840074ADD7 /* help.m */,
 				D2F330D520A6F4F50074ADD7 /* history.m */,
 				D2AC674A22031EE600177BC5 /* openurl.h */,
 				D2AC6742220303D900177BC5 /* openurl.m */,
@@ -1772,9 +1766,7 @@
 				D248E67622DDDF130057FE67 /* UIStateRestorable.swift in Sources */,
 				C9B2E0341D6B612400B89F69 /* MoshTheme.m in Sources */,
 				D22277FF2A26204900D4C708 /* SnippetsListView.swift in Sources */,
-				D2C24415238E44AB0082C69C /* KeyCode.swift in Sources */,
-				D2F330CC20A6D98C0074ADD7 /* config.m in Sources */,
-				D241CBDB23040734003D64A5 /* KBAccessoryView.swift in Sources */,
+				D2C24415238E44AB0082C69C /* KeyCode.swift in Sources */,				D241CBDB23040734003D64A5 /* KBAccessoryView.swift in Sources */,
 				07FAB8F225C8E6C500E1CC2C /* ssh.swift in Sources */,
 				BD98AC84260BD8DC00B4E6A1 /* SSHAgentAdd.swift in Sources */,
 				BD55D6982F7D743500EE80EA /* TerminalStyle.swift in Sources */,

@@ -207,7 +207,6 @@ class KeyShortcut: ObservableObject, Codable, Identifiable {
       KeyShortcut(.zoomOut, .command, "-"),
       KeyShortcut(.zoomReset, .command, "="),
 
-      KeyShortcut(.configShow, .command, ","),
       Self.snippetsShowShortcut,
       Self.scratchShowShortcut
     ]

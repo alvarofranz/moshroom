@@ -58,15 +58,15 @@ final class MoshlauncherController: UIHostingController<MoshlauncherView> {
     [
       MoshLauncherItem(id: "moshxplore", icon: "folder", title: "Moshxplore",
                        subtitle: "Browse, preview and edit files on your servers.") { [weak space] in
-        space?.dismissMoshlauncher { space?.openMoshxplore() }
+        space?.openMoshxplore()
       },
       MoshLauncherItem(id: "moshvault", icon: "key.fill", title: "Moshvault",
                        subtitle: "Your passwords and 2FA codes, synced securely.") { [weak space] in
-        space?.dismissMoshlauncher { space?.openMoshvault() }
+        space?.openMoshvault()
       },
       MoshLauncherItem(id: "settings", icon: "gearshape.fill", title: "Settings",
                        subtitle: "Keys, hosts, terminal, security and iCloud sync.") { [weak space] in
-        space?.dismissMoshlauncher { space?.openSettings() }
+        space?.openSettings()
       },
     ]
   }
@@ -178,6 +178,15 @@ extension SpaceController {
 
   // True while the launcher is on screen — Quick Connect checks this so the two never overlap.
   var moshroomMoshlauncherIsOpen: Bool { moshlauncherController != nil }
+
+  // The topmost presented controller. A launcher destination is presented ON TOP of the launcher
+  // (over this) instead of dismissing the launcher first — dismiss-then-present flashed the terminal
+  // for a frame in between. Closing a destination dismisses the whole stack at once (see the closes).
+  var moshroomTopPresenter: UIViewController {
+    var vc: UIViewController = self
+    while let presented = vc.presentedViewController { vc = presented }
+    return vc
+  }
 
   // Open the launcher full screen. Works on any tab; needs no shell/connection.
   func openMoshlauncher() {

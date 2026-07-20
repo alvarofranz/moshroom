@@ -19,13 +19,6 @@
 		<string></string>
 		<string>no</string>
 	</array>
-	<key>config</key>
-	<array>
-		<string>MAIN</string>
-		<string>config_main</string>
-		<string></string>
-		<string>no</string>
-	</array>
 	<key>help</key>
 	<array>
 		<string>MAIN</string>

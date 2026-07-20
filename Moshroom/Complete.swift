@@ -108,7 +108,6 @@ struct Complete {
 //  //    "chksum": "chksum", // TODO
       "clear": "Clear the terminal screen. 🙈",
       "compress": "Compress data.",
-      "config": "Add keys, hosts, themes, etc... 🔧 ",
       "cp": "Copy files and directories",
       "curl": "Transfer data from or to a server.",
       "date": "Display or set date and time.",
@@ -188,7 +187,7 @@ struct Complete {
     case "sftp", "scp": return _scpCompletionKind(query)
     case "ls": return .directory
     case "file", "less": return .file
-    case "help", "exit", "whoami", "config", "clear", "history", "link-files":
+    case "help", "exit", "whoami", "clear", "history", "link-files":
       return .no
     default:
       return Kind(rawValue: operatesOn(cmd) ?? "") ?? .no

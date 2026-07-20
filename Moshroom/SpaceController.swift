@@ -950,11 +950,16 @@ extension SpaceController {
       // Settings takes the full screen on every device, matching the composer — use the canvas.
       // .overFullScreen keeps the terminal in the window (see openMoshkitor).
       navCtrl.modalPresentationStyle = .overFullScreen
-      let s = SettingsHostingController.createSettings(nav: navCtrl, onDismiss: {
-        [weak self] in self?.focusOnShellAction()
+      // Close dismisses the WHOLE modal stack (launcher + Settings) back to the terminal in one shot
+      // (the SpaceController.dismiss override restores first responder + Quick Connect). No flash.
+      let s = SettingsHostingController.createSettings(nav: navCtrl, onClose: {
+        [weak self] in self?.dismiss(animated: false)
       })
       navCtrl.setViewControllers([s], animated: false)
-      self.present(navCtrl, animated: false, completion: nil)   // instant, consistent with dismiss
+      // Stack over the launcher instead of dismissing it first (which flashed the terminal).
+      let presenter = self.moshroomTopPresenter
+      guard presenter.presentedViewController == nil else { return }
+      presenter.present(navCtrl, animated: false, completion: nil)
     }
   }
   
