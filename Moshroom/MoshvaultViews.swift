@@ -139,40 +139,57 @@ struct MoshvaultRootView: View {
 
 // MARK: - Shared bits
 
-// A clean search field that lives right under the tabs (not buried in the nav-bar drawer).
-// Same look on both tabs — rounded dark fill, glyph, live clear button.
-private struct MoshSearchField: View {
-  @Binding var text: String
+// A rows list with a search field docked flush at the bottom — the two read as ONE rounded card:
+// the rows fill the top (rounded top corners, SQUARE bottom), the search is pinned right underneath
+// (SQUARE top, rounded bottom), so the search looks like an extension of the list rather than a
+// separate floating bar. The search AUTOFOCUSES when the screen appears, so you can type to filter
+// immediately. Shared by Moshvault (Passwords, 2FA) and Settings ▸ Hosts so all three match exactly.
+//
+// The one continuous shape comes from clipping the whole VStack to a single rounded rectangle: only
+// the four OUTER corners round (list top + search bottom); the seam where they meet stays straight.
+// A plain list (not insetGrouped) is used so the card is drawn once, by this container.
+struct MoshSearchList<Rows: View>: View {
+  @Binding var query: String
   var prompt: String
+  var noMatches: Bool
+  @ViewBuilder var rows: () -> Rows
   @FocusState private var focused: Bool
 
   var body: some View {
-    HStack(spacing: 8) {
-      Image(systemName: "magnifyingglass")
-        .foregroundColor(.secondary)
-      TextField(prompt, text: $text)
-        .textFieldStyle(.plain)
-        .autocorrectionDisabled()
-        .textInputAutocapitalization(.never)
-        .submitLabel(.search)
-        .focused($focused)
-      if !text.isEmpty {
-        Button { text = "" } label: {
-          Image(systemName: "xmark.circle.fill").foregroundColor(.secondary)
+    VStack(spacing: 0) {
+      List { rows() }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)   // the card (below) draws the fill, not the list
+        .overlay { if noMatches { MoshNoMatches() } }
+
+      Divider()   // the seam between the list and the docked search
+      HStack(spacing: 8) {
+        Image(systemName: "magnifyingglass").foregroundColor(.secondary)
+        TextField(prompt, text: $query)
+          .textFieldStyle(.plain)
+          .autocorrectionDisabled()
+          .textInputAutocapitalization(.never)
+          .submitLabel(.search)
+          .focused($focused)
+        if !query.isEmpty {
+          Button { query = "" } label: {
+            Image(systemName: "xmark.circle.fill").foregroundColor(.secondary)
+          }
+          .buttonStyle(.plain)
+          .transition(.opacity)
         }
-        .buttonStyle(.plain)
-        .transition(.opacity)
       }
+      .padding(.horizontal, 14)
+      .padding(.vertical, 12)
     }
-    .padding(.horizontal, 12)
-    .padding(.vertical, 9)
-    .background(RoundedRectangle(cornerRadius: 11, style: .continuous).fill(Color(.tertiarySystemFill)))
-    // Line up with the inset-grouped list's own horizontal section margin, so the fixed search bar
-    // sits edge-for-edge under the card above it. Its 11pt rounding is intentionally smaller than
-    // the card's — the search reads as a compact control docked below the list.
-    .padding(.horizontal, 20)
-    .padding(.vertical, 8)
-    .animation(.easeInOut(duration: 0.15), value: text.isEmpty)
+    .background(Color(.secondarySystemGroupedBackground))
+    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+    .padding(.horizontal, 16)
+    .padding(.top, 4)
+    .padding(.bottom, 12)
+    .moshReadableWidth()
+    .animation(.easeInOut(duration: 0.15), value: query.isEmpty)
+    .onAppear { DispatchQueue.main.async { focused = true } }
   }
 }
 
@@ -294,32 +311,25 @@ struct MoshvaultPasswordsView: View {
           message: "Keep your service logins here — service, username, email, password, notes and URL. Everything is stored in your iCloud Keychain, end-to-end encrypted, and follows your devices when iCloud sync is on."
         )
       } else {
-        VStack(spacing: 0) {
-          List {
-            ForEach(filtered) { entry in
-              Button { onEdit(entry) } label: {
-                VStack(alignment: .leading, spacing: 2) {
-                  Text(entry.service.isEmpty ? "Untitled" : entry.service)
-                    .foregroundColor(.primary)
-                  if !entry.subtitle.isEmpty {
-                    Text(entry.subtitle).font(.footnote).foregroundColor(.secondary)
-                  }
+        MoshSearchList(query: $query, prompt: "Search passwords", noMatches: filtered.isEmpty) {
+          ForEach(filtered) { entry in
+            Button { onEdit(entry) } label: {
+              VStack(alignment: .leading, spacing: 2) {
+                Text(entry.service.isEmpty ? "Untitled" : entry.service)
+                  .foregroundColor(.primary)
+                if !entry.subtitle.isEmpty {
+                  Text(entry.subtitle).font(.footnote).foregroundColor(.secondary)
                 }
               }
-              // Right-click (Mac) / long-press (iOS) — the Mac has no swipe, so edit & delete live here too.
-              .contextMenu {
-                Button { onEdit(entry) } label: { Label("Edit", systemImage: "pencil") }
-                Button(role: .destructive) { deleteEntries([entry]) } label: { Label("Delete", systemImage: "trash") }
-              }
             }
-            .onDelete { deleteEntries($0.map { filtered[$0] }) }
+            // Right-click (Mac) / long-press (iOS) — the Mac has no swipe, so edit & delete live here too.
+            .contextMenu {
+              Button { onEdit(entry) } label: { Label("Edit", systemImage: "pencil") }
+              Button(role: .destructive) { deleteEntries([entry]) } label: { Label("Delete", systemImage: "trash") }
+            }
           }
-          .listStyle(.insetGrouped)
-          .overlay { if filtered.isEmpty { MoshNoMatches() } }
-          // The search field is FIXED at the bottom, under the list, matching the card's rounding.
-          MoshSearchField(text: $query, prompt: "Search passwords")
+          .onDelete { deleteEntries($0.map { filtered[$0] }) }
         }
-        .moshReadableWidth()
       }
     }
     .onAppear(perform: reload)
@@ -451,33 +461,26 @@ struct MoshvaultTOTPView: View {
           message: "Add your two-factor (2FA) codes here. Scan a QR code, migrate from Google Authenticator, or enter a setup key by hand. Codes are generated on-device and the accounts sync through your iCloud Keychain."
         )
       } else {
-        VStack(spacing: 0) {
-          List {
-            if let banner {
-              Text(banner).font(.footnote).foregroundColor(.secondary)
-            }
-            ForEach(filtered) { account in
-              MoshTOTPRow(account: account, now: now, copied: copiedID == account.id)
-                .contentShape(Rectangle())
-                .onTapGesture { copyCode(account) }
-                .swipeActions(edge: .trailing) {
-                  Button(role: .destructive) { delete(account) } label: { Label("Delete", systemImage: "trash") }
-                  Button { onEdit(account) } label: { Label("Edit", systemImage: "pencil") }.tint(.gray)
-                }
-                // Mac has no swipe — right-click gives the same edit & delete.
-                .contextMenu {
-                  Button { onEdit(account) } label: { Label("Edit", systemImage: "pencil") }
-                  Button { copyCode(account) } label: { Label("Copy code", systemImage: "doc.on.doc") }
-                  Button(role: .destructive) { delete(account) } label: { Label("Delete", systemImage: "trash") }
-                }
-            }
+        MoshSearchList(query: $query, prompt: "Search codes", noMatches: filtered.isEmpty) {
+          if let banner {
+            Text(banner).font(.footnote).foregroundColor(.secondary)
           }
-          .listStyle(.insetGrouped)
-          .overlay { if filtered.isEmpty { MoshNoMatches() } }
-          // Search fixed at the bottom, under the list (matches the Passwords tab).
-          MoshSearchField(text: $query, prompt: "Search codes")
+          ForEach(filtered) { account in
+            MoshTOTPRow(account: account, now: now, copied: copiedID == account.id)
+              .contentShape(Rectangle())
+              .onTapGesture { copyCode(account) }
+              .swipeActions(edge: .trailing) {
+                Button(role: .destructive) { delete(account) } label: { Label("Delete", systemImage: "trash") }
+                Button { onEdit(account) } label: { Label("Edit", systemImage: "pencil") }.tint(.gray)
+              }
+              // Mac has no swipe — right-click gives the same edit & delete.
+              .contextMenu {
+                Button { onEdit(account) } label: { Label("Edit", systemImage: "pencil") }
+                Button { copyCode(account) } label: { Label("Copy code", systemImage: "doc.on.doc") }
+                Button(role: .destructive) { delete(account) } label: { Label("Delete", systemImage: "trash") }
+              }
+          }
         }
-        .moshReadableWidth()
       }
     }
     .onReceive(tick) { now = $0 }

@@ -513,9 +513,25 @@ final class MoshtabsController: UIViewController {
   override func viewDidLoad() {
     super.viewDidLoad()
     view.backgroundColor = MoshxploreStyle.screen
-    navigationItem.title = "Tabs"
-    navigationItem.rightBarButtonItem = moshNavChipBarItem(
-      icon: "xmark", target: self, action: #selector(_closeMoshtabs))
+
+    // Compact in-content header (no system nav bar) — the launcher / Moshvault pattern, so the Mac
+    // window title bar stays as compact as the terminal and the chrome doesn't jump when Tabs opens.
+    // Title on the left, close ✕ top-right (the same spot as the button that opened it).
+    let header = UIView()
+    header.translatesAutoresizingMaskIntoConstraints = false
+    let titleLabel = UILabel()
+    titleLabel.text = "Tabs"
+    titleLabel.font = .systemFont(ofSize: 17, weight: .semibold)
+    titleLabel.textColor = .label
+    titleLabel.translatesAutoresizingMaskIntoConstraints = false
+    let close = moshkeyRoundButton(diameter: 34)
+    close.layer.shadowOpacity = 0
+    close.setMoshIcon("xmark", pointSize: 15, weight: .semibold)
+    close.addTarget(self, action: #selector(_closeMoshtabs), for: .touchUpInside)
+    close.translatesAutoresizingMaskIntoConstraints = false
+    header.addSubview(titleLabel)
+    header.addSubview(close)
+    view.addSubview(header)
 
     stack.axis = .vertical
     stack.spacing = 8
@@ -526,7 +542,16 @@ final class MoshtabsController: UIViewController {
     view.addSubview(scroll)
 
     NSLayoutConstraint.activate([
-      scroll.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+      header.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+      header.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
+      header.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
+      header.heightAnchor.constraint(equalToConstant: 58),
+      titleLabel.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: 16),
+      titleLabel.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+      close.trailingAnchor.constraint(equalTo: header.trailingAnchor, constant: -16),
+      close.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+
+      scroll.topAnchor.constraint(equalTo: header.bottomAnchor),
       scroll.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
       scroll.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
       scroll.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
@@ -538,6 +563,13 @@ final class MoshtabsController: UIViewController {
     ])
 
     reload()
+  }
+
+  override func viewWillAppear(_ animated: Bool) {
+    super.viewWillAppear(animated)
+    // No system nav bar: our in-content header carries the title + close, and hiding the bar keeps
+    // the Mac title bar compact (see the header note in viewDidLoad).
+    navigationController?.setNavigationBarHidden(true, animated: false)
   }
 
   private func reload() {

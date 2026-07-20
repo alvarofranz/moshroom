@@ -103,57 +103,48 @@ struct HostListView: View {
           Button(action: _addHost) { Label("Add new Host", systemImage: "plus") }
         }
       } else {
-        Group {
-          if _state.filteredList.isEmpty {
-            MoshEmptyState(icon: "server.rack", title: "No hosts match") {
-              Button(action: _addHost) { Label("Add new Host", systemImage: "plus") }
-            }
-          } else {
-              List {
-                ForEach(Array(_state.filteredList.enumerated()), id: \.element.alias) { index, card in
-                  HostRow(card: card, reloadList: _state.reloadHosts)
-                    .contextMenu(menuItems: {
-                      Button(action: {
-                        _duplicateHost(card: card)
-                      }, label: { Label("Duplicate", systemImage: "plus.square.on.square")})
-                      Divider()
-                      Button(role: .destructive, action: {
-                        _state.deleteHosts(indexSet: IndexSet([index]))
-                      }, label: { Label("Delete", systemImage: "trash") })
-                    })
-                }.onDelete(perform: _state.deleteHosts)
-              }
-              .listStyle(.insetGrouped)
-              .moshReadableWidth()
-              .toolbar {
-                MoshNavBarItem(placement: .navigationBarTrailing) {
-                  HStack(spacing: 8) {
-                    // Chip below, Menu on top with a clear label — Catalyst re-renders visible
-                    // Menu labels (see KeySortView).
-                    MoshNavGlyph(systemName: "list.bullet")
-                      .overlay(
-                        Menu {
-                          Section(header: Text("Order")) {
-                            SortButton(label: "Alias",    sortType: $_state.sortType, asc: .aliasAsc, desc: .aliasDesc)
-                            SortButton(label: "HostName", sortType: $_state.sortType, asc: .hostNameAsc, desc: .hostNameDesc)
-                          }
-                        } label: {
-                          Color.clear
-                            .frame(width: MoshNavChip.diameter, height: MoshNavChip.diameter)
-                            .contentShape(Rectangle())
-                        }
-                        .menuIndicator(.hidden)   // no system disclosure caret over the house chip
-                      )
-                    Button(
-                      action: _addHost,
-                      label: { MoshNavGlyph(systemName: "plus") }
-                    )
+        // Search docked at the bottom (not in the nav-bar drawer), the same one-card look and
+        // autofocus as Moshvault's Passwords / 2FA. No-matches shows in place so the search stays put.
+        MoshSearchList(query: $_state.filterQuery, prompt: "Search hosts", noMatches: _state.filteredList.isEmpty) {
+          ForEach(Array(_state.filteredList.enumerated()), id: \.element.alias) { index, card in
+            HostRow(card: card, reloadList: _state.reloadHosts)
+              .contextMenu(menuItems: {
+                Button(action: {
+                  _duplicateHost(card: card)
+                }, label: { Label("Duplicate", systemImage: "plus.square.on.square")})
+                Divider()
+                Button(role: .destructive, action: {
+                  _state.deleteHosts(indexSet: IndexSet([index]))
+                }, label: { Label("Delete", systemImage: "trash") })
+              })
+          }.onDelete(perform: _state.deleteHosts)
+        }
+        .toolbar {
+          MoshNavBarItem(placement: .navigationBarTrailing) {
+            HStack(spacing: 8) {
+              // Chip below, Menu on top with a clear label — Catalyst re-renders visible
+              // Menu labels (see KeySortView).
+              MoshNavGlyph(systemName: "list.bullet")
+                .overlay(
+                  Menu {
+                    Section(header: Text("Order")) {
+                      SortButton(label: "Alias",    sortType: $_state.sortType, asc: .aliasAsc, desc: .aliasDesc)
+                      SortButton(label: "HostName", sortType: $_state.sortType, asc: .hostNameAsc, desc: .hostNameDesc)
+                    }
+                  } label: {
+                    Color.clear
+                      .frame(width: MoshNavChip.diameter, height: MoshNavChip.diameter)
+                      .contentShape(Rectangle())
                   }
-                }
-              }
+                  .menuIndicator(.hidden)   // no system disclosure caret over the house chip
+                )
+              Button(
+                action: _addHost,
+                label: { MoshNavGlyph(systemName: "plus") }
+              )
+            }
           }
         }
-        .searchable(text: $_state.filterQuery)
       }
     }
     .navigationTitle("Hosts")
