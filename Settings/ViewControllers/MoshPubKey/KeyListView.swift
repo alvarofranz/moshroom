@@ -343,23 +343,16 @@ struct KeyListView: View {
     }
     .listStyle(.insetGrouped)
     .moshReadableWidth()
-    .toolbar {
-      MoshNavBarItem(placement: .navigationBarTrailing) {
+    .moshHubChromeBack(title: "Keys") {
+      if !_state.list.isEmpty {
         HStack(spacing: 8) {
-          if !_state.list.isEmpty {
-            KeySortView(sortType: $_state.sortType)
-
-            Button(action: {
-              toggleNewKeyView()
-            }) {
-              MoshNavGlyph(systemName: "plus")
-            }
+          KeySortView(sortType: $_state.sortType)
+          Button(action: { toggleNewKeyView() }) {
+            MoshNavGlyph(systemName: "plus")
           }
         }
       }
     }
-    .navigationTitle("Keys")
-    .navigationBarTitleDisplayMode(.inline)
     .fileImporter(
       isPresented: $_state.filePickerIsPresented,
       allowedContentTypes: [.text, .data, .item],

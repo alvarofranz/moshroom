@@ -27,6 +27,8 @@ import SwiftUI
 
 struct SettingsView: View {
 
+  var onClose: () -> Void = {}
+
   @State private var _moshroomVersion = UIApplication.moshroomShortVersion() ?? ""
   @State private var _iCloudSyncOn = MoshroomDefaults.isICloudSyncEnabled()
   @State private var _requireBiometric = MoshroomDefaults.isRequireBiometricUnlock()
@@ -219,8 +221,12 @@ struct SettingsView: View {
     }
     .listStyle(.insetGrouped)
     .moshReadableWidth()
-    .navigationTitle("Settings")
-    .navigationBarTitleDisplayMode(.inline)
+    .moshHubChrome(title: "Settings", leading: {
+      Button(action: onClose) { MoshNavGlyph(systemName: "xmark") }
+        .buttonStyle(.plain)
+        .moshCatalystPlainButtons()
+        .accessibilityLabel("Close")
+    })
     .tint(.moshTint)
 
   }

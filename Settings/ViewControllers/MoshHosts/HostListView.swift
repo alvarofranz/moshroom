@@ -119,36 +119,30 @@ struct HostListView: View {
               })
           }.onDelete(perform: _state.deleteHosts)
         }
-        .toolbar {
-          MoshNavBarItem(placement: .navigationBarTrailing) {
-            HStack(spacing: 8) {
-              // Chip below, Menu on top with a clear label — Catalyst re-renders visible
-              // Menu labels (see KeySortView).
-              MoshNavGlyph(systemName: "list.bullet")
-                .overlay(
-                  Menu {
-                    Section(header: Text("Order")) {
-                      SortButton(label: "Alias",    sortType: $_state.sortType, asc: .aliasAsc, desc: .aliasDesc)
-                      SortButton(label: "HostName", sortType: $_state.sortType, asc: .hostNameAsc, desc: .hostNameDesc)
-                    }
-                  } label: {
-                    Color.clear
-                      .frame(width: MoshNavChip.diameter, height: MoshNavChip.diameter)
-                      .contentShape(Rectangle())
-                  }
-                  .menuIndicator(.hidden)   // no system disclosure caret over the house chip
-                )
-              Button(
-                action: _addHost,
-                label: { MoshNavGlyph(systemName: "plus") }
-              )
-            }
-          }
+      }
+    }
+    .moshHubChromeBack(title: "Hosts") {
+      if !_state.list.isEmpty {
+        HStack(spacing: 8) {
+          // Chip below, Menu on top with a clear label — Catalyst re-renders visible Menu labels.
+          MoshNavGlyph(systemName: "list.bullet")
+            .overlay(
+              Menu {
+                Section(header: Text("Order")) {
+                  SortButton(label: "Alias",    sortType: $_state.sortType, asc: .aliasAsc, desc: .aliasDesc)
+                  SortButton(label: "HostName", sortType: $_state.sortType, asc: .hostNameAsc, desc: .hostNameDesc)
+                }
+              } label: {
+                Color.clear
+                  .frame(width: MoshNavChip.diameter, height: MoshNavChip.diameter)
+                  .contentShape(Rectangle())
+              }
+              .menuIndicator(.hidden)   // no system disclosure caret over the house chip
+            )
+          Button(action: _addHost, label: { MoshNavGlyph(systemName: "plus") })
         }
       }
     }
-    .navigationTitle("Hosts")
-    .navigationBarTitleDisplayMode(.inline)
     // An iCloud pull can land while this screen is open — refresh so synced hosts appear live.
     .onReceive(NotificationCenter.default.publisher(for: HostsCloudMirror.didChangeNotification)) { _ in
       _state.reloadHosts()

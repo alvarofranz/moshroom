@@ -135,3 +135,75 @@ struct MoshNavBarItem<Content: View>: ToolbarContent {
   }
 }
 
+// MARK: - Full-screen hub chrome (in-content header, no system nav bar)
+//
+// Every full-screen surface (launcher, Moshtabs, Moshxplore, Moshvault, and all of Settings) drops the
+// system navigation bar and draws a compact header IN the content. On Mac Catalyst a system nav bar
+// grows the window title bar, so the traffic lights / title jump when a screen opens or pushes; keeping
+// the chrome in-content keeps the title bar exactly as compact as the terminal, everywhere. Use
+// `.moshHubChrome` (root, with a ✕ close) or `.moshHubChromeBack` (a pushed screen, with a ‹ back).
+
+/// A back ‹ chip that pops the shared UIKit nav stack — the leading button for a pushed hub screen.
+struct MoshHubBackButton: View {
+  @EnvironmentObject private var nav: Nav
+  var body: some View {
+    Button { nav.navController.popViewController(animated: true) } label: {
+      MoshNavGlyph(systemName: "chevron.left")
+    }
+    .buttonStyle(.plain)
+    .moshCatalystPlainButtons()
+    .accessibilityLabel("Back")
+  }
+}
+
+/// The compact in-content header: a centred title, a leading button (✕ close on a root, ‹ back on a
+/// pushed screen) and optional trailing actions (Save, +, sort…). Sits on the grouped background so it
+/// blends with the list beneath it, exactly like the launcher / Moshvault headers.
+struct MoshHubHeader<Leading: View, Trailing: View>: View {
+  let title: String
+  @ViewBuilder var leading: () -> Leading
+  @ViewBuilder var trailing: () -> Trailing
+
+  var body: some View {
+    ZStack {
+      Text(title)
+        .font(.system(size: 17, weight: .semibold))
+        .foregroundColor(.primary)
+        .lineLimit(1)
+      HStack(spacing: 8) {
+        leading()
+        Spacer()
+        trailing()
+      }
+    }
+    .padding(.horizontal, 16)
+    .padding(.vertical, 12)
+    .frame(maxWidth: .infinity)
+    .background(Color(UIColor.systemGroupedBackground))
+  }
+}
+
+extension View {
+  /// Hide this screen's system nav bar and dock a compact in-content header on top.
+  func moshHubChrome<Leading: View, Trailing: View>(
+    title: String,
+    @ViewBuilder leading: @escaping () -> Leading,
+    @ViewBuilder trailing: @escaping () -> Trailing = { EmptyView() }
+  ) -> some View {
+    self
+      .navigationBarBackButtonHidden(true)
+      .toolbar(.hidden, for: .navigationBar)
+      .safeAreaInset(edge: .top, spacing: 0) {
+        MoshHubHeader(title: title, leading: leading, trailing: trailing)
+      }
+  }
+
+  /// A pushed hub screen: leading = ‹ back (pops the shared nav stack).
+  func moshHubChromeBack<Trailing: View>(
+    title: String,
+    @ViewBuilder trailing: @escaping () -> Trailing = { EmptyView() }
+  ) -> some View {
+    moshHubChrome(title: title, leading: { MoshHubBackButton() }, trailing: trailing)
+  }
+}
+

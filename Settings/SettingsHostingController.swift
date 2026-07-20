@@ -27,12 +27,14 @@ import UIKit
 
 class SettingsHostingController: UIHostingController<NavView<SettingsView>>, UIAdaptivePresentationControllerDelegate {
   private let onDismiss: (() -> Void)?
+  private let navController: UINavigationController
 
   private init(navController: UINavigationController, onDismiss: (() -> Void)? = nil) {
     self.onDismiss = onDismiss
+    self.navController = navController
 
     let rootView = NavView(navController: navController) {
-      SettingsView()
+      SettingsView(onClose: {})
     }
 
     super.init(rootView: rootView)
@@ -47,9 +49,11 @@ class SettingsHostingController: UIHostingController<NavView<SettingsView>>, UIA
   override func viewDidLoad() {
     super.viewDidLoad()
 
-    // The house white-chip ✕ — same close as every other full-screen hub.
-    navigationItem.rightBarButtonItem = moshNavChipBarItem(
-      icon: "xmark", target: self, action: #selector(_closeSettings))
+    // No system nav bar / UIKit close button: Settings now draws its own in-content header (the house
+    // ✕ lives there), so the Mac window title bar stays compact and consistent with every other hub.
+    rootView = NavView(navController: navController) {
+      SettingsView(onClose: { [weak self] in self?._closeSettings() })
+    }
   }
 
   // Not `_close`: that selector name collides with a private Apple API and App Store upload rejects it.
