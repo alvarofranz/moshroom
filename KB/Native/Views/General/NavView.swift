@@ -63,12 +63,11 @@ extension View {
 }
 
 extension View {
-  /// Caps full-screen list/form content at a readable column on big canvases (iPad 13", Mac) —
-  /// the same 640pt column the launcher and Quick Connect use. The sides match the grouped-list
-  /// background so the cap reads as margins, not bands.
+  /// Full-width list/form content on every device (no centered column): it fills the whole screen and
+  /// paints the grouped background behind it, so lists use all the space and the scroll indicator sits
+  /// at the far right edge, the native Mac/iPad behaviour.
   func moshReadableWidth() -> some View {
     self
-      .frame(maxWidth: 640)
       .frame(maxWidth: .infinity)
       .background(Color(UIColor.systemGroupedBackground))
   }
