@@ -271,13 +271,14 @@ private struct CopyChip: View {
   @State private var copied = false
   var body: some View {
     Button {
+      guard !value.isEmpty else { return }
       MoshClipboard.copy(value)
       withAnimation { copied = true }
       UINotificationFeedbackGenerator().notificationOccurred(.success)
       DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) { withAnimation { copied = false } }
     } label: {
       // Stable layout: the label text never changes width (no "Copied" swap that shifts the row),
-      // and the icon flips to a green check in place — the same "copied" cue as the 2FA list.
+      // and the icon flips to a green check in place. Dimmed when there is nothing to copy.
       HStack(spacing: 6) {
         if !text.isEmpty {
           Text(text)
@@ -286,7 +287,7 @@ private struct CopyChip: View {
         }
         Image(systemName: copied ? "checkmark" : "doc.on.doc")
           .font(.footnote)
-          .foregroundColor(copied ? .moshGreen : .secondary)
+          .foregroundColor(copied ? .moshGreen : (value.isEmpty ? Color.secondary.opacity(0.35) : .secondary))
       }
     }
     .buttonStyle(.plain)
@@ -358,7 +359,6 @@ private struct MoshvaultPasswordEditor: View {
   @Environment(\.dismiss) private var dismiss
   @State var entry: MoshVaultEntry
   @State private var revealPassword = false
-  @State private var copiedField: String?
 
   // Derive "new vs edit" from the store, not a passed-in flag — the flag raced with the sheet
   // presentation and showed "Edit Password" on a brand-new entry.
@@ -374,7 +374,7 @@ private struct MoshvaultPasswordEditor: View {
       Form {
         Section {
           labeledField("Service", text: $entry.service)
-          labeledField("Username", text: $entry.username)
+          labeledField("User", text: $entry.username)
           labeledField("Email", text: $entry.email, keyboard: .emailAddress)
         }
         Section("Password") {
@@ -392,9 +392,7 @@ private struct MoshvaultPasswordEditor: View {
               Image(systemName: revealPassword ? "eye.slash" : "eye").foregroundColor(.secondary)
             }
             .buttonStyle(.plain)
-            if !entry.password.isEmpty {
-              CopyChip(text: "", value: entry.password)
-            }
+            CopyChip(text: "", value: entry.password)
           }
         }
         Section {
@@ -409,33 +407,18 @@ private struct MoshvaultPasswordEditor: View {
     .tint(.moshTint)
   }
 
-  // Tapping the label (left column) copies that field's value — a green check flashes in its place
-  // for 1.2s. The text field itself stays editable; only the label is the copy target.
+  // A labeled row: the field name on the left, the editable value, and a copy chip on the right
+  // (green check in place on tap). Consistent with the password field and across every row.
   private func labeledField(_ title: String, text: Binding<String>, keyboard: UIKeyboardType = .default) -> some View {
     HStack {
-      Button {
-        guard !text.wrappedValue.isEmpty else { return }
-        MoshClipboard.copy(text.wrappedValue)
-        UINotificationFeedbackGenerator().notificationOccurred(.success)
-        withAnimation { copiedField = title }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
-          if copiedField == title { withAnimation { copiedField = nil } }
-        }
-      } label: {
-        HStack(spacing: 4) {
-          Text(title).foregroundColor(copiedField == title ? .moshGreen : .secondary)
-          if copiedField == title {
-            Image(systemName: "checkmark").font(.caption2).foregroundColor(.moshGreen)
-          }
-        }
+      Text(title)
+        .foregroundColor(.secondary)
         .frame(width: 92, alignment: .leading)
-        .contentShape(Rectangle())
-      }
-      .buttonStyle(.plain)
       TextField(title, text: text)
         .keyboardType(keyboard)
         .autocorrectionDisabled()
         .textInputAutocapitalization(keyboard == .default ? .sentences : .never)
+      CopyChip(text: "", value: text.wrappedValue)
     }
   }
 }
