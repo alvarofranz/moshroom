@@ -201,8 +201,8 @@ function term_setup(accessibilityEnabled) {
 
     t.setCursorVisible(true);
     // No terminal cursor block at the prompt — you type in Moshkitor, not here. Make hterm's
-    // cursor transparent so the stray blue rectangle is gone. (The red text caret is a separate,
-    // wanted thing — that's the contentEditable caret tinted with the Moshroom accent.)
+    // cursor transparent so the stray blue rectangle is gone. (The contentEditable insertion caret
+    // is killed at the root by -webkit-user-modify:read-only below — the terminal is display-only.)
     t.setCursorColor('rgba(0, 0, 0, 0)');
 
     // Moshroom: on touch devices the terminal is a scroll + keys surface, not a document —
@@ -214,9 +214,15 @@ function term_setup(accessibilityEnabled) {
     // from the wheel/trackpad (DOM wheel events hterm handles itself), and a mouse drag or
     // double-click is EXPECTED to select — so text stays selectable there all the time.
     var _moshroomIsMac = /Mac/.test(navigator.platform);
+    // The terminal is a READ-ONLY display: you never type into it (special keys go straight through
+    // TermDevice; any text is composed in Moshkitor). hterm marks its <x-screen> contentEditable, so
+    // iOS WebKit focuses it on tap and paints an insertion caret there (and caret-color:transparent is
+    // NOT honored for that tap-positioned caret on iOS). Force -webkit-user-modify:read-only so the
+    // element is not an editing host at all — no caret ever, on any platform — while -webkit-user-select
+    // still allows selecting text (long-press on iOS, drag on the Mac) for Copy.
     var _moshroomSelectRules = _moshroomIsMac
-      ? '*{-webkit-user-select:text!important;-webkit-touch-callout:none!important;caret-color:transparent!important;}'
-      : '*{-webkit-user-select:none!important;-webkit-touch-callout:none!important;caret-color:transparent!important;}.moshroom-selecting *{-webkit-user-select:text!important;}';
+      ? '*{-webkit-user-select:text!important;-webkit-user-modify:read-only!important;-webkit-touch-callout:none!important;caret-color:transparent!important;}'
+      : '*{-webkit-user-select:none!important;-webkit-user-modify:read-only!important;-webkit-touch-callout:none!important;caret-color:transparent!important;}.moshroom-selecting *{-webkit-user-select:text!important;}';
     // …plus the Moshroom-red selection highlight. On iOS that's real ::selection CSS (and the
     // grab handles follow the web view's tintColor, also Moshroom red). On the Mac, ::selection
     // is made TRANSPARENT instead: WebKit's own selection painting there depends on a volatile
@@ -239,7 +245,7 @@ function term_setup(accessibilityEnabled) {
     // No text caret anywhere in the terminal — input happens in Moshkitor, so the blinking
     // insertion bar at the top-left is just a stray vestige. Hide it on the main document too.
     var _moshroomCaretStyle = document.createElement('style');
-    _moshroomCaretStyle.textContent = '*{caret-color:transparent!important;}' + (_moshroomIsMac ? '' : '.moshroom-selecting *{-webkit-user-select:text!important;}') + _moshroomSelectionCss;
+    _moshroomCaretStyle.textContent = '*{caret-color:transparent!important;-webkit-user-modify:read-only!important;}' + (_moshroomIsMac ? '' : '.moshroom-selecting *{-webkit-user-select:text!important;}') + _moshroomSelectionCss;
     (document.head || document.documentElement).appendChild(_moshroomCaretStyle);
     document.body.style.caretColor = 'transparent';
 

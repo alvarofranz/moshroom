@@ -286,22 +286,13 @@ let MoshroomTerminalInputTapNotification = "MoshroomTerminalInputTapNotification
           !_scrollView.isDecelerating, !_termScrollView.isDecelerating else { return }
     let point = recognizer.location(in: recognizer.view)
     _wkWebView?.evaluateJavaScript("term_tapAt(\(point.x), \(point.y));") { [weak self] result, _ in
-      guard let self else { return }
-      let opensComposer = (result as? [String: Any])?["input"] as? Bool == true
-      if opensComposer, let webView = self._wkWebView {
-        NotificationCenter.default.post(
-          name: NSNotification.Name(MoshroomTerminalInputTapNotification), object: webView)
-      }
-      // A tap on the keyboard-less terminal must never leave a text caret. On iOS, WebKit focuses the
-      // page's hidden input on tap and shows a red insertion caret that repositions with each tap
-      // (seen on the Quick Connect landing). Resign the content view so no caret sticks. Safe: a live
-      // selection is guarded out above (long-press/drag own selection), and the composer — if it opens
-      // — takes first responder itself. Deferred so it runs after WebKit's own focus-on-tap.
-      let term = self._wkWebView as? SmarterTermInput
-      if term?.isRealFirstResponder == true {
-        MoshLog.log("tap", "terminal tap left the content view first responder (caret) — clearing")
-      }
-      DispatchQueue.main.async { term?.deactivateSelectionUI() }
+      guard
+        let webView = self?._wkWebView,
+        let response = result as? [String: Any],
+        response["input"] as? Bool == true
+      else { return }
+      NotificationCenter.default.post(
+        name: NSNotification.Name(MoshroomTerminalInputTapNotification), object: webView)
     }
   }
 
