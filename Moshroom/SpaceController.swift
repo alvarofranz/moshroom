@@ -393,7 +393,20 @@ class SpaceController: UIViewController {
     else {
       return
     }
+    // On the Quick Connect / onboarding landing (a fresh, unconnected shell) a background tap must
+    // NOT open the composer: there is nothing to send to yet, and a red caret over an idle
+    // "not connected" screen is confusing. Connect via the card, or use the compose button / hardware
+    // keyboard to type deliberately. Once connected or interacted, the card is gone and a tap composes.
+    if _freshOverlayVisible { return }
     openMoshkitor()
+  }
+
+  // Quick Connect (MoshnectorView) or the first-run onboarding (MoshonboardView) is on screen — i.e.
+  // a fresh, idle, unconnected shell. See Moshnector.
+  private var _freshOverlayVisible: Bool {
+    if let c = view.subviews.compactMap({ $0 as? MoshnectorView }).first, !c.isHidden { return true }
+    if let o = view.subviews.compactMap({ $0 as? MoshonboardView }).first, !o.isHidden { return true }
+    return false
   }
 
   @objc func _UISceneDidEnterBackgroundNotification(_ n: Notification) {
