@@ -170,6 +170,99 @@ final class MoshnectorView: UIView {
   }
 }
 
+// The first-run onboarding card — shown INSTEAD of Quick Connect on a fresh terminal when there are
+// no saved hosts AND no keys yet, so a brand-new install has an obvious, friendly first step. Same
+// dark card family as MoshnectorView, and the same visual language as MoshEmptyState (44pt mushroom
+// icon, title, callout) so it feels of-a-piece with the rest of the app.
+final class MoshonboardView: UIView {
+
+  var onAddHost: (() -> Void)?
+  var onAddKey: (() -> Void)?
+
+  init() {
+    super.init(frame: .zero)
+    translatesAutoresizingMaskIntoConstraints = false
+    backgroundColor = .systemGroupedBackground
+    layer.cornerRadius = Moshstyle.overlayRadius
+    Moshstyle.applyOverlayShadow(layer)
+
+    let icon = UIImageView(image: UIImage(systemName: "server.rack",
+      withConfiguration: UIImage.SymbolConfiguration(pointSize: 44, weight: .regular))?
+      .withTintColor(.moshroomTint, renderingMode: .alwaysOriginal))
+    icon.contentMode = .center
+    icon.setContentHuggingPriority(.required, for: .vertical)
+
+    let title = UILabel()
+    title.text = "Welcome to Moshroom"
+    title.font = .systemFont(ofSize: 20, weight: .semibold)
+    title.textColor = .label
+    title.textAlignment = .center
+    title.numberOfLines = 0
+
+    let message = UILabel()
+    message.text = "To get started, add a host you can reach over SSH or Mosh, plus an SSH key for secure login."
+    message.font = .systemFont(ofSize: 15)
+    message.textColor = .secondaryLabel
+    message.textAlignment = .center
+    message.numberOfLines = 0
+
+    let addHost = _primaryButton("Add your first host")
+    addHost.addAction(UIAction { [weak self] _ in self?.onAddHost?() }, for: .touchUpInside)
+    let addKey = _secondaryButton("Add an SSH key")
+    addKey.addAction(UIAction { [weak self] _ in self?.onAddKey?() }, for: .touchUpInside)
+
+    let stack = UIStackView(arrangedSubviews: [icon, title, message, addHost, addKey])
+    stack.axis = .vertical
+    stack.alignment = .fill
+    stack.spacing = 12
+    stack.setCustomSpacing(6, after: icon)
+    stack.setCustomSpacing(22, after: message)
+    stack.setCustomSpacing(8, after: addHost)
+    stack.translatesAutoresizingMaskIntoConstraints = false
+    addSubview(stack)
+
+    NSLayoutConstraint.activate([
+      stack.topAnchor.constraint(equalTo: topAnchor, constant: 28),
+      stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 24),
+      stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -24),
+      stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -24),
+    ])
+  }
+  required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+  // Filled mushroom-red primary — the one prominent action.
+  private func _primaryButton(_ title: String) -> UIButton {
+    var cfg = UIButton.Configuration.filled()
+    cfg.baseBackgroundColor = .moshroomTint
+    cfg.baseForegroundColor = .white
+    cfg.background.cornerRadius = Moshstyle.cardRadius
+    var attr = AttributeContainer(); attr.font = .systemFont(ofSize: 16, weight: .semibold)
+    cfg.attributedTitle = AttributedString(title, attributes: attr)
+    cfg.contentInsets = NSDirectionalEdgeInsets(top: 13, leading: 16, bottom: 13, trailing: 16)
+    let b = UIButton(configuration: cfg)
+    #if targetEnvironment(macCatalyst)
+    b.preferredBehavioralStyle = .pad   // never the native Mac push-button
+    #endif
+    b.translatesAutoresizingMaskIntoConstraints = false
+    return b
+  }
+
+  // Subtle tinted secondary (matches MoshEmptyState's action).
+  private func _secondaryButton(_ title: String) -> UIButton {
+    var cfg = UIButton.Configuration.plain()
+    cfg.baseForegroundColor = .moshroomTint
+    var attr = AttributeContainer(); attr.font = .systemFont(ofSize: 15, weight: .semibold)
+    cfg.attributedTitle = AttributedString(title, attributes: attr)
+    cfg.contentInsets = NSDirectionalEdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16)
+    let b = UIButton(configuration: cfg)
+    #if targetEnvironment(macCatalyst)
+    b.preferredBehavioralStyle = .pad
+    #endif
+    b.translatesAutoresizingMaskIntoConstraints = false
+    return b
+  }
+}
+
 enum Moshnector {
   static func install(in sc: SpaceController) {
     let card = MoshnectorView()
@@ -189,10 +282,9 @@ enum Moshnector {
     // so a visible Quick Connect card never shows a stale list.
     for name in [HostsCloudMirror.didSaveNotification, HostsCloudMirror.didChangeNotification] {
       NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak sc] _ in
-        guard let sc,
-              let card = sc.view.subviews.compactMap({ $0 as? MoshnectorView }).first,
-              !card.isHidden else { return }
-        card.reload(hosts: sc.moshroomSavedHostCards)
+        // A host changed (local save or iCloud pull): if a fresh-terminal overlay is up, re-pick
+        // onboarding vs Quick Connect (the first host swaps the onboarding away) + refresh the list.
+        sc?.refreshFreshOverlayIfVisible()
       }
     }
 
@@ -212,6 +304,27 @@ enum Moshnector {
       card.widthAnchor.constraint(lessThanOrEqualToConstant: 640),
       // Never past the bottom bar, whatever the host list grows to.
       card.bottomAnchor.constraint(lessThanOrEqualTo: sc.view.safeAreaLayoutGuide.bottomAnchor, constant: -72),
+    ])
+
+    // The first-run onboarding — same spot as Quick Connect, shown only when there are no hosts AND
+    // no keys yet (see showMoshnectorIfIdle). One or the other is ever visible, never both. A touch
+    // narrower than the host card since it's text-centric.
+    let onboard = MoshonboardView()
+    onboard.isHidden = true
+    onboard.onAddHost = { [weak sc] in sc?.openSettings() }
+    onboard.onAddKey = { [weak sc] in sc?.openSettings() }
+    sc.view.addSubview(onboard)
+    NSLayoutConstraint.activate([
+      onboard.topAnchor.constraint(equalTo: sc.view.safeAreaLayoutGuide.topAnchor, constant: 76),
+      onboard.centerXAnchor.constraint(equalTo: sc.view.safeAreaLayoutGuide.centerXAnchor),
+      onboard.leadingAnchor.constraint(greaterThanOrEqualTo: sc.view.safeAreaLayoutGuide.leadingAnchor, constant: 16),
+      {
+        let fill = onboard.leadingAnchor.constraint(equalTo: sc.view.safeAreaLayoutGuide.leadingAnchor, constant: 16)
+        fill.priority = .init(750)
+        return fill
+      }(),
+      onboard.widthAnchor.constraint(lessThanOrEqualToConstant: 460),
+      onboard.bottomAnchor.constraint(lessThanOrEqualTo: sc.view.safeAreaLayoutGuide.bottomAnchor, constant: -72),
     ])
   }
 }
@@ -237,14 +350,40 @@ extension SpaceController {
   // Show the quick-connect card for the current (idle) terminal, refreshing the host list.
   func showMoshnector() {
     guard let card = view.subviews.compactMap({ $0 as? MoshnectorView }).first else { return }
+    view.subviews.compactMap({ $0 as? MoshonboardView }).first?.isHidden = true   // mutually exclusive
     card.reload(hosts: moshroomSavedHostCards)
     card.isHidden = false
     view.bringSubviewToFront(card)
   }
 
-  // Hide it — called the moment the user types, taps a key, switches tab, or connects.
+  // True when a brand-new install has nothing set up yet — no saved hosts AND no keys. On a fresh
+  // terminal we then show the onboarding instead of Quick Connect (which would just be empty).
+  var moshroomHasNoHostsNorKeys: Bool {
+    moshroomSavedHostAliases.isEmpty && MoshPubKey.all().isEmpty
+  }
+
+  // Show the first-run onboarding (hides Quick Connect); the two are mutually exclusive.
+  func showMoshboard() {
+    guard let onboard = view.subviews.compactMap({ $0 as? MoshonboardView }).first else { return }
+    view.subviews.compactMap({ $0 as? MoshnectorView }).first?.isHidden = true
+    onboard.isHidden = false
+    view.bringSubviewToFront(onboard)
+  }
+
+  // A host/key change landed (local save or iCloud pull): if a fresh-terminal overlay is showing,
+  // re-pick onboarding vs Quick Connect (adding the first host swaps the onboarding away).
+  func refreshFreshOverlayIfVisible() {
+    let cardVisible = !(view.subviews.compactMap { $0 as? MoshnectorView }.first?.isHidden ?? true)
+    let onboardVisible = !(view.subviews.compactMap { $0 as? MoshonboardView }.first?.isHidden ?? true)
+    guard cardVisible || onboardVisible else { return }
+    if moshroomHasNoHostsNorKeys { showMoshboard() } else { showMoshnector() }
+  }
+
+  // Hide it — called the moment the user types, taps a key, switches tab, or connects. The
+  // onboarding rides along (both are the fresh-terminal overlay; only one is ever visible).
   func dismissMoshnector() {
     view.subviews.compactMap({ $0 as? MoshnectorView }).first?.isHidden = true
+    view.subviews.compactMap({ $0 as? MoshonboardView }).first?.isHidden = true
   }
 
   // Reveal the card only for a fresh, unconnected shell; keep it hidden for a restored or
@@ -276,6 +415,8 @@ extension SpaceController {
       // "fresh" (local prompt) but now has content on screen — don't pop the card back over it.
       if term?.moshroomUserHasInteracted == true {
         dismissMoshnector()
+      } else if moshroomHasNoHostsNorKeys {
+        showMoshboard()          // fresh install: onboarding instead of an empty Quick Connect
       } else {
         showMoshnector()
       }

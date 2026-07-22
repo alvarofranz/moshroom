@@ -83,6 +83,8 @@
 	<true/>
 	<key>MOSHROOM_APP_FONT</key>
 	<string>$(MOSHROOM_APP_FONT)</string>
+	<key>MOSHROOM_GROUP_ID</key>
+	<string>$(GROUP_ID)</string>
 	<key>NSCameraUsageDescription</key>
 	<string>Moshroom uses the camera to scan two-factor (2FA) QR codes into your vault.</string>
 	<key>NSFaceIDUsageDescription</key>

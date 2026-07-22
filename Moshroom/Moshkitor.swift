@@ -62,6 +62,10 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
   private let suggestionsStack = UIStackView()
   private var suggestionsHeight: NSLayoutConstraint!
 
+  // The Share-tray button in the control bar. Present only when the tray holds items (images shared
+  // to Moshroom via the system share sheet); tapping it opens the tray grid — see openTray / Moshtray.
+  private var trayButton: UIButton?
+
   // The host attachments upload to (the current Quick Connect connection), or nil if not connected.
   private let connectedHost: String?
   // Fired with the final command as it's written to the terminal, so SpaceController can notice an
@@ -169,6 +173,11 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
     textView.typingAttributes = _defaultTypingAttributes
     textView.selectedRange = NSRange(location: initial.length, length: 0)
     _updateSuggestions()
+
+    // A share can land (via the share extension) while this composer is open but backgrounded — the
+    // tray button must appear on return, when viewDidAppear won't fire for an already-presented VC.
+    NotificationCenter.default.addObserver(self, selector: #selector(_refreshTrayButton),
+                                           name: UIApplication.didBecomeActiveNotification, object: nil)
   }
 
   override func viewWillAppear(_ animated: Bool) {
@@ -206,6 +215,7 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
     // A cancelled interactive dismiss (drag the sheet down, then release) routes back through here
     // after viewWillDisappear already set isClosing — clear it so sends/uploads aren't stuck blocked.
     isClosing = false
+    _refreshTrayButton()   // a share may have landed (or the tray emptied) while we were away
     textView.becomeFirstResponder()
     // Cmd+V opened us on a closed editor — drop the clipboard in now that we're on screen and first
     // responder. One-shot: a return from a sub-picker must not paste again.
@@ -244,6 +254,10 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
     if pb.hasStrings || pb.hasImages || pb.hasURLs {
       rightItems.append(_barButton(systemImage: "doc.on.clipboard", action: #selector(smartPaste)))
     }
+    let tray = _barButton(systemImage: "photo.on.rectangle.angled", action: #selector(openTray))
+    tray.isHidden = MoshroomShareTray.isEmpty()   // shown only when something's been shared to Moshroom
+    trayButton = tray
+    rightItems.append(tray)
     rightItems.append(_barButton(systemImage: "paperclip", action: #selector(openMoshdrop)))
     rightItems.append(_barButton(systemImage: "paperplane.fill", action: #selector(sendAndClose)))
 
@@ -341,6 +355,39 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
     Moshdrop.pick(over: self) { [weak self] attachment in
       self?._insertAttachment(attachment)
     }
+  }
+
+  // The Share tray: images shared to Moshroom (system share sheet → the Moshroom share extension)
+  // wait in a small App-Group tray. This opens the grid to drop one inline; inserting removes it from
+  // the tray (a shared screenshot is a one-shot). Works on any tab, connected or not.
+  @objc private func openTray() {
+    MoshLog.log("tray", "open: \(MoshroomShareTray.count()) item(s)")
+    let tray = MoshtrayController(
+      onPick: { [weak self] url in self?._insertFromTray(url) },
+      onFinished: { [weak self] in self?._refreshTrayButton() })
+    // Full-screen + instant, matching every other Moshroom surface (Moshxplore/Moshtabs/launcher):
+    // .overFullScreen keeps the terminal in the window, and a stable full width sidesteps the sheet's
+    // animate-to-final-width cell-sizing race.
+    tray.modalPresentationStyle = .overFullScreen
+    present(tray, animated: false)
+  }
+
+  private func _insertFromTray(_ url: URL) {
+    if !textView.isFirstResponder { textView.becomeFirstResponder() }
+    switch Moshdrop.makeAttachment(localURL: url, displayName: url.lastPathComponent) {
+    case .success(let attachment):
+      MoshroomShareTray.remove(url)   // one-shot: a shared image isn't reused
+      MoshLog.log("tray", "inserted 1 inline, \(MoshroomShareTray.count()) left")
+      _insertAttachment(attachment)
+    case .failure:
+      MoshLog.log("tray", "insert failed (not agent-readable / staging)")
+      _composerAlert(title: "Couldn't insert",
+                     message: "That shared image couldn't be added. It may have been removed.")
+    }
+  }
+
+  @objc private func _refreshTrayButton() {
+    trayButton?.isHidden = MoshroomShareTray.isEmpty()
   }
 
   // Drop the inline chip at the cursor, fenced by spaces so its remote path stays a lone token.
