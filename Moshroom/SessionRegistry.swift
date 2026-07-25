@@ -124,6 +124,11 @@ protocol SuspendableSession: AnyObject {
     return session
   }
   
+  /// Keys of the sessions this run actually has (restored or created), as opposed to keys that only
+  /// exist in an archive. Used to protect live tabs from a late scene-discard report — see
+  /// SpaceController.onDidDiscardSceneSessions.
+  var liveSessionKeys: Set<UUID> { Set(_sessionsIndex.keys) }
+
   func remove(forKey key: UUID) {
     _metaIndex.removeValue(forKey: key)
     _fsRemove(forKey: key)

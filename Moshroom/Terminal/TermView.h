@@ -86,6 +86,7 @@ extern NSString * TermViewReadyNotificationKey;
 - (void)setFontSize:(NSNumber *)newSize;
 - (void)write:(NSString *)data;
 - (void)moshroomSanitizeModes;
+- (void)moshroomScrollToBottom;
 - (void)processKB:(NSString *)str;
 - (void)setCursorBlink:(BOOL)state;
 - (void)setClipboardWrite:(BOOL)state;

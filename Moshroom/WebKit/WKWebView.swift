@@ -414,15 +414,34 @@ extension WKWebViewGesturesInteraction: WKScriptMessageHandler {
       let contentSize = NSCoder.cgSize(for: msg["contentSize"] as? String ?? "")
       let characterSize = NSCoder.cgSize(for: msg["characterSize"] as? String ?? "")
       let isPrimary = msg["isPrimary"] as? Bool ?? true
-      
+
+      // This message arrives on EVERY content-height change — which, while a session is printing,
+      // is once per new line. Unconditionally parking the offset at the new bottom (what this did)
+      // meant a terminal receiving output could not be scrolled back AT ALL: the swipe moved the
+      // viewport and the very next line snapped it to the end, so reading history while an agent
+      // streamed was impossible and the terminal read as if it were fighting the finger. Assigning
+      // contentOffset also fires scrollViewDidScroll → reportScroll, so this reached hterm on every
+      // platform, pan gesture enabled or not.
+      // Follow the end only when the viewport was ALREADY there (the ordinary "tailing the output"
+      // case); otherwise leave the user's position alone, and merely clamp when the content shrank
+      // out from under it (hterm trims the scrollback in chunks). The 2pt of slack is deliberate,
+      // not an exact compare: content height is a whole number of character rows while the view
+      // height is not, so a viewport at the true bottom can sit fractionally short of it, and
+      // misreading that as "scrolled up" would stop the terminal following its own output.
+      let previousBottom = max(_scrollView.contentSize.height - _scrollView.bounds.height, 0)
+      let wasTailing = _scrollView.contentOffset.y >= previousBottom - 2
+
       _characterSize = characterSize
       _scrollView.contentSize = contentSize
-      let offset = CGPoint(x: 0, y: max(contentSize.height - _scrollView.bounds.height, 0));
-      _scrollView.contentOffset = offset
-      
+
+      let bottom = CGPoint(x: 0, y: max(contentSize.height - _scrollView.bounds.height, 0))
+      if wasTailing || _scrollView.contentOffset.y > bottom.y {
+        _scrollView.contentOffset = bottom
+      }
+
       _scrollView.panGestureRecognizer.isEnabled = isPrimary
       _termScrollView.panGestureRecognizer.isEnabled = !isPrimary
-      
+
       
     case "scrollTo":
       let animated = msg["animated"] as? Bool == true
@@ -438,7 +457,12 @@ extension WKWebViewGesturesInteraction: WKScriptMessageHandler {
       if (offset == _scrollView.contentOffset) {
         return
       }
-      // TODO: debounce?
+      // Applied immediately, never debounced: this is the hterm → native SYNC direction, and the
+      // scroll view is the mirror the touch path measures its deltas against (see
+      // scrollViewDidScroll / reportedScroll). Delaying it would let a gesture arriving in between
+      // compute against a stale offset and drift the two apart. The rate is already bounded: the JS
+      // bridge only posts scrollTo when its own position actually changed, and the equality check
+      // above drops the rest.
       _scrollView.setContentOffset(offset, animated: animated)
       
       

@@ -197,6 +197,13 @@ static int __sizeOfIncompleteSequenceAtTheEnd(const char *buffer, size_t len) {
 
 - (void)write:(NSString *)input
 {
+  // Moshroom: this is the ONE door every piece of user input walks through (composer sends, quick
+  // keys, the hardware-keyboard probe, ^C/^D, Moshnector's connect line, per-host on-connect). Any
+  // of them means "I am driving this terminal now", so the viewport must be at the live end — parked
+  // up in the scrollback, the answer to what you just sent lands off-screen and the terminal reads
+  // as frozen on stale text.
+  [self.view moshroomScrollToBottom];
+
   NSString *ctrlC = @"\x03";
   NSString *ctrlD = @"\x04";
 
@@ -241,6 +248,8 @@ static int __sizeOfIncompleteSequenceAtTheEnd(const char *buffer, size_t len) {
 
 - (void)sendBracketedPaste:(NSString *)input
 {
+  // A paste is user input too — same reason as -write:.
+  [self.view moshroomScrollToBottom];
   [self.view pasteString:input];
 }
 

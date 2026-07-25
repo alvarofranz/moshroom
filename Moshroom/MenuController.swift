@@ -61,28 +61,44 @@ fileprivate var attachedShortcuts: [UIKeyCommand] = []
   override private init() {}
   
   @objc public class func buildMenu(with builder: UIMenuBuilder) {
-    // We will embed our own textSize inside View, so just remove to avoid collisions.
+    // Drop the system menus that own shortcuts we want FIRST, before adding any command of our own:
+    // a command whose key equivalent is still taken at the moment it is inserted gets dropped
+    // silently (that is how New Tab went missing — the Font menu still held ⌘T).
+    // We embed our own textSize inside View, so remove that one to avoid collisions.
     builder.remove(menu: .textSize)
-    
+    // remove cmd+b, cmd+i and cmd+u
+    builder.remove(menu: .textStyle)
+    // remove cmd+t (Show Fonts), which collides with New Tab
+    builder.remove(menu: .font)
+
     let kbConfig = KBTracker.shared.loadConfig()
 
     attachedShortcuts = []
-    let shellMenuCommands:  [UICommand] = ShellMenu.allCases.map  { _generate(Command(rawValue: $0.rawValue)!, with: kbConfig) }
     let editMenuCommands:   [UICommand] = EditMenu.allCases.map   { _generate(Command(rawValue: $0.rawValue)!, with: kbConfig) }
       + Self.remainingStandardEditMenuCommands()
     let viewMenuCommands:   [UICommand] = ViewMenu.allCases.map   { _generate(Command(rawValue: $0.rawValue)!, with: kbConfig) }
     let windowMenuCommands: [UICommand] = WindowMenu.allCases.map { _generate(Command(rawValue: $0.rawValue)!, with: kbConfig) }
 
-    builder.insertSibling(UIMenu(title: "Shell",
-                                 image: nil,
-                                 identifier: UIMenu.Identifier("moshroom.menus.shellMenu"),
-                                 options: [],
-                                 children: shellMenuCommands), beforeMenu: .edit)
-  
-    // remove cmd+b, cmd+i and cmd+u
-    builder.remove(menu: .textStyle)
-    // remove cmd+t
-    builder.remove(menu: .font)
+    // The shell commands (New Window / New Tab / Close Tab / Close Window) live in the STANDARD File
+    // menu, and they are installed through File's LEAF GROUPS rather than through `.file` itself.
+    // Two things were measured on macOS 26 Catalyst: a custom top-level "Shell" menu inserted with
+    // `insertSibling(_:beforeMenu: .edit)` never appears (the menu bar showed Apple, Moshroom, File,
+    // Edit, Format, View, Window, Help — so New Tab and its ⌘T did not exist at all), and
+    // `replaceChildren(ofMenu: .file)` is silently ignored too (the builder still reported the
+    // original children right after the call). The File menu is a container of system groups
+    // (new-item, open, close, document, print) and replacing THOSE works — which also puts New Tab
+    // and Close Tab exactly where a Mac user looks for them.
+    builder.replaceChildren(ofMenu: UIMenu.Identifier("com.apple.menu.new-item")) { _ in
+      [_shellCommand(.windowNew, kbConfig), _shellCommand(.tabNew, kbConfig)]
+    }
+    builder.replaceChildren(ofMenu: UIMenu.Identifier("com.apple.menu.close")) { _ in
+      [_shellCommand(.tabClose, kbConfig), _shellCommand(.windowClose, kbConfig)]
+    }
+    // Document commands Catalyst adds by default, every one meaningless in a terminal:
+    // Open… / Open Recent, Duplicate / Move / Rename… / Export As…, and Print.
+    builder.remove(menu: UIMenu.Identifier("com.apple.menu.open"))
+    builder.remove(menu: UIMenu.Identifier("com.apple.menu.document"))
+    builder.remove(menu: UIMenu.Identifier("com.apple.menu.print"))
 
     builder.replaceChildren(ofMenu: .standardEdit) { _ in editMenuCommands   }
     builder.replaceChildren(ofMenu: .view)         { _ in viewMenuCommands  }
@@ -90,6 +106,11 @@ fileprivate var attachedShortcuts: [UIKeyCommand] = []
     
   }
   
+  // One shell command (with its configured shortcut, if any) — see buildMenu.
+  private class func _shellCommand(_ item: ShellMenu, _ kbConfig: KBConfig) -> UICommand {
+    return _generate(Command(rawValue: item.rawValue)!, with: kbConfig)
+  }
+
   private class func _generate(_ command: Command, with kbConfig: KBConfig) -> UICommand {
 
     // For the action to be different, we are passing it as part of the PropertyList.

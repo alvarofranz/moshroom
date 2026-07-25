@@ -122,6 +122,20 @@ class SpaceController: UIViewController {
     }
   }
   
+  // The ONE place that makes the pixels agree with the state: every terminal's web view is a sibling
+  // in a single shared container, so "which tab is visible" is pure hidden/front bookkeeping. The
+  // current terminal is placed, unhidden and brought to the front; every other live terminal is
+  // hidden. Any path that leaves two of them unhidden shows the user a tab that is NOT the one
+  // receiving their input — which is indistinguishable from "my session vanished".
+  private func _showOnlyCurrentTerminal() {
+    let current = currentTerm()
+    forEachActive { ctrl in
+      guard ctrl.viewIsLoaded, ctrl !== current else { return }
+      _ = ctrl.removeFromContainer()
+    }
+    current?.placeToContainer()
+  }
+
   private func forEachActive(block:(TermController) -> ()) {
     for key in _viewportsKeys {
       if let ctrl: TermController = SessionRegistry.shared.sessionFromIndexWith(key: key) {
@@ -435,13 +449,16 @@ class SpaceController: UIViewController {
     else {
       return
     }
-    
-    forEachActive { ctrl in
-      if ctrl.viewIsLoaded {
-        ctrl.placeToContainer()
-      }
-    }
-   
+
+    // Only the CURRENT terminal may be shown. This used to call placeToContainer() on EVERY live
+    // terminal, and that method ends in `isHidden = false` + bringSubviewToFront — so coming back to
+    // the foreground unhid every tab's web view at once (they are all siblings in one shared
+    // container) and left whichever was iterated last sitting on top. State, input focus and pixels
+    // then disagreed: measured live, the page VC reported tab A, input went to tab A, and the user
+    // was looking at tab B's session. Symmetric with the background handler, which already excludes
+    // the current terminal.
+    _showOnlyCurrentTerminal()
+
     currentTerm()?.resumeIfNeeded()
 
     if view.window === KBTracker.shared.input?.window {
@@ -566,17 +583,71 @@ extension SpaceController: UIStateRestorable {
             bgColor: CodableColor(uiColor: view.backgroundColor)
     )
   }
+
+  // Where the tab layout is kept for the Catalyst relaunch path (see moshroomRestore(from:)). It sits
+  // next to the per-session archives so the two are cleaned up together.
+  private static var _uiStateFileURL: URL {
+    FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+      .appendingPathComponent("sessions", isDirectory: true)
+      .appendingPathComponent("uistate.json")
+  }
+
+  // Mac Catalyst only: quitting the app DISCARDS its scene session, so the next launch is handed no
+  // stateRestorationActivity at all and every tab was forgotten (measured: quit with three tabs, come
+  // back to one). Keep our own snapshot of the layout — tab order and which one was current, which the
+  // session index cannot express because it is a dictionary — and fall back to it at launch.
+  // Deliberately not compiled on iOS: there, "no scene state" means the user swiped the app out of the
+  // switcher, and forgetting the tabs is the correct answer.
+  func moshroomPersistUIState() {
+    #if targetEnvironment(macCatalyst)
+    let url = Self._uiStateFileURL
+    try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
+                                            withIntermediateDirectories: true)
+    guard let data = try? JSONEncoder().encode(dumpUIState()) else { return }
+    try? data.write(to: url, options: .atomic)
+    #endif
+  }
+
+  // The one entry point the scene uses to rebuild its tabs: the system's scene state when there is
+  // some, our own snapshot when there is not (see moshroomPersistUIState).
+  func moshroomRestore(from session: UISceneSession) {
+    if let activity = session.stateRestorationActivity, UIState(userActivity: activity) != nil {
+      restoreWith(stateRestorationActivity: activity)
+      return
+    }
+    #if targetEnvironment(macCatalyst)
+    guard
+      let data = try? Data(contentsOf: Self._uiStateFileURL),
+      let state = try? JSONDecoder().decode(UIState.self, from: data)
+    else {
+      return
+    }
+    restore(withState: state)
+    #endif
+  }
   
+  // A scene session the system threw away: its tabs are gone for good, so drop their archives.
+  //
+  // EXCEPT the ones this run is using. On Mac Catalyst, quitting the app discards its scene session,
+  // and the system reports that discard to the NEXT launch (seconds after it starts) — by which time
+  // the app has restored the very same keys from the same UIState. Removing them here deleted each
+  // restored tab's archive moments after it came back, which is why a relaunch always showed a single
+  // tab and the persisted index ended up empty: three tabs open, `sessions/index.json` down to one
+  // entry, and `[]` after a clean quit. Keys that this run does NOT hold are still genuinely orphaned
+  // and are still removed, so nothing leaks.
   @objc static func onDidDiscardSceneSessions(_ sessions: Set<UISceneSession>) {
     let registry = SessionRegistry.shared
+    let live = registry.liveSessionKeys
     sessions.forEach { session in
       guard
         let uiState = UIState(userActivity: session.stateRestorationActivity)
       else {
         return
       }
-      
-      uiState.keys.forEach { registry.remove(forKey: $0) }
+
+      uiState.keys
+        .filter { !live.contains($0) }
+        .forEach { registry.remove(forKey: $0) }
     }
   }
 }
@@ -1076,6 +1147,12 @@ extension SpaceController {
       }
       term.resumeIfNeeded()
       self._currentKey = term.meta.key
+      // Keep the on-disk tab layout current (Catalyst relaunch path, see moshroomPersistUIState).
+      self.moshroomPersistUIState()
+      // Assert the visible web view on every install. The page VC being right is not enough: the
+      // terminals' web views are siblings in a shared container and a stale one left unhidden by any
+      // other path would keep covering the tab just switched to.
+      self._showOnlyCurrentTerminal()
       self._syncTerminalBackground()
       if attachInput {
         self._attachInputToCurrentTerm()
@@ -1115,6 +1192,8 @@ extension SpaceController {
     empty.onNewTab = { [weak self] in self?._newShellAction() }
     _viewportsController.setViewControllers([empty], direction: .forward, animated: false) { _ in
       self._spaceControllerAnimating = false
+      // Zero tabs is a real state the user chose — persist it too, so it survives a relaunch.
+      self.moshroomPersistUIState()
       // Same replay discipline as the other two completion sites: an empty-install requested
       // while this one was in flight re-runs (only meaningful if keys are still empty), and a
       // tab born while the placeholder was installing (New tab racing the close) replays

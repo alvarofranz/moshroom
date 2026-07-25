@@ -94,7 +94,14 @@ struct Complete {
   }
   
   static var __commandHintsCache: [String: String]? = nil
-  
+
+  // One-line descriptions shown next to a Tab-completion candidate at the local `moshroom>` prompt
+  // (see _hint). Deliberately a WIDER vocabulary than the commands this app ships: a hint is only
+  // ever looked up for a candidate that came out of _allCommands(), which is driven by the ios_system
+  // registry — so entries for tools Moshroom does not bundle (awk, tar, curl, ls …) are inert
+  // reference text, never offered to the user. Do not "clean" them by matching them to the registry:
+  // that only makes the table smaller, and it silently loses the hints again if a command module is
+  // ever re-added.
   static func _commandHints() -> [String: String] {
     if let cache = __commandHintsCache {
       return cache
@@ -104,8 +111,6 @@ struct Complete {
       "bc": "Calculator 🧮.",
       "cat": "Concatenate and print files.",
       "cd":  "Change directory.",
-//  //    "chflags": "chflags", // TODO
-//  //    "chksum": "chksum", // TODO
       "clear": "Clear the terminal screen. 🙈",
       "compress": "Compress data.",
       "cp": "Copy files and directories",
@@ -129,13 +134,11 @@ struct Complete {
       "host": "DNS lookup utility.", // fish
       "less": "Pager.",
       "link": "Make links.", // fish
-//      "ln": "", // TODO
       "ls": "List files and directories",
       "md5": "Calculate a message-digest fingerprint (checksum) for a file.", // fish
       "mkdir": "Make directories.", // fish
       "mosh": "Runs mosh client. 🦄",
       "mv": "Move files and directories.",
-//      "nc": "", // TODO
       "nslookup": "Query Internet name servers interactively", // fish
       "pbcopy": "Copy to the pasteboard.",
       "pbpaste": "Paste from the pasteboard.",
@@ -143,17 +146,14 @@ struct Complete {
       "printenv": "Print out the environment.", // fish
       "pwd": "Return working directory name.", // fish
       "readlink": "Display file status.", // fish
-//  //    @"rlogin": @"", // TODO: REMOVE
       "rm": "Remove files and directories.",
       "rmdir": "Remove directories.", // fish
       "scp": "Secure copy (remote file copy program).", // fish
       "sed": "Stream editor.", // fish
-//  //    @"setenv": @"", // TODO
       "sftp": "Secure file transfer program.", // fish
       "sort": "Sort or merge records (lines) of text and binary files.", // fish
       "ssh": "Runs ssh client. 🐌",
       "ssh-copy-id": "Copy an identity to the server. 💌",
-//  //    @"ssh-keygen": @"", // TODO
       "stat": "Display file status.", // fish
       "sum": "Display file checksums and block counts.", // fish
       "tail": "Display the last part of a file.", // fish
@@ -162,12 +162,10 @@ struct Complete {
       "telnet": "User interface to the TELNET protocol.", // fish
       "theme": "Choose a theme 💅",
       "touch": "Change file access and modification times.", // fish
-//      "tr": "", // TODO
       "uname": "Print operating system name.", // fish
       "uncompress": "Expand data.",
       "uniq": "Report or filter out repeated lines in a file.", // fish
       "unlink": "Remove directory entries.", // fish
-//  //    @"unsetenv": @"", // TODO
       "uptime": "Show how long system has been running.", // fish
       "wc": "Words and lines counter.",
       "whoami": "Display effective user id.", // fish

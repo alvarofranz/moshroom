@@ -41,8 +41,11 @@
   BOOL _enforceSuspension;
 }
   
+// SIGPIPE handler. Its whole job is to exist: with a handler installed, writing to a closed pipe
+// (a session whose reader just went away) returns EPIPE to the caller instead of killing the app.
+// It must stay EMPTY — a signal handler may only call async-signal-safe functions, and logging from
+// here (it used to NSLog) is not one of them.
 void __on_pipebroken_signal(int signum){
-  NSLog(@"PIPE is broken");
 }
 
 void __setupProcessEnv(void) {

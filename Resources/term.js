@@ -67,6 +67,77 @@ hterm.openUrl = function(url) {
 // per step of a live drag / handle drag) and on scroll/resize.
 var _moshroomSelOverlay = null;
 
+// A Range over terminal rows reports OVERLAPPING client rects: for each selected row there is the
+// full row box AND the narrower box around the glyphs inside it. Painting every rect composited the
+// translucent red twice wherever they overlapped, so the highlight came out in two shades — darker
+// over the text, lighter over the empty tail of the line. Keep only the rects that no other rect
+// already covers (equal duplicates keep the first), so every pixel of a selection gets exactly one
+// coat and the red is uniform.
+function _moshroomDedupeRects(rects) {
+  var out = [];
+  for (var i = 0; i < rects.length; i++) {
+    var r = rects[i];
+    if (r.width <= 0 || r.height <= 0) {
+      continue;
+    }
+    var covered = false;
+    for (var j = 0; j < rects.length && !covered; j++) {
+      if (j === i) {
+        continue;
+      }
+      var o = rects[j];
+      if (o.width <= 0 || o.height <= 0) {
+        continue;
+      }
+      var contains = o.left <= r.left + 1 && o.top <= r.top + 1 &&
+                     o.right >= r.right - 1 && o.bottom >= r.bottom - 1;
+      if (!contains) {
+        continue;
+      }
+      var areaO = o.width * o.height;
+      var areaR = r.width * r.height;
+      // Strictly bigger wins; between identical rects the earlier index survives.
+      covered = areaO > areaR || (areaO === areaR && j < i);
+    }
+    if (!covered) {
+      out.push(r);
+    }
+  }
+  return out;
+}
+
+// A selection that spans more than one row highlights every row but the last one all the way to the
+// END OF THE LINE — the convention in every browser and terminal, and also exactly what the platform's
+// own selection layer underneath paints (that layer follows the web view's red tintColor and shows
+// through at a low alpha). The Range's rect for the FIRST row stops where that row's text stops, so
+// without this the tail of the first row was left with only the faint platform tint: the same
+// selection appeared in two different shades. Widen every row except the bottom-most to the row width.
+function _moshroomFillToLineEnd(rects) {
+  if (rects.length < 2) {
+    return rects;
+  }
+  var rowWidth = 0;
+  var bottomTop = -Infinity;
+  for (var i = 0; i < rects.length; i++) {
+    rowWidth = Math.max(rowWidth, rects[i].right);
+    bottomTop = Math.max(bottomTop, rects[i].top);
+  }
+  var screen = t && t.scrollPort_ ? t.scrollPort_.screen_ : null;
+  if (screen && screen.clientWidth > rowWidth) {
+    rowWidth = screen.clientWidth;
+  }
+  var out = [];
+  for (var j = 0; j < rects.length; j++) {
+    var r = rects[j];
+    if (r.top >= bottomTop - 1 || r.right >= rowWidth - 1) {
+      out.push(r);
+      continue;
+    }
+    out.push({left: r.left, top: r.top, width: rowWidth - r.left, height: r.height});
+  }
+  return out;
+}
+
 function _moshroomPaintSelection() {
   if (!_moshroomSelOverlay) {
     _moshroomSelOverlay = document.createElement('div');
@@ -79,7 +150,7 @@ function _moshroomPaintSelection() {
   if (!sel || sel.rangeCount === 0 || sel.isCollapsed) {
     return;
   }
-  var rects = sel.getRangeAt(0).getClientRects();
+  var rects = _moshroomFillToLineEnd(_moshroomDedupeRects(sel.getRangeAt(0).getClientRects()));
   for (var i = 0; i < rects.length; i++) {
     var r = rects[i];
     if (r.width <= 0 || r.height <= 0) {
@@ -386,11 +457,23 @@ function term_sanitizeModes() {
   t.primaryScreen_.textAttributes.reset();
 }
 
+// The user just SENT something (a composed line, a quick key, a control byte, a paste). A terminal
+// you are typing into has to show you the answer: if the viewport is parked up in the scrollback,
+// snap it back to the live end. hterm's own `scroll-on-keystroke` never fires here because Moshroom
+// types through TermDevice, not hterm's keyboard (which is uninstalled) — so this is that standard
+// behaviour, wired to OUR input path. Output alone deliberately does NOT scroll: reading history
+// while a command chatters on below is the whole point of a scrollback.
+function term_scrollToBottom() {
+  if (!t || !t.scrollPort_ || t.scrollPort_.isScrolledEnd) {
+    return;
+  }
+  t.scrollEnd();
+}
+
 function _setTermCoordinates(event, x, y) {
   // One based row/column stored on the mouse event.
   var ty = (y / t.scrollPort_.characterSize.height | 0) + 1;
   var tx = (x / t.scrollPort_.characterSize.width | 0) + 1;
-//  console.log(`x:${x},y: ${y}, col:${tx}, row:${ty}`);
   event.terminalRow = ty;
   event.terminalColumn = tx;
 }

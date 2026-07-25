@@ -313,8 +313,10 @@ class EditorViewController: UIViewController, TextViewDelegate, UINavigationItem
 
   override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
     if action == #selector(deleteSnippet) {
-      // TODO: check location
-      return true
+      // Only offer Delete when there is something to delete. A brand-new snippet has no
+      // `editingSnippet` yet, and SearchModel.deleteSnippet() just returns for that case — so the
+      // item used to be offered and then do nothing at all when tapped.
+      return model.editingSnippet != nil
     }
     return super.canPerformAction(action, withSender: sender)
   }

@@ -144,3 +144,14 @@ enum MoshLog {
     try? out.write(to: url)
   }
 }
+
+/// Objective-C door to MoshLog. Half of the terminal core (AppDelegate, MCPSession, TermView …) is
+/// ObjC and could not reach the Swift enum, so the parts of the app most likely to misbehave were the
+/// ones that could not leave a trace. Same privacy contract: decisions and metadata, never secrets
+/// and never what the user typed.
+@objc(MoshLogBridge)
+public class MoshLogBridge: NSObject {
+  @objc public static func log(_ tag: String, message: String) {
+    MoshLog.log(tag, message)
+  }
+}

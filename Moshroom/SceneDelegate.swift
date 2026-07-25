@@ -76,7 +76,10 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     conditions.canActivateForTargetContentIdentifierPredicate = NSPredicate(value: true)
     conditions.prefersToActivateForTargetContentIdentifierPredicate = NSPredicate(format: "SELF == 'moshroom://open-scene/\(scene.session.persistentIdentifier)'")
 
-    _spCtrl.restoreWith(stateRestorationActivity: session.stateRestorationActivity)
+    // Not restoreWith(stateRestorationActivity:) directly: on Mac Catalyst a quit discards the scene
+    // session, so this launch is handed no scene state at all and the tabs would be lost. See
+    // SpaceController.moshroomRestore(from:), which falls back to our own on-disk layout there.
+    _spCtrl.moshroomRestore(from: session)
 
     let window = UIWindow(windowScene: windowScene)
     self.window = window

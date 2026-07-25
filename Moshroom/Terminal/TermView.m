@@ -74,6 +74,11 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
   // The process died while this tab was hidden/backgrounded — reload deferred to the moment the
   // tab is next shown (reloading a hidden tab under memory pressure would just get killed again).
   BOOL _needsReloadOnReveal;
+
+#if DEBUG
+  // Dev-only JS console poller (see _startDebugJSProbe).
+  NSTimer *_debugProbeTimer;
+#endif
 }
 
 
@@ -147,6 +152,50 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
   [_webView setUserInteractionEnabled:userInteractionEnabled];
 }
 
+#if DEBUG
+// MOSHROOM DEV PROBE (DEBUG builds only) — a file-driven JS console for the terminal web view, so a
+// rendering question ("what does hterm think its scroll state is?") can be answered from the CLI
+// without attaching a debugger. Write JS into <AppSupport>/Moshroom/jsq.txt; the result lands in
+// jsout.txt. Never compiled into a release build.
+- (NSString *)_debugProbeDir
+{
+  NSString *dir = [NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory, NSUserDomainMask, YES).firstObject
+                   stringByAppendingPathComponent:@"Moshroom"];
+  [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+  return dir;
+}
+
+- (void)_startDebugJSProbe
+{
+  if (_debugProbeTimer) {
+    return;
+  }
+  __weak typeof(self) weakSelf = self;
+  _debugProbeTimer = [NSTimer scheduledTimerWithTimeInterval:0.35 repeats:YES block:^(NSTimer *timer) {
+    typeof(self) sself = weakSelf;
+    // Only the VISIBLE terminal answers. With the "show only the current terminal" invariant in
+    // SpaceController, exactly one live terminal is ever unhidden, so this identifies the current tab
+    // unambiguously (before that fix several tabs qualified and whichever timer fired first consumed
+    // the query, which made answers come from arbitrary tabs).
+    if (!sself || sself.window == nil || sself.isHidden) {
+      return;
+    }
+    NSString *qPath = [[sself _debugProbeDir] stringByAppendingPathComponent:@"jsq.txt"];
+    NSString *js = [NSString stringWithContentsOfFile:qPath encoding:NSUTF8StringEncoding error:nil];
+    if (js.length == 0) {
+      return;
+    }
+    [[NSFileManager defaultManager] removeItemAtPath:qPath error:nil];
+    NSString *outPath = [[sself _debugProbeDir] stringByAppendingPathComponent:@"jsout.txt"];
+    [sself->_webView evaluateJavaScript:js completionHandler:^(id result, NSError *error) {
+      NSString *out = error ? [NSString stringWithFormat:@"ERROR: %@", error.localizedDescription]
+                            : [NSString stringWithFormat:@"%@", result];
+      [out writeToFile:outPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    }];
+  }];
+}
+#endif
+
 - (void)_addWebView
 {
   WKWebViewConfiguration *configuration = [[WKWebViewConfiguration alloc] init];
@@ -173,6 +222,15 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
   // caret-color:transparent 3×), so a red tint here does NOT bring a caret back — the terminal is
   // read-only (you type in Moshkitor).
   _webView.tintColor = [UIColor moshroomTint];
+
+#if DEBUG
+  // Dev builds only: let Safari's Web Inspector attach to the terminal, and start the file-driven
+  // JS probe used to diagnose rendering/scroll behaviour from the command line.
+  if (@available(iOS 16.4, *)) {
+    _webView.inspectable = YES;
+  }
+  [self _startDebugJSProbe];
+#endif
 
   _editMenuIteraction = [[UIEditMenuInteraction alloc] initWithDelegate:self];
   [_webView addInteraction:_editMenuIteraction];
@@ -249,6 +307,12 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
 - (void)webViewWebContentProcessDidTerminate:(WKWebView *)webView
 {
   _isReady = NO;
+  // The renderer may have died in the MIDDLE of an evaluateJavaScript, and that call's completion
+  // handler — the only thing that clears _jsIsBusy — will then never arrive. Left latched, -write:
+  // would append to _jsBuffer forever and the recovered tab, live session and all, would never
+  // print another byte: a terminal that looks fine and is permanently mute. Unlatch here; the
+  // buffered output is flushed once the reloaded page reports ready.
+  [self _resetJSPipelineLatch];
   BOOL visible = self.window != nil && !self.isHidden
     && self.window.windowScene.activationState == UISceneActivationStateForegroundActive;
   if (visible) {
@@ -256,6 +320,13 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
   } else {
     _needsReloadOnReveal = YES;
   }
+}
+
+- (void)_resetJSPipelineLatch
+{
+  dispatch_async(_jsQueue, ^{
+    _jsIsBusy = NO;
+  });
 }
 
 - (void)moshroomReloadIfNeeded
@@ -401,6 +472,22 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
     
     NSString *jsScript = term_write(buffer);
     [self _evalJSScript:jsScript];
+  });
+}
+
+// Moshroom: the user just sent input to the session — bring the viewport back to the live end (see
+// term_scrollToBottom in term.js). Called from TermDevice's single input choke point, so it covers
+// every way input reaches a session: the composer, quick keys, the hardware-keyboard probe, control
+// bytes and pastes. Cheap and idempotent (JS bails when already at the end), and NOT serialized
+// behind the output pipeline: it must land promptly, and any output that follows keeps the viewport
+// pinned at the end anyway.
+- (void)moshroomScrollToBottom
+{
+  dispatch_async(dispatch_get_main_queue(), ^{
+    if (!_isReady) {
+      return;
+    }
+    [_webView evaluateJavaScript:@"term_scrollToBottom();" completionHandler:nil];
   });
 }
 
@@ -574,6 +661,9 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
     // one (font size / theme may have changed since), then let the controller nudge the session
     // into repainting the fresh, blank hterm.
     [self applyTermUIState:self.termUIState];
+    // Anything the session wrote while the renderer was dead is still queued — flush it into the
+    // rebuilt hterm now (a no-op when the buffer is empty).
+    [self write:@""];
     id tc = self.termController;
     if ([tc respondsToSelector:@selector(moshroomTermViewDidRecover)]) {
       [tc performSelector:@selector(moshroomTermViewDidRecover)];
@@ -804,6 +894,10 @@ static NSString * _sanitizeTextForClipboard(NSString *text) {
   _gestureInteraction = nil;
   [_layoutDebounceTimer invalidate];
   _layoutDebounceTimer = nil;
+#if DEBUG
+  [_debugProbeTimer invalidate];
+  _debugProbeTimer = nil;
+#endif
 }
 
 - (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gestureRecognizer {

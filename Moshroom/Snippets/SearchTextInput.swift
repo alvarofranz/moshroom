@@ -190,10 +190,13 @@ class SearchTextInput: UITextField, UITextFieldDelegate {
 struct SearchView: UIViewRepresentable {
   @ObservedObject var model: SearchModel
   
+  // The model is attached in updateUIView, not here, and that is on purpose: assigning `model` runs
+  // its didSet, which is what pulls `model.input` into the field's text. SwiftUI calls updateUIView
+  // right after makeUIView and again on every model change, so one code path keeps the field in sync
+  // for both the first render and later updates. Passing the model to an initializer instead would
+  // skip didSet exactly once (it does not fire during init) and need the sync duplicated.
   func makeUIView(context: UIViewRepresentableContext<Self>) -> SearchTextInput {
-    // TODO Why not initializing the SearchTextInput with the provided model?
-    // It would be better than the var model: Model! = nil
-    let view = SearchTextInput() //SearchTextView.create(model: model)
+    let view = SearchTextInput()
     model.inputView = view
     return view
   }
