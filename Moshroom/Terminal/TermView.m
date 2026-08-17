@@ -484,11 +484,19 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
 - (void)moshroomScrollToBottom
 {
   dispatch_async(dispatch_get_main_queue(), ^{
-    if (!_isReady) {
+    // Already at the live end (the overwhelmingly common case, every keystroke of a TUI session):
+    // skip the round trip entirely. The native scroll view and hterm's viewport are two views of
+    // the same offset, so this flag cannot disagree with the page about where it is.
+    if (!_isReady || _gestureInteraction.isTailing) {
       return;
     }
     [_webView evaluateJavaScript:@"term_scrollToBottom();" completionHandler:nil];
   });
+}
+
+- (BOOL)moshroomIsTailing
+{
+  return _gestureInteraction.isTailing;
 }
 
 // Moshroom: reset latched display modes (alternate screen, hidden cursor, mouse reporting,

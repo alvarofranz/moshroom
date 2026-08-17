@@ -90,8 +90,30 @@ enum Moshkeys {
     sc.view.bringSubviewToFront(toast)
     sc.moshroomTabToast = toast
 
+    // "Back to live" chip — the terminal is a transcript you can read back through, and a viewport
+    // parked up in the scrollback while the session prints below it reads exactly like a frozen
+    // terminal (there was no way to tell, and no way back other than sending something). Shown only
+    // while scrolled away from the end, driven by SpaceController off the tailing notification.
+    let live = moshkeyRoundButton()
+    live.setMoshIcon("arrow.down.to.line")
+    live.translatesAutoresizingMaskIntoConstraints = false
+    live.alpha = 0
+    live.isHidden = true
+    live.accessibilityLabel = "Back to live"
+    live.addAction(UIAction { [weak sc] _ in sc?.moshroomScrollToLiveEnd() }, for: .touchUpInside)
+    sc.view.addSubview(live)
+    sc.moshroomLiveButton = live
+    #if targetEnvironment(macCatalyst)
+    // No bottom cluster on the Mac, so the chip owns the bottom-right corner itself.
+    NSLayoutConstraint.activate([
+      live.trailingAnchor.constraint(equalTo: sc.view.safeAreaLayoutGuide.trailingAnchor, constant: -14),
+      live.bottomAnchor.constraint(equalTo: sc.view.safeAreaLayoutGuide.bottomAnchor, constant: -10),
+    ])
+    sc.view.bringSubviewToFront(live)
+    #endif
+
     #if !targetEnvironment(macCatalyst)
-    bar.chrome = [compose, tabs, launcher, arrowEnter]   // kept tappable above the dismiss overlay
+    bar.chrome = [compose, tabs, launcher, arrowEnter, live]   // kept tappable above the dismiss overlay
     bar.composeButton = compose                      // stepped aside while the ↕ arrow mode is active
     bar.arrowEnterButton = arrowEnter                // takes the compose spot during arrow mode
 
@@ -102,10 +124,14 @@ enum Moshkeys {
       compose.bottomAnchor.constraint(equalTo: sc.view.safeAreaLayoutGuide.bottomAnchor, constant: -10),
       arrowEnter.trailingAnchor.constraint(equalTo: sc.view.safeAreaLayoutGuide.trailingAnchor, constant: -14),
       arrowEnter.bottomAnchor.constraint(equalTo: sc.view.safeAreaLayoutGuide.bottomAnchor, constant: -10),
+      // Stacked right above the compose key, so the thumb finds it without crowding the row.
+      live.trailingAnchor.constraint(equalTo: compose.trailingAnchor),
+      live.bottomAnchor.constraint(equalTo: compose.topAnchor, constant: -10),
     ])
     sc.view.bringSubviewToFront(bar)
     sc.view.bringSubviewToFront(compose)
     sc.view.bringSubviewToFront(arrowEnter)
+    sc.view.bringSubviewToFront(live)
     #endif
   }
 }

@@ -223,11 +223,12 @@ function term_setupDefaults() {
   term_set('audible-bell-sound', '');
   term_set('receive-encoding', 'raw'); // we are UTF8
   term_set('allow-images-inline', true); // need to make it work
-  // Never translate wheel/swipe into arrow keys on the alternate screen. At a shell prompt
-  // inside tmux/mosh (alt screen, no mouse reporting) every wheel tick became \x1bOA/\x1bOB:
-  // it cycled the shell history under the user's finger and, split at tmux's escape-time,
-  // leaked literal "[A"/"[B" onto the command line. TUIs that want scroll ask for mouse
-  // reporting and get real wheel reports; that path does not depend on this preference.
+  // hterm's own alternate-screen arrow emulation stays OFF: it fired one arrow per wheel tick with
+  // no idea whether anything else could have handled the swipe, which at a shell prompt inside
+  // tmux/mosh cycled the shell history under the user's finger and leaked literal "[A"/"[B" when
+  // tmux's escape-time split the sequence. Moshroom's own ladder replaces it (see "Scrolling"
+  // below): mouse reports first, then the alternate screen's local history, and a Down key (never
+  // an Up) as the last resort, one write per gesture.
   term_set('scroll-wheel-may-send-arrow-keys', false);
   // A gentle bump to the client-side scrollback scroll speed (hterm's own pixel-delta wheel path,
   // the instant local scroll on the normal screen). Default is 1; 2 is noticeably less sluggish
@@ -455,6 +456,7 @@ function term_sanitizeModes() {
   // The pen too: a child that died mid-output with SGR attributes latched (reverse video, a
   // background color) must not paint the local prompt with them.
   t.primaryScreen_.textAttributes.reset();
+  _moshroomAltScrollMode = false;
 }
 
 // The user just SENT something (a composed line, a quick key, a control byte, a paste). A terminal
@@ -478,18 +480,271 @@ function _setTermCoordinates(event, x, y) {
   event.terminalColumn = tx;
 }
 
-function term_reportWheelEvent(name, x, y, deltaX, deltaY) {
-  if (!t.prompt) {
+// ---- Scrolling -------------------------------------------------------------------------------
+// A swipe on the ALTERNATE screen (mosh, tmux, a pager, any full-screen program) walks a ladder,
+// and every rung of it is decided here, because only the page knows what the remote asked for and
+// what the local buffers hold:
+//
+//   1. mouse reporting ON  -> the REMOTE owns the gesture: one standard wheel report per row of
+//      finger movement (tmux with `mouse on`, opencode, vim `mouse=a`).
+//   2. text above the viewport -> scroll the local history. hterm keeps a SEPARATE scrollback for
+//      the alternate screen, and a full-screen program that SCROLLS (a pager walking down a file)
+//      banks its lines there, so that history is real; it was simply unreachable, because the
+//      gesture was hard-wired to wheel reports nothing was listening for.
+//   3. nothing local to move -> one cursor key per row, DOWNWARDS ONLY, which is the safe half of
+//      what desktop terminals call alternate scroll: a pager that repaints in place pages forward
+//      on Down, an editor moves its cursor down, and at a shell prompt Down is readline's
+//      next-history, which does nothing when no history is being walked.
+//
+// The direction asymmetry is the whole design, and it is measured, not cautious: Up at a shell
+// prompt is previous-history, which is what made 1.0.4 unbearable (a swipe to read back typed the
+// last command onto the prompt). Nothing needs Up either, because a program that scrolled has its
+// lines in the local bank (rung 2 shows exactly the content the user is reaching for) and a program
+// that did not has nothing above its first screen to show. So Up is never sent, in any state.
+//
+// Before all this, "alternate screen" alone armed the remote path, so a swipe in any full-screen
+// program that had not asked for the mouse produced literally nothing: no report to send, no local
+// scroll attempted. That is the whole "sometimes scrolling does nothing" class of bug.
+//
+// Measured on the live demo host (2026-08-17), because the ladder's shape follows from it: `less`
+// answers to SS3 (\x1bOB) and ignores CSI (\x1b[B) once it sets DECCKM, and it DOES bank the lines
+// that scroll off it (18 -> 21 scrollback rows for 3 lines). A mosh session banks nothing at all
+// (120 lines of output, scrollback still 0): mosh repaints frames rather than scrolling, which is
+// why it has no scrollback anywhere and why tmux (with `mouse on`, so rung 1) is the answer there.
+var _moshroomAltScrollMode = false;   // the remote explicitly asked for it (DECSET 1007)
+// How far above the viewport to look for text before offering a local scroll. A window, not the row
+// about to be revealed: blank lines inside real history must not stall the scroll, while the run of
+// blank rows that entering the alternate screen leaves behind must not be walked into. Bounded
+// because this runs per gesture tick.
+var _moshroomHistoryScanRows = 40;
+
+function _moshroomMouseReportOn() {
+  return !!(t && t.vt && !t.defeatMouseReports_ &&
+            t.vt.mouseReport !== t.vt.MOUSE_REPORT_DISABLED);
+}
+
+var _moshroomBaseSetDECMode = hterm.VT.prototype.setDECMode;
+hterm.VT.prototype.setDECMode = function(code, state) {
+  if ('' + code === '1007') {
+    // xterm's alternate scroll mode: the remote is asking for the wheel as cursor keys. Honoured
+    // whatever the user's own preference says, because it is an explicit request.
+    _moshroomAltScrollMode = !!state;
+  }
+  _moshroomBaseSetDECMode.call(this, code, state);
+};
+
+var _moshroomBaseVTReset = hterm.VT.prototype.reset;
+hterm.VT.prototype.reset = function() {
+  _moshroomBaseVTReset.call(this);
+  _moshroomAltScrollMode = false;
+};
+
+// Output must never yank the viewport away from someone reading history. hterm re-arms the "follow
+// the output" scroll from two places: a row shifting off the screen (already gated on being at the
+// end) and the scrollback TRIM at 6000 rows, which was not gated at all, so a long build log
+// snapped you back to the bottom mid-read. One guard covers both.
+var _moshroomBaseScheduleScrollDown = hterm.Terminal.prototype.scheduleScrollDown_;
+hterm.Terminal.prototype.scheduleScrollDown_ = function() {
+  if (this.scrollPort_ && !this.scrollPort_.isScrolledEnd) {
+    return;
+  }
+  _moshroomBaseScheduleScrollDown.call(this);
+};
+
+// ---- Sub-row (pixel-smooth) scrolling --------------------------------------------------------
+// hterm redrew only when the TOP ROW INDEX changed and never applied the remainder, so a finger
+// moving continuously dragged the text in whole-row steps (~18pt at the default font): the one
+// thing that most gave away "this is not a native terminal". The remainder is now a compositor
+// transform on the row container (plus the cursor overlay, which must move with it), with one extra
+// row rendered so the bottom of the viewport is never a gap. Rows are still only re-rendered once
+// per row crossed, so the cost of this is one transform per frame.
+var _moshroomLastTopRow = -1;
+var _moshroomLastBottomRow = -1;
+
+// The live scroll position in pixels. The module-private copy hterm keeps (`Ee`) is unreachable from
+// here, but the scroller object holds the same value, and it is the more current of the two: a
+// hterm-initiated scroll sets it immediately, while hterm's copy only catches up once the native
+// round trip reports back.
+function _moshroomScrollTop(sp) {
+  var scroller = sp.scroller_;
+  var y = scroller ? scroller._y : 0;
+  if (typeof y !== 'number') {
+    return 0;
+  }
+  // hterm's scroll-to-end target overshoots the real end by the bottom margin (getScrollMax_ adds
+  // margins that the content height already carries), and a scroll view accepts a programmatic
+  // offset past its own limit. Unclamped that overshoot rendered the SAME live end two different
+  // ways: flush when output had scrolled there, top row sliced off when scrollEnd had. The
+  // scroller's own dimensions are the content's true extent, so clamp to them. Negative values are
+  // left alone: that is the overscroll bounce, which is real.
+  var max = (scroller._contentHeight || 0) - (scroller._viewHeight || 0);
+  if (y > 0 && y > max) {
+    return max > 0 ? max : 0;
+  }
+  return y;
+}
+
+// hterm ROUNDED the offset to the nearest row, which is only right when the viewport is always
+// parked on a row boundary. With a sub-row shift the top row is the one the offset is INSIDE.
+hterm.ScrollPort.prototype.getTopRowIndex = function() {
+  var ch = this.characterSize.height;
+  var y = _moshroomScrollTop(this);
+  if (!(ch > 0) || y <= 0) {
+    return 0;
+  }
+  return Math.floor(y / ch);
+};
+
+function _moshroomApplySubRowOffset(sp) {
+  if (!sp.rowNodes_) {
+    return;
+  }
+  var ch = sp.characterSize.height;
+  var y = _moshroomScrollTop(sp);
+  var shift = 0;
+  if (y < 0) {
+    shift = y;                                 // overscroll / bounce: hterm's own case, kept
+  } else if (ch > 0) {
+    shift = y - Math.floor(y / ch) * ch;       // the remainder inside the top row
+  }
+  var css = shift ? 'translate3d(0, ' + (-shift) + 'px, 0)' : '';
+  if (sp.rowNodes_.style.transform !== css) {
+    sp.rowNodes_.style.transform = css;
+  }
+  var overlay = sp.rowProvider_ ? sp.rowProvider_.cursorOverlayNode_ : null;
+  if (overlay && overlay.style.transform !== css) {
+    overlay.style.transform = css;
+  }
+}
+
+// One row more than fits: with a sub-row shift the last row is partly above the fold, and the strip
+// left over by a viewport that is not a whole number of rows tall would otherwise be blank.
+hterm.ScrollPort.prototype.drawVisibleRows_ = function(topRowIndex, bottomRowIndex) {
+  var total = this.rowProvider_.getRowCount();
+  var count = Math.min(this.visibleRowCount + 1, total);
+  var rows = [];
+  for (var i = 0; i < count; i++) {
+    var node = this.fetchRowNode_(topRowIndex + i);
+    if (node) {
+      rows.push(node);
+    }
+  }
+  this.renderRef.setRows(rows);
+};
+
+// Replaces hterm's version wholesale: the redraw decision has to use the same quantisation as
+// getTopRowIndex above (hterm's used its own rounding, so a floor-based top row could change with no
+// redraw scheduled and the transform would render the wrong row at the wrong offset), and the
+// no-redraw case still has to move the pixels.
+hterm.ScrollPort.prototype.onScroll_ = function(e) {
+  var size = this.getScreenSize();
+  if (size.width !== this.lastScreenWidth_ || size.height !== this.lastScreenHeight_) {
+    this.resize();
+    return;
+  }
+  var top = this.getTopRowIndex();
+  var bottom = this.getBottomRowIndex(top);
+  if (top !== _moshroomLastTopRow || bottom !== _moshroomLastBottomRow) {
+    _moshroomLastTopRow = top;
+    _moshroomLastBottomRow = bottom;
+    this.redraw_();                            // ends in syncRowNodesDimensions_, see below
+    this.publish('scroll', {scrollPort: this});
+  } else {
+    _moshroomApplySubRowOffset(this);
+  }
+  // Our scroll produces no DOM scroll event, and the red selection overlay is painted from live
+  // Range geometry, so it would sit still while the text moved under it.
+  if (_moshroomSelOverlay && _moshroomSelOverlay.firstChild) {
+    _moshroomPaintSelection();
+  }
+};
+
+// Every redraw ends here, and the base version resets the transform (it only knows the bounce
+// case), so this is where the shift has to be re-asserted: output arriving mid-scroll redraws.
+var _moshroomBaseSyncRowNodesDimensions = hterm.ScrollPort.prototype.syncRowNodesDimensions_;
+hterm.ScrollPort.prototype.syncRowNodesDimensions_ = function() {
+  _moshroomBaseSyncRowNodesDimensions.call(this);
+  _moshroomApplySubRowOffset(this);
+};
+
+// The native side quantises the finger into whole rows and passes the COUNT, because hterm's VT
+// encodes exactly ONE wheel report per event: a single report for a 3-row flick made every TUI
+// scroll a third of the way the finger went, which is what read as sluggish and imprecise.
+// `allowArrows` is the user's preference, read at gesture time (see MoshroomDefaults).
+function term_reportWheelEvent(name, x, y, deltaX, deltaY, rows, allowArrows) {
+  if (!t || !t.prompt || !t.scrollPort_ || !t.vt) {
+    return;
+  }
+  var count = parseInt(rows, 10);
+  count = Math.max(1, Math.min(count > 0 ? count : 1, 12));
+
+  if (_moshroomMouseReportOn()) {
+    var step = deltaY / count;
+    for (var i = 0; i < count; i++) {
+      var event = new WheelEvent(name, {clientX: x, clientY: y, deltaX: 0, deltaY: step});
+      // Stamp the terminal row/column on the wheel event, exactly like the mouse path does, so
+      // the SGR wheel report lands on the cell under the finger instead of a default position.
+      // Without this a swipe scrolls whatever panel sits at the origin (often a TUI's input box)
+      // rather than the content the user is actually dragging over.
+      _setTermCoordinates(event, x, y);
+      t.onMouse_Moshroom(event);
+    }
     return;
   }
 
-  var event = new WheelEvent(name, {clientX: x, clientY: y, deltaX, deltaY});
-  // Stamp the terminal row/column on the wheel event, exactly like the mouse path does, so
-  // the SGR wheel report lands on the cell under the finger instead of a default position.
-  // Without this a swipe scrolls whatever panel sits at the origin (often a TUI's input box)
-  // rather than the content the user is actually dragging over.
-  _setTermCoordinates(event, x, y);
-  t.onMouse_Moshroom(event);
+  // The normal screen's scrollback is scrolled by the native scroll view directly (smoothly, with
+  // an indicator), so a gesture only reaches this point on the alternate screen.
+  if (t.isPrimaryScreen()) {
+    return;
+  }
+
+  var up = deltaY < 0;
+  if (_moshroomScrollAltLocally(up, count)) {
+    return;
+  }
+  _moshroomSendAltScrollKeys(up, count, allowArrows);
+}
+
+// Rung 2: the alternate screen's own scrollback. Up is offered while there is text within reach
+// above the viewport; down only while parked above the live end, so the live end always hands the
+// gesture on and a pager stays pageable.
+function _moshroomScrollAltLocally(up, count) {
+  var sp = t.scrollPort_;
+  var top = sp.getTopRowIndex();
+  if (up) {
+    if (top <= 0) {
+      return false;
+    }
+    var from = Math.max(0, top - _moshroomHistoryScanRows);
+    if (!/\S/.test(t.getRowsText(from, top))) {
+      return false;    // only the blank run above a freshly entered full-screen program
+    }
+    sp.scrollRowToTop(Math.max(0, top - count));
+    return true;
+  }
+  var liveTop = Math.max(0, t.getRowCount() - sp.visibleRowCount);
+  if (top >= liveTop) {
+    return false;
+  }
+  sp.scrollRowToTop(Math.min(liveTop, top + count));
+  return true;
+}
+
+// Rung 3: one Down per row, and never an Up (see the ladder's note). The whole gesture goes out as
+// ONE write, which is what keeps tmux's escape-time from splitting the sequence and leaking a
+// literal "[B" onto the command line, and the burst is capped so a flick cannot run away. SS3 vs CSI
+// is not cosmetic: with DECCKM set (every pager and full-screen app sets it) `less` answers to
+// \x1bOB and ignores \x1b[B.
+function _moshroomSendAltScrollKeys(up, count, allowArrows) {
+  if (up || !(allowArrows || _moshroomAltScrollMode)) {
+    return;
+  }
+  var prefix = (t.keyboard && t.keyboard.applicationCursor) ? '\x1bO' : '\x1b[';
+  var out = '';
+  for (var i = 0; i < Math.min(count, 3); i++) {
+    out += prefix + 'B';
+  }
+  t.io.sendString(out);
 }
 
 // While a selection is alive, the selected text must be *selectable* in CSS terms: WebKit skips

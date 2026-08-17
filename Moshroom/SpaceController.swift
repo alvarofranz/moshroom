@@ -58,6 +58,9 @@ class SpaceController: UIViewController {
   // The red tab-switch toast next to the Tabs button (created in Moshkeys.install) + its hide timer.
   var moshroomTabToast: MoshroomTabToast?
   private var _tabToastHide: DispatchWorkItem?
+  // The "back to live" chip (created in Moshkeys.install): shown only while the visible terminal's
+  // viewport is parked up in its scrollback.
+  var moshroomLiveButton: UIButton?
   var stuckKeyCode: KeyCode? = nil
 
   private var _snippetsVC: SnippetsViewController? = nil
@@ -134,6 +137,9 @@ class SpaceController: UIViewController {
       _ = ctrl.removeFromContainer()
     }
     current?.placeToContainer()
+    // Whether the transcript is at its live end is per terminal, so the chip has to be re-read for
+    // the tab that just became visible.
+    moshroomSyncLiveButton()
   }
 
   private func forEachActive(block:(TermController) -> ()) {
@@ -390,6 +396,12 @@ class SpaceController: UIViewController {
     nc.addObserver(self, selector: #selector(_terminalInputTapped(_:)),
                    name: NSNotification.Name(MoshroomTerminalInputTapNotification), object: nil)
 
+    // Moshroom: the visible terminal left (or came back to) the live end of its transcript — show
+    // or hide the "back to live" chip. A terminal parked in its scrollback while a session prints
+    // below is indistinguishable from a frozen one without it.
+    nc.addObserver(self, selector: #selector(_terminalTailingChanged(_:)),
+                   name: NSNotification.Name(MoshroomTerminalTailingNotification), object: nil)
+
     nc.addObserver(self, selector: #selector(_UISceneDidEnterBackgroundNotification(_:)),
                    name: UIScene.didEnterBackgroundNotification, object: nil)
     
@@ -413,6 +425,39 @@ class SpaceController: UIViewController {
     // keyboard to type deliberately. Once connected or interacted, the card is gone and a tap composes.
     if _freshOverlayVisible { return }
     openMoshkitor()
+  }
+
+  @objc func _terminalTailingChanged(_ n: Notification) {
+    // Only the terminal the user is looking at may drive the chip: a background tab receiving output
+    // posts these too (the web-view identity check also disambiguates multi-window iPad).
+    guard let webView = n.object as? UIView,
+          webView === currentDevice?.view?.webView
+    else {
+      return
+    }
+    moshroomSyncLiveButton()
+  }
+
+  /// Show the chip exactly while the visible terminal is scrolled away from its live end. Called on
+  /// every tailing change and after any tab switch (the new tab's state is its own).
+  func moshroomSyncLiveButton() {
+    guard let button = moshroomLiveButton else { return }
+    let show = !(currentDevice?.view?.moshroomIsTailing ?? true) && !_freshOverlayVisible
+    if show {
+      view.bringSubviewToFront(button)
+      button.isHidden = false
+      UIView.animate(withDuration: 0.15) { button.alpha = 1 }
+    } else if !button.isHidden {
+      UIView.animate(withDuration: 0.15) { button.alpha = 0 } completion: { _ in
+        if button.alpha == 0 { button.isHidden = true }
+      }
+    }
+  }
+
+  /// The chip's action: back to the live end of the transcript, the same jump that sending input
+  /// performs (see TermDevice.write / term_scrollToBottom).
+  func moshroomScrollToLiveEnd() {
+    currentDevice?.view?.moshroomScrollToBottom()
   }
 
   // Quick Connect (MoshnectorView) or the first-run onboarding (MoshonboardView) is on screen — i.e.

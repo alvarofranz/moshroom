@@ -75,6 +75,11 @@ class UIScrollViewWithoutHitTest: UIScrollView {
 // observes this and opens the Moshkitor composer for the tapped web view.
 let MoshroomTerminalInputTapNotification = "MoshroomTerminalInputTapNotification"
 
+// The viewport left (or came back to) the live end of the transcript — posted with the terminal's
+// web view as the object and ["tailing": Bool]. SpaceController shows the "back to live" chip off
+// it, so a terminal parked up in its scrollback can never read as a frozen one.
+let MoshroomTerminalTailingNotification = "MoshroomTerminalTailingNotification"
+
 /**
  Gestures:
 
@@ -98,6 +103,17 @@ let MoshroomTerminalInputTapNotification = "MoshroomTerminalInputTapNotification
   private var _pointerInteraction: Any? = nil
   private var _characterSize: CGSize? = nil
   private var _scrollPoint: CGPoint? = nil
+
+  // Which scroll view owns a swipe. The NORMAL screen scrolls hterm's content directly through
+  // _scrollView (smooth, with an indicator); on the ALTERNATE screen the gesture goes to
+  // _termScrollView, whose row-quantised deltas the page walks down its own ladder (wheel reports,
+  // the alternate screen's local history, cursor keys — see the Scrolling section in term.js).
+  private var _isPrimaryScreen = true
+  private var _pendingScrollModeApply = false
+
+  /// The viewport is at the live end of the transcript. Read by TermView to skip a pointless
+  /// scroll-to-bottom on every keystroke, and mirrored to SpaceController's "back to live" chip.
+  @objc private(set) var isTailing = true
 
   @objc var focused: Bool = false;
   @objc var hasSelection: Bool = false {
@@ -219,6 +235,10 @@ let MoshroomTerminalInputTapNotification = "MoshroomTerminalInputTapNotification
     _termScrollView.showsVerticalScrollIndicator = false
     _termScrollView.showsHorizontalScrollIndicator = false
     _termScrollView.isInfinit = true
+    // A terminal starts on the normal screen with nothing asking for the mouse, so the local
+    // scrollback owns the gesture. Only ONE of the two pans may ever be armed: with both live a
+    // single swipe would scroll the transcript AND report a wheel to whatever is running.
+    _termScrollView.panGestureRecognizer.isEnabled = false
 
     _longPressRecognizer.delegate = self
     _longPressRecognizer.addTarget(self, action: #selector(_onLongPress(_:)))
@@ -296,6 +316,45 @@ let MoshroomTerminalInputTapNotification = "MoshroomTerminalInputTapNotification
     }
   }
 
+  // MARK: - Scroll ownership
+
+  private func _applyScrollMode() {
+    // Flipping a pan's isEnabled CANCELS the touches it is holding, and the messages that land here
+    // arrive while a session prints (once per output line). Never re-arm under the user's finger:
+    // remember it and apply the moment the gesture is over.
+    if _scrollView.isDragging || _scrollView.isDecelerating ||
+       _termScrollView.isDragging || _termScrollView.isDecelerating {
+      _pendingScrollModeApply = true
+      return
+    }
+    _pendingScrollModeApply = false
+    let local = _isPrimaryScreen
+    if _scrollView.panGestureRecognizer.isEnabled != local {
+      _scrollView.panGestureRecognizer.isEnabled = local
+    }
+    if _termScrollView.panGestureRecognizer.isEnabled == local {
+      _termScrollView.panGestureRecognizer.isEnabled = !local
+    }
+    // The indicator belongs to the surface that actually moves. On the alternate screen the page
+    // moves the viewport itself, a row at a time, so showing this bar being dragged would be a lie.
+    _scrollView.showsVerticalScrollIndicator = local
+    _updateTailing()
+  }
+
+  private func _updateTailing() {
+    let bottom = max(_scrollView.contentSize.height - _scrollView.bounds.height, 0)
+    // Same 2pt of slack as the resize handler: content height is a whole number of rows while the
+    // viewport height is not, so a viewport truly at the end can sit fractionally short of it.
+    let tailing = bottom <= 0 || _scrollView.contentOffset.y >= bottom - 2
+    guard tailing != isTailing else { return }
+    isTailing = tailing
+    guard let webView = _wkWebView else { return }
+    NotificationCenter.default.post(
+      name: NSNotification.Name(MoshroomTerminalTailingNotification),
+      object: webView,
+      userInfo: ["tailing": tailing])
+  }
+
   @objc func _onLongPress(_ recognizer: UILongPressGestureRecognizer) {
     guard focused, recognizer.state == .began else {
       return
@@ -321,6 +380,7 @@ extension WKWebViewGesturesInteraction: UIScrollViewDelegate {
     
     if scrollView === _scrollView {
       _wkWebView?.evaluateJavaScript("\(_jsScrollerPath).reportScroll(\(offset.x), \(offset.y));", completionHandler: nil)
+      _updateTailing()
       return
     }
     
@@ -340,22 +400,28 @@ extension WKWebViewGesturesInteraction: UIScrollViewDelegate {
         if size == 0 {
           size = defaultFontSize
         }
-        _characterSize = CGSize(width: size, height: size)
+        // A character cell is TALLER and NARROWER than the font's point size (a monospace row is
+        // roughly 1.2 em tall, 0.6 em wide). Using the point size as the row height made every
+        // wheel step overshoot by a quarter until the first resize message brought real metrics.
+        _characterSize = CGSize(width: CGFloat(size) * 0.6, height: CGFloat(size) * 1.2)
       }
 
       var charHeight: CGFloat = _characterSize?.height ?? CGFloat(defaultFontSize)
       if (charHeight <= 0) {
         charHeight = CGFloat(defaultFontSize)
       }
-      
+
       let deltaY = offsetY - reportedScroll.y
       if abs(deltaY) < charHeight {
         return
       }
-      var dY = CGFloat(Int(deltaY) / Int(charHeight)) * charHeight
+      // Whole rows only, and the remainder stays in reportedScroll for the next event, so a slow
+      // drag never loses ground.
+      let steps = Int(deltaY / charHeight)
+      var dY = CGFloat(steps) * charHeight
       reportedScroll.y = reportedScroll.y + dY
       _termScrollView.reportedScroll = reportedScroll
-      
+
       // Report the wheel where the finger actually is, so the TUI scrolls the region under
       // the touch (its main content) rather than a fixed origin that often lands on its input
       // box. Fall back to the drag-start point during momentum, when no touches are live.
@@ -369,8 +435,16 @@ extension WKWebViewGesturesInteraction: UIScrollViewDelegate {
       if MoshroomDefaults.doInvertVerticalScroll() {
         dY *= -1.0;
       }
-      
-      _wkWebView?.evaluateJavaScript("term_reportWheelEvent(\"wheel\", \(point.x), \(point.y), \(0), \(dY));", completionHandler: nil)
+
+      // The ROW COUNT matters as much as the delta: hterm's VT encodes exactly one wheel report per
+      // event, so a 3-row flick used to move the remote a single line. The page sends one report per
+      // row instead. And when there is nothing to report to (no mouse reporting, no local history),
+      // it falls back to cursor keys, which the user can switch off.
+      let rows = min(abs(steps), 12)
+      let allowArrows = MoshroomDefaults.isAltScrollArrowsOn()
+      _wkWebView?.evaluateJavaScript(
+        "term_reportWheelEvent(\"wheel\", \(point.x), \(point.y), \(0), \(dY), \(rows), \(allowArrows));",
+        completionHandler: nil)
     }
   }
   
@@ -389,13 +463,20 @@ extension WKWebViewGesturesInteraction: UIScrollViewDelegate {
     if scrollView == _termScrollView {
       _termScrollView.recenterIfNeeded(force: true)
     }
+    if _pendingScrollModeApply {
+      _applyScrollMode()
+    }
   }
-  
+
   func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
     if scrollView == _termScrollView {
       if !decelerate {
         _termScrollView.recenterIfNeeded(force: true)
       }
+    }
+    // A mode change that arrived mid-gesture was deferred so it could not cancel the drag.
+    if !decelerate, _pendingScrollModeApply {
+      _applyScrollMode()
     }
   }
 }
@@ -439,22 +520,24 @@ extension WKWebViewGesturesInteraction: WKScriptMessageHandler {
         _scrollView.contentOffset = bottom
       }
 
-      _scrollView.panGestureRecognizer.isEnabled = isPrimary
-      _termScrollView.panGestureRecognizer.isEnabled = !isPrimary
+      _isPrimaryScreen = isPrimary
+      _applyScrollMode()
+      _updateTailing()
 
-      
+
     case "scrollTo":
       let animated = msg["animated"] as? Bool == true
       let isPrimary = msg["isPrimary"] as? Bool ?? true
-      
+
       let x: CGFloat = msg["x"] as? CGFloat ?? 0
       let y: CGFloat = msg["y"] as? CGFloat ?? 0
       let offset = CGPoint(x: x, y: y)
-      
-      _scrollView.panGestureRecognizer.isEnabled = isPrimary
-      _termScrollView.panGestureRecognizer.isEnabled = !isPrimary
-      
+
+      _isPrimaryScreen = isPrimary
+      _applyScrollMode()
+
       if (offset == _scrollView.contentOffset) {
+        _updateTailing()
         return
       }
       // Applied immediately, never debounced: this is the hterm → native SYNC direction, and the
@@ -464,8 +547,9 @@ extension WKWebViewGesturesInteraction: WKScriptMessageHandler {
       // bridge only posts scrollTo when its own position actually changed, and the equality check
       // above drops the rest.
       _scrollView.setContentOffset(offset, animated: animated)
-      
-      
+      _updateTailing()
+
+
     default: break
     }
   }

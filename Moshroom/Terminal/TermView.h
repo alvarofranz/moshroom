@@ -69,6 +69,10 @@ extern NSString * TermViewReadyNotificationKey;
 
 @property (nonatomic, strong) LayoutConstraintManager *constraintManager;
 @property (nonatomic, readonly) BOOL isReady;
+/// The viewport sits at the live end of the transcript (nothing to catch up to). NO while the user
+/// is reading back through the scrollback, which is what SpaceController's "back to live" chip
+/// reflects.
+@property (nonatomic, readonly) BOOL moshroomIsTailing;
 @property (nonatomic, readonly) CGRect selectionRect;
 @property (nonatomic, readonly) SmarterTermInput *webView;
 @property (nonatomic, weak) id termController;
