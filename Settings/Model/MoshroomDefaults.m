@@ -84,7 +84,6 @@ static void __mirrorICloudSyncFlag(BOOL enabled) {
   _hapticFeedbackOnBellOff = [coder decodeBoolForKey:@"hapticFeedbackOnBellOff"];
   _oscNotifications = [coder decodeBoolForKey:@"oscNotifications"];
   _invertVerticalScroll = [coder decodeBoolForKey:@"invertVerticalScroll"];
-  _altScrollArrowsOff = [coder decodeBoolForKey:@"altScrollArrowsOff"];
 
   _iCloudSyncEnabled = [coder decodeBoolForKey:@"iCloudSyncEnabled"];
   _requireBiometricUnlock = [coder decodeBoolForKey:@"requireBiometricUnlock"];
@@ -110,7 +109,6 @@ static void __mirrorICloudSyncFlag(BOOL enabled) {
   [encoder encodeBool:_hapticFeedbackOnBellOff forKey:@"hapticFeedbackOnBellOff"];
   [encoder encodeBool:_oscNotifications forKey:@"oscNotifications"];
   [encoder encodeBool:_invertVerticalScroll forKey:@"invertVerticalScroll"];
-  [encoder encodeBool:_altScrollArrowsOff forKey:@"altScrollArrowsOff"];
   [encoder encodeBool:_iCloudSyncEnabled forKey:@"iCloudSyncEnabled"];
   [encoder encodeBool:_requireBiometricUnlock forKey:@"requireBiometricUnlock"];
   [encoder encodeObject:_scratchLanguageMode forKey:@"scratchLanguageMode"];
@@ -277,10 +275,6 @@ static void __mirrorICloudSyncFlag(BOOL enabled) {
   defaults.invertVerticalScroll = state;
 }
 
-+ (void)setAltScrollArrows:(BOOL)state {
-  defaults.altScrollArrowsOff = !state;
-}
-
 + (void)setNotificationOnBellUnfocused:(BOOL)state {
   defaults.notificationOnBellUnfocused = state;
 }
@@ -372,10 +366,6 @@ static void __mirrorICloudSyncFlag(BOOL enabled) {
 
 + (BOOL)doInvertVerticalScroll {
   return defaults.invertVerticalScroll;
-}
-
-+ (BOOL)isAltScrollArrowsOn {
-  return !defaults.altScrollArrowsOff;
 }
 
 + (BOOL)isICloudSyncEnabled {

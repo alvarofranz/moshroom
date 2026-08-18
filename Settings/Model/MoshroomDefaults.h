@@ -53,9 +53,6 @@ typedef NS_ENUM(NSInteger, MoshLayoutMode) {
 @property (nonatomic) BOOL hapticFeedbackOnBellOff;
 @property (nonatomic) BOOL oscNotifications;
 @property (nonatomic) BOOL invertVerticalScroll;
-// Stored INVERTED (…Off) on purpose: an archive written before this setting existed decodes every
-// missing bool as NO, and NO has to mean "the feature is on" for the default to be ON everywhere.
-@property (nonatomic) BOOL altScrollArrowsOff;
 @property (nonatomic) BOOL iCloudSyncEnabled;
 @property (nonatomic) BOOL requireBiometricUnlock;
 @property (nonatomic, strong) NSString *scratchLanguageMode;
@@ -74,7 +71,6 @@ typedef NS_ENUM(NSInteger, MoshLayoutMode) {
 + (void)setHapticFeedbackOnBellOff:(BOOL)state;
 + (void)setOscNotifications:(BOOL)state;
 + (void)setInvertedVerticalScroll:(BOOL) state;
-+ (void)setAltScrollArrows:(BOOL)state;
 + (void)setICloudSyncEnabled:(BOOL)state;
 + (void)setRequireBiometricUnlock:(BOOL)state;
 + (BOOL)isRequireBiometricUnlock;
@@ -94,7 +90,6 @@ typedef NS_ENUM(NSInteger, MoshLayoutMode) {
 + (BOOL)hapticFeedbackOnBellOff;
 + (BOOL)isOscNotificationsOn;
 + (BOOL)doInvertVerticalScroll;
-+ (BOOL)isAltScrollArrowsOn;
 + (BOOL)isICloudSyncEnabled;
 + (void)setScratchLanguageMode:(NSString *)mode;
 + (NSString *)scratchLanguageMode;

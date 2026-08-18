@@ -32,7 +32,6 @@ struct SettingsView: View {
   @State private var _moshroomVersion = UIApplication.moshroomShortVersion() ?? ""
   @State private var _iCloudSyncOn = MoshroomDefaults.isICloudSyncEnabled()
   @State private var _requireBiometric = MoshroomDefaults.isRequireBiometricUnlock()
-  @State private var _altScrollArrows = MoshroomDefaults.isAltScrollArrowsOn()
   @AppStorage(MoshxploreStyle.textSizeKey) private var _moshxploreTextSize: Int = MoshxploreStyle.defaultTextSize
   private var _iCloudAvailable: Bool { FileManager.default.ubiquityIdentityToken != nil }
   @State private var _defaultUser = MoshroomDefaults.defaultUserName() ?? ""
@@ -98,20 +97,6 @@ struct SettingsView: View {
         Text("Terminal")
       } footer: {
         Text("Theme, font and size; keyboard shortcuts; bell and notifications.")
-      }
-
-      Section {
-        Toggle(isOn: $_altScrollArrows) {
-          Label("Swipe pages full-screen apps", systemImage: "arrow.up.arrow.down")
-        }
-        .onChange(of: _altScrollArrows) { on in
-          MoshroomDefaults.setAltScrollArrows(on)
-          MoshroomDefaults.save()
-        }
-      } header: {
-        Text("Scrolling")
-      } footer: {
-        Text("A swipe always scrolls the transcript, and programs that ask for the mouse (tmux with mouse on, opencode, vim) get the scroll reported to them. This covers what is left: in a full-screen program with nothing left to scroll, like less or man, swiping down sends Down so the program pages forward. Swiping up never sends anything. Turn it off if you would rather a swipe did nothing there.")
       }
 
       Section {
@@ -219,7 +204,6 @@ struct SettingsView: View {
       MoshLog.ensureFileExists()   // so Export Logs always has a real file to share
       _iCloudSyncOn = MoshroomDefaults.isICloudSyncEnabled()
       _requireBiometric = MoshroomDefaults.isRequireBiometricUnlock()
-      _altScrollArrows = MoshroomDefaults.isAltScrollArrowsOn()
       _defaultUser = MoshroomDefaults.defaultUserName() ?? ""
       _isSyncing = HostsCloudMirror.isSyncing
       _lastSync = HostsCloudMirror.lastSyncDate

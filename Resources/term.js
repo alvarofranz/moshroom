@@ -464,7 +464,6 @@ function term_sanitizeModes() {
   // The pen too: a child that died mid-output with SGR attributes latched (reverse video, a
   // background color) must not paint the local prompt with them.
   t.primaryScreen_.textAttributes.reset();
-  _moshroomAltScrollMode = false;
   _moshroomPostScrollMode();
 }
 
@@ -504,7 +503,9 @@ function _setTermCoordinates(event, x, y) {
 //   3. nothing local to move -> one cursor key per row, DOWNWARDS ONLY, which is the safe half of
 //      what desktop terminals call alternate scroll: a pager that repaints in place pages forward
 //      on Down, an editor moves its cursor down, and at a shell prompt Down is readline's
-//      next-history, which does nothing when no history is being walked.
+//      next-history, which does nothing when no history is being walked. Unconditional, and it needs
+//      no user setting: the half that could hurt is the one that is never sent (see below), so the
+//      only alternative to this rung is a swipe that does nothing at all.
 //
 // The direction asymmetry is the whole design, and it is measured, not cautious: Up at a shell
 // prompt is previous-history, which is what made 1.0.4 unbearable (a swipe to read back typed the
@@ -521,7 +522,6 @@ function _setTermCoordinates(event, x, y) {
 // that scroll off it (18 -> 21 scrollback rows for 3 lines). A mosh session banks nothing at all
 // (120 lines of output, scrollback still 0): mosh repaints frames rather than scrolling, which is
 // why it has no scrollback anywhere and why tmux (with `mouse on`, so rung 1) is the answer there.
-var _moshroomAltScrollMode = false;   // the remote explicitly asked for it (DECSET 1007)
 // How far above the viewport to look for text before offering a local scroll. A window, not the row
 // about to be revealed: blank lines inside real history must not stall the scroll, while the run of
 // blank rows that entering the alternate screen leaves behind must not be walked into. Bounded
@@ -561,14 +561,8 @@ function _moshroomPostScrollMode() {
 
 var _moshroomBaseSetDECMode = hterm.VT.prototype.setDECMode;
 hterm.VT.prototype.setDECMode = function(code, state) {
-  var key = '' + code;
-  if (key === '1007') {
-    // xterm's alternate scroll mode: the remote is asking for the wheel as cursor keys. Honoured
-    // whatever the user's own preference says, because it is an explicit request.
-    _moshroomAltScrollMode = !!state;
-  }
   _moshroomBaseSetDECMode.call(this, code, state);
-  if (_moshroomScrollModeCodes[key]) {
+  if (_moshroomScrollModeCodes['' + code]) {
     _moshroomPostScrollMode();
   }
 };
@@ -582,7 +576,6 @@ hterm.Terminal.prototype.setAlternateMode = function(state) {
 var _moshroomBaseVTReset = hterm.VT.prototype.reset;
 hterm.VT.prototype.reset = function() {
   _moshroomBaseVTReset.call(this);
-  _moshroomAltScrollMode = false;
   _moshroomPostScrollMode();
 };
 
@@ -751,8 +744,7 @@ hterm.ScrollPort.prototype.syncRowNodesDimensions_ = function() {
 // The native side quantises the finger into whole rows and passes the COUNT, because hterm's VT
 // encodes exactly ONE wheel report per event: a single report for a 3-row flick made every TUI
 // scroll a third of the way the finger went, which is what read as sluggish and imprecise.
-// `allowArrows` is the user's preference, read at gesture time (see MoshroomDefaults).
-function term_reportWheelEvent(name, x, y, deltaX, deltaY, rows, allowArrows) {
+function term_reportWheelEvent(name, x, y, deltaX, deltaY, rows) {
   if (!t || !t.prompt || !t.scrollPort_ || !t.vt) {
     return;
   }
@@ -780,7 +772,7 @@ function term_reportWheelEvent(name, x, y, deltaX, deltaY, rows, allowArrows) {
   if (_moshroomScrollAltLocally(up, count)) {
     return;
   }
-  _moshroomSendAltScrollKeys(up, count, allowArrows);
+  _moshroomSendAltScrollKeys(up, count);
 }
 
 // Rung 2: the alternate screen's own scrollback. Up is offered while there is text within reach
@@ -813,8 +805,8 @@ function _moshroomScrollAltLocally(up, count) {
 // literal "[B" onto the command line, and the burst is capped so a flick cannot run away. SS3 vs CSI
 // is not cosmetic: with DECCKM set (every pager and full-screen app sets it) `less` answers to
 // \x1bOB and ignores \x1b[B.
-function _moshroomSendAltScrollKeys(up, count, allowArrows) {
-  if (up || !(allowArrows || _moshroomAltScrollMode)) {
+function _moshroomSendAltScrollKeys(up, count) {
+  if (up) {
     return;
   }
   var prefix = (t.keyboard && t.keyboard.applicationCursor) ? '\x1bO' : '\x1b[';

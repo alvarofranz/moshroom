@@ -459,12 +459,10 @@ extension WKWebViewGesturesInteraction: UIScrollViewDelegate {
 
       // The ROW COUNT matters as much as the delta: hterm's VT encodes exactly one wheel report per
       // event, so a 3-row flick used to move the remote a single line. The page sends one report per
-      // row instead. And when there is nothing to report to (no mouse reporting, no local history),
-      // it falls back to cursor keys, which the user can switch off.
+      // row instead, and walks its ladder from there (see the Scrolling section in term.js).
       let rows = min(abs(steps), 12)
-      let allowArrows = MoshroomDefaults.isAltScrollArrowsOn()
       _wkWebView?.evaluateJavaScript(
-        "term_reportWheelEvent(\"wheel\", \(point.x), \(point.y), \(0), \(dY), \(rows), \(allowArrows));",
+        "term_reportWheelEvent(\"wheel\", \(point.x), \(point.y), \(0), \(dY), \(rows));",
         completionHandler: nil)
     }
   }
