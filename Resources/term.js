@@ -347,6 +347,11 @@ function term_setup(accessibilityEnabled) {
     
     _postMessage('terminalReady', {size, bgColor});
 
+    // Tell the native side who can use a swipe from the very first frame (normal screen, nothing
+    // asking for the mouse), so it never has to assume. Every mode change re-posts it after this,
+    // and on a jettison recovery this reload is what re-syncs it.
+    _moshroomPostScrollMode();
+
     if (window.KeystrokeVisualizer) {
       window.KeystrokeVisualizer.enable();
     }
@@ -457,6 +462,7 @@ function term_sanitizeModes() {
   // background color) must not paint the local prompt with them.
   t.primaryScreen_.textAttributes.reset();
   _moshroomAltScrollMode = false;
+  _moshroomPostScrollMode();
 }
 
 // The user just SENT something (a composed line, a quick key, a control byte, a paste). A terminal
@@ -481,9 +487,10 @@ function _setTermCoordinates(event, x, y) {
 }
 
 // ---- Scrolling -------------------------------------------------------------------------------
-// A swipe on the ALTERNATE screen (mosh, tmux, a pager, any full-screen program) walks a ladder,
-// and every rung of it is decided here, because only the page knows what the remote asked for and
-// what the local buffers hold:
+// A swipe the local scrollback cannot serve (see _localScrollWins on the native side: the remote
+// asked for the mouse, or the alternate screen is showing, or there is simply nothing banked to move)
+// walks a ladder, and every rung of it is decided here, because only the page knows what the remote
+// asked for and what the local buffers hold:
 //
 //   1. mouse reporting ON  -> the REMOTE owns the gesture: one standard wheel report per row of
 //      finger movement (tmux with `mouse on`, opencode, vim `mouse=a`).
@@ -523,20 +530,57 @@ function _moshroomMouseReportOn() {
             t.vt.mouseReport !== t.vt.MOUSE_REPORT_DISABLED);
 }
 
+// Only these DEC modes change who can use a swipe. Deliberately NOT every mode: a TUI toggles cursor
+// visibility (25) twice per frame, and posting on that would be a message storm.
+var _moshroomScrollModeCodes = {
+  '9': 1, '47': 1, '1000': 1, '1002': 1, '1003': 1,
+  '1005': 1, '1006': 1, '1015': 1, '1047': 1, '1049': 1,
+};
+
+// The native side arms ONE of two scroll views before the gesture starts, and it cannot work out on
+// its own whether the remote is listening for the wheel: only the page knows. So every change is
+// pushed. This is not a nicety: an agent TUI that renders INLINE (no alternate screen) with mouse
+// reporting on used to get nothing at all, because "normal screen" armed the local scrollback and an
+// inline TUI leaves it empty, so the swipe died with nothing to move and no report sent.
+function _moshroomPostScrollMode() {
+  var handler = window.webkit && window.webkit.messageHandlers
+    ? window.webkit.messageHandlers.wkScroller
+    : null;
+  if (!handler || !t || !t.vt || typeof t.isPrimaryScreen !== 'function') {
+    return;
+  }
+  handler.postMessage({
+    op: 'scrollmode',
+    isPrimary: t.isPrimaryScreen(),
+    mouseReport: _moshroomMouseReportOn(),
+  });
+}
+
 var _moshroomBaseSetDECMode = hterm.VT.prototype.setDECMode;
 hterm.VT.prototype.setDECMode = function(code, state) {
-  if ('' + code === '1007') {
+  var key = '' + code;
+  if (key === '1007') {
     // xterm's alternate scroll mode: the remote is asking for the wheel as cursor keys. Honoured
     // whatever the user's own preference says, because it is an explicit request.
     _moshroomAltScrollMode = !!state;
   }
   _moshroomBaseSetDECMode.call(this, code, state);
+  if (_moshroomScrollModeCodes[key]) {
+    _moshroomPostScrollMode();
+  }
+};
+
+var _moshroomBaseSetAlternateMode = hterm.Terminal.prototype.setAlternateMode;
+hterm.Terminal.prototype.setAlternateMode = function(state) {
+  _moshroomBaseSetAlternateMode.call(this, state);
+  _moshroomPostScrollMode();
 };
 
 var _moshroomBaseVTReset = hterm.VT.prototype.reset;
 hterm.VT.prototype.reset = function() {
   _moshroomBaseVTReset.call(this);
   _moshroomAltScrollMode = false;
+  _moshroomPostScrollMode();
 };
 
 // Output must never yank the viewport away from someone reading history. hterm re-arms the "follow
@@ -692,12 +736,9 @@ function term_reportWheelEvent(name, x, y, deltaX, deltaY, rows, allowArrows) {
     return;
   }
 
-  // The normal screen's scrollback is scrolled by the native scroll view directly (smoothly, with
-  // an indicator), so a gesture only reaches this point on the alternate screen.
-  if (t.isPrimaryScreen()) {
-    return;
-  }
-
+  // Rungs 2 and 3 apply on EITHER screen. The native side sends the gesture here whenever the local
+  // scrollback cannot serve it, which includes a full-screen program rendering inline on the normal
+  // screen: rung 2's own guards find nothing above such a screen and rung 3 pages it.
   var up = deltaY < 0;
   if (_moshroomScrollAltLocally(up, count)) {
     return;

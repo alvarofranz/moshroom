@@ -104,11 +104,12 @@ let MoshroomTerminalTailingNotification = "MoshroomTerminalTailingNotification"
   private var _characterSize: CGSize? = nil
   private var _scrollPoint: CGPoint? = nil
 
-  // Which scroll view owns a swipe. The NORMAL screen scrolls hterm's content directly through
-  // _scrollView (smooth, with an indicator); on the ALTERNATE screen the gesture goes to
-  // _termScrollView, whose row-quantised deltas the page walks down its own ladder (wheel reports,
-  // the alternate screen's local history, cursor keys — see the Scrolling section in term.js).
+  // Which scroll view owns a swipe: _scrollView scrolls hterm's own content (smooth, with an
+  // indicator), _termScrollView hands row-quantised deltas to the page's ladder (wheel reports, the
+  // alternate screen's local history, cursor keys — see the Scrolling section in term.js). The page
+  // reports both facts it needs: which screen is showing and whether the remote asked for the mouse.
   private var _isPrimaryScreen = true
+  private var _mouseReportOn = false
   private var _pendingScrollModeApply = false
 
   /// The viewport is at the live end of the transcript. Read by TermView to skip a pointless
@@ -318,6 +319,17 @@ let MoshroomTerminalTailingNotification = "MoshroomTerminalTailingNotification"
 
   // MARK: - Scroll ownership
 
+  /// The local scrollback takes the gesture only when it is the thing that can actually serve it:
+  /// nothing asked for the mouse, the normal screen is showing, AND there is content to move. Any of
+  /// those failing hands the gesture to the page's ladder, which is what fixes the case this rule was
+  /// written for: an agent TUI rendering INLINE on the normal screen with mouse reporting on. "Normal
+  /// screen" alone used to arm the local scrollback, an inline TUI leaves that empty, and the swipe
+  /// died with nothing to move and no report sent, even though the program was listening.
+  private var _localScrollWins: Bool {
+    guard !_mouseReportOn, _isPrimaryScreen else { return false }
+    return _scrollView.contentSize.height > _scrollView.bounds.height + 2
+  }
+
   private func _applyScrollMode() {
     // Flipping a pan's isEnabled CANCELS the touches it is holding, and the messages that land here
     // arrive while a session prints (once per output line). Never re-arm under the user's finger:
@@ -328,7 +340,7 @@ let MoshroomTerminalTailingNotification = "MoshroomTerminalTailingNotification"
       return
     }
     _pendingScrollModeApply = false
-    let local = _isPrimaryScreen
+    let local = _localScrollWins
     if _scrollView.panGestureRecognizer.isEnabled != local {
       _scrollView.panGestureRecognizer.isEnabled = local
     }
@@ -548,6 +560,15 @@ extension WKWebViewGesturesInteraction: WKScriptMessageHandler {
       // above drops the rest.
       _scrollView.setContentOffset(offset, animated: animated)
       _updateTailing()
+
+
+    // Moshroom: mouse reporting (or the screen) changed, so who can use a swipe may have changed with
+    // it. Posted by the page on every relevant DEC mode change, on RIS, on a return to the local
+    // prompt, and once when the terminal comes up — see the Scrolling section in term.js.
+    case "scrollmode":
+      _isPrimaryScreen = msg["isPrimary"] as? Bool ?? true
+      _mouseReportOn = msg["mouseReport"] as? Bool ?? false
+      _applyScrollMode()
 
 
     default: break
