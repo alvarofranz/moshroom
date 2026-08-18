@@ -494,9 +494,9 @@ function _setTermCoordinates(event, x, y) {
 //
 //   1. mouse reporting ON  -> the REMOTE owns the gesture: one standard wheel report per row of
 //      finger movement (tmux with `mouse on`, opencode, vim `mouse=a`).
-//   2. text above the viewport -> scroll the local history. hterm keeps a SEPARATE scrollback for
-//      the alternate screen, and a full-screen program that SCROLLS (a pager walking down a file)
-//      banks its lines there, so that history is real; it was simply unreachable, because the
+//   2. text above the viewport -> scroll the local history. hterm keeps a SEPARATE scrollback per
+//      screen, and a full-screen program that SCROLLS (a pager walking down a file) banks its lines
+//      into whichever one it is on, so that history is real; it was simply unreachable, because the
 //      gesture was hard-wired to wheel reports nothing was listening for.
 //   3. nothing local to move -> one cursor key per row, DOWNWARDS ONLY, which is the safe half of
 //      what desktop terminals call alternate scroll: a pager that repaints in place pages forward
@@ -594,20 +594,19 @@ hterm.VT.prototype.reset = function() {
 var _moshroomBaseAppendRows = hterm.Terminal.prototype.appendRows_;
 hterm.Terminal.prototype.appendRows_ = function(count) {
   var sp = this.scrollPort_;
-  var rows = this.scrollbackRows_;
-  var anchor = rows.length ? rows[rows.length - 1] : null;
-  var anchorIndex = rows.length - 1;
+  var previousLength = this.scrollbackRows_.length;
+  var anchor = previousLength ? this.scrollbackRows_[previousLength - 1] : null;
   var wasReadingBack = !!(sp && !sp.isScrolledEnd);
 
   _moshroomBaseAppendRows.call(this, count);
 
   // This runs once per output LINE, so it gets out of the way first: a trim is the only thing that can
-  // leave the scrollback shorter than it was (rows are otherwise only pushed onto it), and the search
+  // leave the scrollback SHORTER than it was (rows are otherwise only pushed onto it), and the search
   // for the surviving row only happens on that.
-  if (this.scrollbackRows_.length >= anchorIndex + 1 || !wasReadingBack || !anchor || !sp || !sp.scroller_) {
+  if (this.scrollbackRows_.length >= previousLength || !wasReadingBack || !anchor || !sp || !sp.scroller_) {
     return;
   }
-  var dropped = anchorIndex - this.scrollbackRows_.indexOf(anchor);
+  var dropped = (previousLength - 1) - this.scrollbackRows_.indexOf(anchor);
   var ch = sp.characterSize.height;
   var y = sp.scroller_._y;
   if (dropped > 0 && ch > 0 && typeof y === 'number' && y > 0) {

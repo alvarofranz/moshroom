@@ -355,8 +355,9 @@ let MoshroomTerminalTailingNotification = "MoshroomTerminalTailingNotification"
     if _termScrollView.panGestureRecognizer.isEnabled == local {
       _termScrollView.panGestureRecognizer.isEnabled = !local
     }
-    // The indicator belongs to the surface that actually moves. On the alternate screen the page
-    // moves the viewport itself, a row at a time, so showing this bar being dragged would be a lie.
+    // The indicator belongs to the surface that actually moves. When the gesture goes to the ladder
+    // instead, the viewport is moved by the page a row at a time (or not at all, when the remote is
+    // the one scrolling), so showing this bar being dragged would be a lie.
     _scrollView.showsVerticalScrollIndicator = local
     _updateTailing()
   }
