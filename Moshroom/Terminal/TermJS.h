@@ -109,6 +109,15 @@ NSString *term_appendUserCss(NSString *css)
   return [NSString stringWithFormat:@"term_appendUserCss(%@)", _encodeString(css)];
 }
 
+// Palette black must equal the terminal background: a program that paints an explicit black
+// background assumes the terminal is black too, and against Moshroom's near-black that arrives as a
+// hard band across the terminal. Applied LAST in the appearance command list, after the theme has set
+// both the palette and the background. See _moshroomBlendPaletteBlack in term.js.
+NSString *term_blendPaletteBlack(void)
+{
+  return @"_moshroomBlendPaletteBlack();";
+}
+
 NSString *term_cleanSelection(void)
 {
   return @"term_cleanSelection();";

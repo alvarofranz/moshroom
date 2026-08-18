@@ -866,6 +866,8 @@ static NSString * _sanitizeTextForClipboard(NSString *text) {
 
   [commands addObject:term_setFontSize(termUIState.fontSize == 0 ? [MoshroomDefaults selectedFontSize] : @(termUIState.fontSize))];
   [commands addObject:term_setCursorBlink([MoshroomDefaults isCursorBlink])];
+  // LAST, because it reads back what the theme above just set.
+  [commands addObject:term_blendPaletteBlack()];
 
   return commands;
 }

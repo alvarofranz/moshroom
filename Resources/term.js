@@ -344,6 +344,9 @@ function term_setup(accessibilityEnabled) {
     
     t.keyboard.characterEncoding = 'raw'; // we are UTF8. Fix for #507
     t.uninstallKeyboard();
+    // Belt to the braces of the same call in the appearance command list: a theme is user-supplied JS
+    // and can throw halfway (term_init catches that and carries on), and this must hold regardless.
+    _moshroomBlendPaletteBlack();
     
     _postMessage('terminalReady', {size, bgColor});
 
@@ -1274,6 +1277,46 @@ function term_applySexyTheme(theme) {
   term_set('color-palette-overrides', theme.color);
   term_set('foreground-color', theme.foreground);
   term_set('background-color', theme.background);
+}
+
+// Palette BLACK is the terminal's background, not #000. A full-screen program that fills a row with
+// an explicit black background is assuming the terminal's own background is black as well, which is
+// the near-universal assumption for a dark TUI: on a black terminal it blends invisibly. Moshroom's
+// background is the house near-black, so the same row arrives as a hard black BAND across the
+// terminal, and that is exactly the "black strip" Álvaro kept seeing (measured in a live mosh + tmux
+// + agent session: one full-width row, bci 0 and fci 0, pure #000 against our rgb(16,16,16)).
+// Making the two agree costs nothing that was legible before: black-on-the-default-background was
+// already invisible, black on a coloured background stays perfectly readable a shade lighter, and
+// every black area a program paints now lands ON our background instead of cutting a hole in it.
+// Reads the PREF rather than the terminal, so it also works while running inside applyUserSettings(),
+// before hterm is decorated. Idempotent.
+function _moshroomBlendPaletteBlack() {
+  var bg = term_get('background-color');
+  if (!bg) {
+    return;
+  }
+  var palette = term_get('color-palette-overrides');
+  var next;
+  if (Array.isArray(palette)) {
+    if (palette[0] === bg) {
+      return;
+    }
+    next = palette.slice();
+  } else if (palette && typeof palette === 'object') {
+    if (palette[0] === bg) {
+      return;
+    }
+    next = {};
+    for (var key in palette) {
+      if (Object.prototype.hasOwnProperty.call(palette, key)) {
+        next[key] = palette[key];
+      }
+    }
+  } else {
+    next = {};
+  }
+  next[0] = bg;
+  term_set('color-palette-overrides', next);
 }
 
 function term_setAutoCarriageReturn(state) {
