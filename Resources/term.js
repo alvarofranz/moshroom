@@ -583,10 +583,41 @@ hterm.VT.prototype.reset = function() {
   _moshroomPostScrollMode();
 };
 
-// Output must never yank the viewport away from someone reading history. hterm re-arms the "follow
-// the output" scroll from two places: a row shifting off the screen (already gated on being at the
-// end) and the scrollback TRIM at 6000 rows, which was not gated at all, so a long build log
-// snapped you back to the bottom mid-read. One guard covers both.
+// The scrollback TRIM moves the ground under the reader: hterm splices a block of rows off the TOP
+// once the scrollback passes its limit, every remaining row shifts up by that many, and NEITHER side's
+// scroll position knows it. hterm keeps its pixel offset, which now points that far further down and
+// reads as "at the live end", so the next output line scrolls the reader away; the native scroll view
+// can only clamp the offset back into range, and for a block that size the clamp IS the live end. So
+// follow the content: measure the drop by where a row that SURVIVED it ended up (no hardcoded copy of
+// hterm's limit) and move the viewport by exactly that much. Only while reading back, because at the
+// live end the right place to be is still the live end.
+var _moshroomBaseAppendRows = hterm.Terminal.prototype.appendRows_;
+hterm.Terminal.prototype.appendRows_ = function(count) {
+  var sp = this.scrollPort_;
+  var rows = this.scrollbackRows_;
+  var anchor = rows.length ? rows[rows.length - 1] : null;
+  var anchorIndex = rows.length - 1;
+  var wasReadingBack = !!(sp && !sp.isScrolledEnd);
+
+  _moshroomBaseAppendRows.call(this, count);
+
+  // This runs once per output LINE, so it gets out of the way first: a trim is the only thing that can
+  // leave the scrollback shorter than it was (rows are otherwise only pushed onto it), and the search
+  // for the surviving row only happens on that.
+  if (this.scrollbackRows_.length >= anchorIndex + 1 || !wasReadingBack || !anchor || !sp || !sp.scroller_) {
+    return;
+  }
+  var dropped = anchorIndex - this.scrollbackRows_.indexOf(anchor);
+  var ch = sp.characterSize.height;
+  var y = sp.scroller_._y;
+  if (dropped > 0 && ch > 0 && typeof y === 'number' && y > 0) {
+    sp.scroller_.scrollTo(0, Math.max(y - dropped * ch, 0), false, true);
+  }
+};
+
+// The other half of the same story: hterm re-arms its "follow the output" scroll from two places, a
+// row shifting off the screen (already gated on being at the end) and the TRIM above (not gated at
+// all). Gate both, so the trim compensation is not immediately undone by a scroll to the bottom.
 var _moshroomBaseScheduleScrollDown = hterm.Terminal.prototype.scheduleScrollDown_;
 hterm.Terminal.prototype.scheduleScrollDown_ = function() {
   if (this.scrollPort_ && !this.scrollPort_.isScrolledEnd) {
@@ -615,17 +646,26 @@ function _moshroomScrollTop(sp) {
   if (typeof y !== 'number') {
     return 0;
   }
-  // hterm's scroll-to-end target overshoots the real end by the bottom margin (getScrollMax_ adds
-  // margins that the content height already carries), and a scroll view accepts a programmatic
-  // offset past its own limit. Unclamped that overshoot rendered the SAME live end two different
-  // ways: flush when output had scrolled there, top row sliced off when scrollEnd had. The
-  // scroller's own dimensions are the content's true extent, so clamp to them. Negative values are
-  // left alone: that is the overscroll bounce, which is real.
+  // Clamped to the content's TRUE extent at both ends, which is what keeps the rows welded to the
+  // viewport:
+  //
+  // - Past the end, hterm's own scroll-to-end target overshoots by the bottom margin (getScrollMax_
+  //   adds margins the content height already carries) and a scroll view accepts a programmatic
+  //   offset beyond its limit, so the SAME live end rendered two different ways: flush when output
+  //   had scrolled there, top row sliced off when scrollEnd had.
+  // - Before the start, a rubber-band overscroll reports a NEGATIVE offset, and hterm answered it by
+  //   translating the rows DOWN, which opened a gap at the top of the terminal filled with nothing
+  //   but the page background. In a shell that is invisible (same colour); in any full-screen program
+  //   that paints its own canvas it is a fat dark band appearing under the finger on every over-drag,
+  //   which is the "black strip when scrolling up" this clamp removes. Measured on Catalyst with a
+  //   phase-tagged (trackpad-style) scroll against a blue canvas: 96pt of theme background before,
+  //   none after. The scroll view no longer bounces either (see WKWebView.swift), so this is the
+  //   second of two locks on the same door.
   var max = (scroller._contentHeight || 0) - (scroller._viewHeight || 0);
-  if (y > 0 && y > max) {
-    return max > 0 ? max : 0;
+  if (y > max) {
+    y = max;
   }
-  return y;
+  return y > 0 ? y : 0;
 }
 
 // hterm ROUNDED the offset to the nearest row, which is only right when the viewport is always
@@ -644,13 +684,8 @@ function _moshroomApplySubRowOffset(sp) {
     return;
   }
   var ch = sp.characterSize.height;
-  var y = _moshroomScrollTop(sp);
-  var shift = 0;
-  if (y < 0) {
-    shift = y;                                 // overscroll / bounce: hterm's own case, kept
-  } else if (ch > 0) {
-    shift = y - Math.floor(y / ch) * ch;       // the remainder inside the top row
-  }
+  var y = _moshroomScrollTop(sp);              // never negative, never past the end
+  var shift = ch > 0 ? y - Math.floor(y / ch) * ch : 0;   // the remainder inside the top row
   var css = shift ? 'translate3d(0, ' + (-shift) + 'px, 0)' : '';
   if (sp.rowNodes_.style.transform !== css) {
     sp.rowNodes_.style.transform = css;

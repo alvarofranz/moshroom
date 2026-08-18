@@ -217,6 +217,13 @@ let MoshroomTerminalTailingNotification = "MoshroomTerminalTailingNotification"
     _scrollView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
     _scrollView.alwaysBounceVertical = false
     _scrollView.alwaysBounceHorizontal = false
+    // No rubber band, ever. An over-drag at the top used to report a NEGATIVE offset, hterm answered
+    // it by translating the rows down, and the gap that opened showed the bare page background: in a
+    // shell that is invisible (same colour), but in any full-screen program painting its own canvas it
+    // is a fat dark band appearing under the finger, which is the "black strip when scrolling up".
+    // Measured on Catalyst with a phase-tagged scroll: 96pt of it. A transcript has nothing to gain
+    // from elasticity, and the page clamps the offset too (see _moshroomScrollTop in term.js).
+    _scrollView.bounces = false
     _scrollView.isDirectionalLockEnabled = true
     // iPad have dismiss button on keyboard
     if UIDevice.current.userInterfaceIdiom != .pad {
@@ -229,6 +236,7 @@ let MoshroomTerminalTailingNotification = "MoshroomTerminalTailingNotification"
     _termScrollView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
     _termScrollView.alwaysBounceVertical = false
     _termScrollView.alwaysBounceHorizontal = false
+    _termScrollView.bounces = false
     _termScrollView.isDirectionalLockEnabled = true
     _termScrollView.keyboardDismissMode = _scrollView.keyboardDismissMode
     _termScrollView.delaysContentTouches = false
