@@ -37,9 +37,3 @@ struct Checkmark: View {
     }
   }
 }
-
-struct Checkmark_Previews: PreviewProvider {
-  static var previews: some View {
-    Checkmark()
-  }
-}

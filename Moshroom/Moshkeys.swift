@@ -191,6 +191,43 @@ func moshNavChipLabelItem(title: String, target: Any?, action: Selector) -> UIBa
   return UIBarButtonItem(customView: b)
 }
 
+/// The compact in-content header every full-screen UIKit surface wears (Moshtabs, Moshxplore, the
+/// share tray): title on the left, the white ✕ chip top-right where the button that opened it sits,
+/// 58pt tall, pinned to the safe area. Deliberately NOT a system nav bar — the Mac window title bar
+/// then stays as compact as the terminal's and no chrome jumps when a surface opens. Returns the
+/// header view so the caller hangs its content off `header.bottomAnchor`.
+@discardableResult
+func moshroomInstallFullScreenHeader(in vc: UIViewController, title: String,
+                                     target: Any?, action: Selector) -> UIView {
+  let header = UIView()
+  header.translatesAutoresizingMaskIntoConstraints = false
+  let titleLabel = UILabel()
+  titleLabel.text = title
+  titleLabel.font = .systemFont(ofSize: 17, weight: .semibold)
+  titleLabel.textColor = .label
+  titleLabel.translatesAutoresizingMaskIntoConstraints = false
+  let close = moshkeyRoundButton(diameter: 34)
+  close.layer.shadowOpacity = 0
+  close.setMoshIcon("xmark", pointSize: 15, weight: .semibold)
+  close.addTarget(target, action: action, for: .touchUpInside)
+  close.translatesAutoresizingMaskIntoConstraints = false
+  header.addSubview(titleLabel)
+  header.addSubview(close)
+  vc.view.addSubview(header)
+  let guide = vc.view.safeAreaLayoutGuide
+  NSLayoutConstraint.activate([
+    header.topAnchor.constraint(equalTo: guide.topAnchor),
+    header.leadingAnchor.constraint(equalTo: guide.leadingAnchor),
+    header.trailingAnchor.constraint(equalTo: guide.trailingAnchor),
+    header.heightAnchor.constraint(equalToConstant: 58),
+    titleLabel.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: 16),
+    titleLabel.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+    close.trailingAnchor.constraint(equalTo: header.trailingAnchor, constant: -16),
+    close.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+  ])
+  return header
+}
+
 func moshkeyRoundButton(diameter: CGFloat = 42) -> UIButton {
   let b = moshButton()
   b.tintColor = Moshstyle.ink
@@ -539,24 +576,8 @@ final class MoshtabsController: UIViewController {
     super.viewDidLoad()
     view.backgroundColor = MoshxploreStyle.screen
 
-    // Compact in-content header (no system nav bar) — the launcher / Moshvault pattern, so the Mac
-    // window title bar stays as compact as the terminal and the chrome doesn't jump when Tabs opens.
-    // Title on the left, close ✕ top-right (the same spot as the button that opened it).
-    let header = UIView()
-    header.translatesAutoresizingMaskIntoConstraints = false
-    let titleLabel = UILabel()
-    titleLabel.text = "Tabs"
-    titleLabel.font = .systemFont(ofSize: 17, weight: .semibold)
-    titleLabel.textColor = .label
-    titleLabel.translatesAutoresizingMaskIntoConstraints = false
-    let close = moshkeyRoundButton(diameter: 34)
-    close.layer.shadowOpacity = 0
-    close.setMoshIcon("xmark", pointSize: 15, weight: .semibold)
-    close.addTarget(self, action: #selector(_closeMoshtabs), for: .touchUpInside)
-    close.translatesAutoresizingMaskIntoConstraints = false
-    header.addSubview(titleLabel)
-    header.addSubview(close)
-    view.addSubview(header)
+    let header = moshroomInstallFullScreenHeader(in: self, title: "Tabs",
+                                                 target: self, action: #selector(_closeMoshtabs))
 
     stack.axis = .vertical
     stack.spacing = 8
@@ -567,15 +588,6 @@ final class MoshtabsController: UIViewController {
     view.addSubview(scroll)
 
     NSLayoutConstraint.activate([
-      header.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
-      header.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
-      header.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
-      header.heightAnchor.constraint(equalToConstant: 58),
-      titleLabel.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: 16),
-      titleLabel.centerYAnchor.constraint(equalTo: header.centerYAnchor),
-      close.trailingAnchor.constraint(equalTo: header.trailingAnchor, constant: -16),
-      close.centerYAnchor.constraint(equalTo: header.centerYAnchor),
-
       scroll.topAnchor.constraint(equalTo: header.bottomAnchor),
       scroll.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
       scroll.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
@@ -727,15 +739,11 @@ final class MoshtabsController: UIViewController {
 extension SpaceController {
   // Open the full-screen tab manager (top-left Tabs button).
   func openMoshtabs() {
-    guard presentedViewController == nil else { return }
-    dismissMoshnector()
-    view.subviews.compactMap({ $0 as? MoshkeysBar }).first?.closeIfOpen()
-    let ctrl = MoshtabsController()
-    ctrl.space = self
-    let nav = UINavigationController(rootViewController: ctrl)
-    // .overFullScreen keeps the terminal in the window (see openMoshkitor).
-    nav.modalPresentationStyle = .overFullScreen
-    present(nav, animated: false)   // instant, no slide (see SpaceController.dismiss)
+    moshroomPresentFullScreen(from: self) {
+      let ctrl = MoshtabsController()
+      ctrl.space = self
+      return UINavigationController(rootViewController: ctrl)
+    }
   }
 }
 

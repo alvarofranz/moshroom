@@ -534,10 +534,16 @@ extension TermController: SuspendableSession {
     payload.start(in: _termDevice, sessionKey: meta.key.uuidString)
     _session?.delegate = self
 
-    // Moshroom: the session now exists — this is the first deterministic point where
-    // `moshroomIsFreshShell` can be true, so drive the quick-connect reveal off it (the web-view
-    // readiness triggers race ahead of this).
-    NotificationCenter.default.post(name: NSNotification.Name("MoshroomPromptReadyNotification"), object: nil)
+    _moshroomSessionDidGoLive()
+  }
+
+  /// A session just became live in this tab — freshly started or restored. Both paths owe the same
+  /// three things: announce it (this is the first deterministic point where `moshroomIsFreshShell`
+  /// can be true, so Quick Connect reveals off it rather than racing the web view), catch the pty up
+  /// if the view resized while there was no session, and let the program write the clipboard once
+  /// the terminal has settled.
+  private func _moshroomSessionDidGoLive() {
+    NotificationCenter.default.post(name: .moshroomPromptReady, object: nil)
 
     if view.bounds.size != _termView.termUIState.viewSize {
       _session?.sigwinch()
@@ -594,16 +600,7 @@ extension TermController: SuspendableSession {
       _sessionPayload!.resumeFromSuspended()
     }
 
-    // Moshroom: session is live again after a restore — reveal the quick-connect card if idle.
-    NotificationCenter.default.post(name: NSNotification.Name("MoshroomPromptReadyNotification"), object: nil)
-
-    if view.bounds.size != _termView.termUIState.viewSize {
-      _session?.sigwinch()
-    }
-
-    DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-      self._termView.setClipboardWrite(true)
-    }
+    _moshroomSessionDidGoLive()
   }
 
   func suspendSession(with archiver: NSKeyedArchiver) {

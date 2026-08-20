@@ -424,15 +424,6 @@ struct KeyListView: View {
 }
 
 
-struct KeyListView_Previews: PreviewProvider {
-  static var previews: some View {
-    NavigationView(content: {
-      KeyListView()
-    })
-  }
-}
-
-
 //MARK: - Main Keys Manager
 fileprivate class KeysObservable: ObservableObject {
   enum KeySortType {

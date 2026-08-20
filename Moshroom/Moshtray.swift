@@ -51,23 +51,8 @@ final class MoshtrayController: UIViewController, UICollectionViewDataSource, UI
     view.backgroundColor = MoshxploreStyle.screen
     items = MoshroomShareTray.items()
 
-    // Compact in-content header (no system nav bar) — the launcher / Moshtabs pattern: title left,
-    // close ✕ top-right, so the Mac window chrome stays put.
-    let header = UIView()
-    header.translatesAutoresizingMaskIntoConstraints = false
-    let titleLabel = UILabel()
-    titleLabel.text = "Shared images"
-    titleLabel.font = .systemFont(ofSize: 17, weight: .semibold)
-    titleLabel.textColor = .label
-    titleLabel.translatesAutoresizingMaskIntoConstraints = false
-    let close = moshkeyRoundButton(diameter: 34)
-    close.layer.shadowOpacity = 0
-    close.setMoshIcon("xmark", pointSize: 15, weight: .semibold)
-    close.addTarget(self, action: #selector(_close), for: .touchUpInside)
-    close.translatesAutoresizingMaskIntoConstraints = false
-    header.addSubview(titleLabel)
-    header.addSubview(close)
-    view.addSubview(header)
+    let header = moshroomInstallFullScreenHeader(in: self, title: "Shared images",
+                                                 target: self, action: #selector(_close))
 
     let layout = UICollectionViewFlowLayout()
     layout.minimumInteritemSpacing = 12
@@ -83,15 +68,6 @@ final class MoshtrayController: UIViewController, UICollectionViewDataSource, UI
     view.addSubview(collectionView)
 
     NSLayoutConstraint.activate([
-      header.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
-      header.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
-      header.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
-      header.heightAnchor.constraint(equalToConstant: 58),
-      titleLabel.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: 16),
-      titleLabel.centerYAnchor.constraint(equalTo: header.centerYAnchor),
-      close.trailingAnchor.constraint(equalTo: header.trailingAnchor, constant: -16),
-      close.centerYAnchor.constraint(equalTo: header.centerYAnchor),
-
       collectionView.topAnchor.constraint(equalTo: header.bottomAnchor),
       collectionView.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
       collectionView.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),

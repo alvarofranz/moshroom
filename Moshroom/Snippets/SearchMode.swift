@@ -43,16 +43,4 @@ enum SearchMode {
     case .history: return "History"
     }
   }
-  
-  func toSymbol() -> String {
-    switch self {
-    case .general: return ""
-    case .insert: return "<"
-    case .command: return ">"
-    case .host: return "@"
-    case .prompt: return "$"
-    case .help: return "?"
-    case .history: return "!"
-    }
-  }
 }

@@ -32,6 +32,7 @@
 + (instancetype)withName:(NSString *)name;
 + (BOOL)saveAll;
 + (instancetype)saveResource:(NSString *)name withContent:(NSData *)content error:(NSError *__autoreleasing *)error;
+// Swift sees this as remove(at:) — the importer drops the MoshResource type-name suffix.
 + (void)removeResourceAtIndex:(int)index;
 + (NSArray *)all;
 + (NSInteger)defaultResourcesCount;

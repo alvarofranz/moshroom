@@ -55,25 +55,11 @@ extension SpaceController {
 
   // Open Moshvault full screen over the current tab. Works on any tab; needs no shell/connection.
   func openMoshvault() {
-    let presenter = moshroomTopPresenter   // stack over the launcher (no dismiss-then-present flash)
-    guard presenter.presentedViewController == nil else { return }
-    dismissMoshnector()
-    view.subviews.compactMap({ $0 as? MoshkeysBar }).first?.closeIfOpen()
-    let ctrl = MoshvaultController()
-    ctrl.space = self
-    // .overFullScreen keeps the terminal in the window (see openMoshkitor).
-    ctrl.modalPresentationStyle = .overFullScreen
-    presenter.present(ctrl, animated: false)   // instant, no slide (see SpaceController.dismiss)
-  }
-
-  func dismissMoshvault() {
-    guard let ctrl = moshvaultController else { return }
-    ctrl.dismiss(animated: false) { [weak self] in
-      guard let self, Moshroom.scratchOnly else { return }
-      // Reclaim first responder for hardware-keyboard routing (same restore Moshxplore/Moshkitor do),
-      // then let Quick Connect reappear if this is a fresh idle prompt.
-      self.becomeFirstResponder()
-      self.showMoshnectorIfIdle()
+    // No `from:` — stack over the launcher when it opened us (no dismiss-then-present flash).
+    moshroomPresentFullScreen {
+      let ctrl = MoshvaultController()
+      ctrl.space = self
+      return ctrl
     }
   }
 }

@@ -152,37 +152,14 @@ class SearchModel: ObservableObject {
   }
 
   func openScratch() {
-    let snippet = Snippet.scratch()
-    self.editingMode = .code
-
-    // Restore saved language mode for scratch
-    if let savedMode = LanguageMode(rawValue: MoshroomDefaults.scratchLanguageMode()) {
-      self.languageMode = savedMode
-    }
+    let snippet = _beginScratch()
 
     self.currentSnippetName = snippet.fuzzyIndex
     self.editingSnippet = snippet
 
     let textView = TextViewBuilder.createForSnippetEditing()
     let editorCtrl = EditorViewController(textView: textView, model: self)
-    let navCtrl = UINavigationController(rootViewController: editorCtrl)
-    navCtrl.modalPresentationStyle = .pageSheet
-    navCtrl.isModalInPresentation = isPinnedMode
-
-    if let sheetCtrl = navCtrl.sheetPresentationController {
-      if KBTracker.shared.isHardwareKB {
-        sheetCtrl.detents = [
-          .custom(resolver: { context in 120 }),
-          .medium(),
-          .large()
-        ]
-      } else {
-        sheetCtrl.detents = [.custom(resolver: { context in 120 }), .large()]
-      }
-      sheetCtrl.largestUndimmedDetentIdentifier = .large
-      sheetCtrl.prefersGrabberVisible = true
-    }
-    rootCtrl?.present(navCtrl, animated: false)
+    _presentEditorSheet(editorCtrl, animated: false)
   }
 
   func editSelectionOrCreate() {
@@ -191,12 +168,7 @@ class SearchModel: ObservableObject {
     // Scratch mode
     if currentSelection == nil {
       if self.input.isEmpty {
-        snippet = Snippet.scratch()
-        self.editingMode = .code
-
-        if let savedMode = LanguageMode(rawValue: MoshroomDefaults.scratchLanguageMode()) {
-          self.languageMode = savedMode
-        }
+        snippet = _beginScratch()
       } else {
         openNewSnippet()
         return
@@ -213,6 +185,25 @@ class SearchModel: ObservableObject {
 
     let textView = TextViewBuilder.createForSnippetEditing()
     let editorCtrl = EditorViewController(textView: textView, model: self)
+    _presentEditorSheet(editorCtrl, animated: false)
+
+  }
+
+  /// Enter scratch mode: an unnamed code snippet in whichever language the user last used there
+  /// (scratch remembers its language; saved snippets are always shell).
+  private func _beginScratch() -> Snippet {
+    self.editingMode = .code
+    if let savedMode = LanguageMode(rawValue: MoshroomDefaults.scratchLanguageMode()) {
+      self.languageMode = savedMode
+    }
+    return Snippet.scratch()
+  }
+
+  /// The sheet every snippet editor rides in: a page sheet that can sit as a 120pt strip above the
+  /// keyboard or fill the screen, undimmed so the terminal behind stays readable, and modal in
+  /// presentation while a pinned snippet is being edited. The entry points differ only in which
+  /// editor goes inside.
+  private func _presentEditorSheet(_ editorCtrl: UIViewController, animated: Bool) {
     let navCtrl = UINavigationController(rootViewController: editorCtrl)
     navCtrl.modalPresentationStyle = .pageSheet
     navCtrl.isModalInPresentation = isPinnedMode
@@ -230,8 +221,7 @@ class SearchModel: ObservableObject {
       sheetCtrl.largestUndimmedDetentIdentifier = .large
       sheetCtrl.prefersGrabberVisible = true
     }
-    rootCtrl?.present(navCtrl, animated: false)
-
+    rootCtrl?.present(navCtrl, animated: animated)
   }
 
   func openNewSnippet() {
@@ -239,24 +229,7 @@ class SearchModel: ObservableObject {
 
     let textView = TextViewBuilder.createForSnippetEditing()
     let editorCtrl = NewSnippetViewController(textView: textView, model: self)
-    let navCtrl = UINavigationController(rootViewController: editorCtrl)
-    navCtrl.modalPresentationStyle = .pageSheet
-    navCtrl.isModalInPresentation = isPinnedMode
-
-    if let sheetCtrl = navCtrl.sheetPresentationController {
-      if KBTracker.shared.isHardwareKB {
-        sheetCtrl.detents = [
-          .custom(resolver: { context in 120 }),
-          .medium(),
-          .large()
-        ]
-      } else {
-        sheetCtrl.detents = [.custom(resolver: { context in 120 }), .large()]
-      }
-      sheetCtrl.largestUndimmedDetentIdentifier = .large
-      sheetCtrl.prefersGrabberVisible = true
-    }
-    rootCtrl?.present(navCtrl, animated: true)
+    _presentEditorSheet(editorCtrl, animated: true)
 
   }
 

@@ -256,6 +256,18 @@ public func moshroom_ssh_main(argc: Int32, argv: Argv) -> Int32 {
     return exitCode
   }
 
+  /// Turn a saved host alias into everything a connection needs: the hostname to dial, the host
+  /// record, and a client config bound to this terminal (keys, ssh_config, agent, host prompts).
+  /// Moshdrop's uploads and Moshxplore's browsing both start here, so an alias resolves identically
+  /// wherever the app connects on the user's behalf.
+  static func resolveTarget(hostAlias: String,
+                            device: TermDevice) throws -> (hostName: String, host: MoshSSHHost, config: SSHClientConfig) {
+    let command = try SSHCommand.parse([hostAlias])
+    let resolved = try command.resolveHost()
+    let config = try SSHClientConfigProvider.config(host: resolved.host, using: device)
+    return (resolved.hostName, resolved.host, config)
+  }
+
   static func executeProxyCommand(command: String, sockIn: Int32, sockOut: Int32) {
     /* Prepare /dev/null socket for the stderr redirection */
     let devnull = open("/dev/null", O_WRONLY);

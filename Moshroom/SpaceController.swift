@@ -210,7 +210,40 @@ class SpaceController: UIViewController {
       self.showMoshnectorIfIdle()
     }
   }
-  
+
+  /// The topmost thing on screen — a surface opened from inside another one (the launcher's rows)
+  /// must present from there, or UIKit refuses ("already presenting").
+  var moshroomTopPresenter: UIViewController {
+    var vc: UIViewController = self
+    while let presented = vc.presentedViewController { vc = presented }
+    return vc
+  }
+
+  /// The quick-keys pad folds away whenever a full-screen surface takes over.
+  func moshroomCloseQuickKeys() {
+    view.subviews.compactMap({ $0 as? MoshkeysBar }).first?.closeIfOpen()
+  }
+
+  /// The one way a Moshroom full-screen surface goes up (launcher, Moshtabs, Moshxplore, Moshvault,
+  /// the composer): fold the floating chrome away, then present INSTANTLY — the mirror of the
+  /// instant dismiss above. `.overFullScreen`, never `.fullScreen`: the covered terminal must STAY
+  /// in the window, because pulling the web view out and back re-latches WebKit's selection painting
+  /// into a dead near-black box that no responder dance heals. `make` runs only once there is room
+  /// for a surface, so a caller never builds a controller it cannot show; returning nil from it
+  /// (nothing to show yet) reports false too.
+  @discardableResult
+  func moshroomPresentFullScreen(from presenter: UIViewController? = nil,
+                                 _ make: () -> UIViewController?) -> Bool {
+    let host = presenter ?? moshroomTopPresenter
+    guard host.presentedViewController == nil else { return false }
+    dismissMoshnector()
+    moshroomCloseQuickKeys()
+    guard let ctrl = make() else { return false }
+    ctrl.modalPresentationStyle = .overFullScreen
+    host.present(ctrl, animated: false)
+    return true
+  }
+
   private func setupOverlayConstraints() {
     // Overlay positioning to wrap safe areas and keyboard.
     let keyboardGuide = view.keyboardLayoutGuide
@@ -387,7 +420,7 @@ class SpaceController: UIViewController {
     // Moshroom: the shell printing its moshroom> prompt is the deterministic "fresh, idle, unconnected"
     // signal — reveal the quick-connect card off it (no web-view race, no poll).
     nc.addObserver(self, selector: #selector(_moshnectorPromptReady),
-                   name: NSNotification.Name("MoshroomPromptReadyNotification"), object: nil)
+                   name: .moshroomPromptReady, object: nil)
 
     // Moshroom: a tap on the program's input line (the cursor row — posted by the terminal tap
     // dispatch with the tapped web view) is a typing intent: open the composer, exactly like
@@ -1149,6 +1182,8 @@ extension SpaceController {
     _moveToShell(idx: _viewportsKeys.count - 1)
   }
   
+  // Called from AppDelegate as `moveToShellWithKey:` — the ObjC-bridged name, which is why a plain
+  // grep for "moveToShell" does not find its caller.
   @objc func moveToShell(key: String?) {
     guard
       let key = key,

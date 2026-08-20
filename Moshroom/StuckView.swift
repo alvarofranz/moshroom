@@ -48,12 +48,3 @@ struct StuckView: View {
       }
   }
 }
-
-
-struct StuckView_Previews: PreviewProvider {
-    static var previews: some View {
-      StuckView(keyCode: .commandLeft) {
-        
-      }
-    }
-}

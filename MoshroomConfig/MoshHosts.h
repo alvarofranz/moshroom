@@ -77,6 +77,8 @@ enum MoshAgentForward {
 
 + (instancetype)withHost:(NSString *)ID;
 + (void)loadHosts NS_SWIFT_NAME(loadHosts());
+// Swift sees these as MoshHosts.save() / MoshHosts.forceSave() — the importer drops the type-name
+// suffix, which is why grepping the ObjC names finds no callers.
 + (BOOL)saveHosts;
 + (BOOL)forceSaveHosts;
 + (instancetype)saveHost:(NSString *)host
@@ -100,7 +102,6 @@ enum MoshAgentForward {
       agentForwardPrompt:(enum MoshAgentForward)agentForwardPrompt
         agentForwardKeys:(NSArray<NSString *> *)agentForwardKeys
 ;
-+ (void)_replaceHost:(MoshHosts *)newHost;
 + (NSMutableArray<MoshHosts *> *)all;
 + (NSArray<MoshHosts *> *)allHosts;
 + (NSInteger)count;

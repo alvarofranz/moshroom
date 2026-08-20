@@ -233,18 +233,15 @@ final class MoshxploreSession {
     start()
     onWorker { [weak self] in
       guard let self else { return }
-      let resolved: (hostName: String, host: MoshSSHHost)
-      let config: SSHClientConfig
+      let target: (hostName: String, host: MoshSSHHost, config: SSHClientConfig)
       do {
-        let command = try SSHCommand.parse([hostAlias])
-        resolved = try command.resolveHost()
-        config = try SSHClientConfigProvider.config(host: resolved.host, using: device)
+        target = try MoshroomSSH.resolveTarget(hostAlias: hostAlias, device: device)
       } catch {
         DispatchQueue.main.async { completion(.failure(error)) }
         return
       }
 
-      self.connectC = SSHClient.dial(resolved.hostName, with: config, withProxy: MoshroomSSH.executeProxyCommand)
+      self.connectC = SSHClient.dial(target.hostName, with: target.config, withProxy: MoshroomSSH.executeProxyCommand)
         .flatMap { $0.requestSFTP() }
         .tryMap { try SFTPTranslator(on: $0) as Translator }
         .flatMap { $0.walkTo("~") }   // canonicalize to the login home directory
@@ -1667,25 +1664,10 @@ final class MoshxploreController: UIViewController {
     super.viewDidLoad()
     view.backgroundColor = MoshxploreStyle.screen   // adaptive — dark theme gets the Settings look
 
-    // Compact in-content header (no system nav bar) — the launcher / Moshtabs / Moshvault pattern, so
-    // the Mac window title bar stays as compact as the terminal and nothing jumps when Moshxplore opens.
-    // Title on the left, close ✕ top-right (the same spot as the button that opened it). Not named
-    // `_close` — that selector collides with a private Apple API and App Store upload rejects it.
-    let header = UIView()
-    header.translatesAutoresizingMaskIntoConstraints = false
-    let titleLabel = UILabel()
-    titleLabel.text = "Moshxplore"
-    titleLabel.font = .systemFont(ofSize: 17, weight: .semibold)
-    titleLabel.textColor = .label
-    titleLabel.translatesAutoresizingMaskIntoConstraints = false
-    let close = moshkeyRoundButton(diameter: 34)
-    close.layer.shadowOpacity = 0
-    close.setMoshIcon("xmark", pointSize: 15, weight: .semibold)
-    close.addTarget(self, action: #selector(_closeMoshxplore), for: .touchUpInside)
-    close.translatesAutoresizingMaskIntoConstraints = false
-    header.addSubview(titleLabel)
-    header.addSubview(close)
-    view.addSubview(header)
+    // The close action is not named `_close` — that selector collides with a private Apple API and
+    // App Store upload rejects it.
+    let header = moshroomInstallFullScreenHeader(in: self, title: "Moshxplore",
+                                                 target: self, action: #selector(_closeMoshxplore))
 
     explorer.savedHosts = { [weak self] in self?.space?.moshroomSavedHostAliases ?? [] }
     explorer.device = { [weak self] in self?.space?.currentDevice }
@@ -1699,15 +1681,6 @@ final class MoshxploreController: UIViewController {
     view.addSubview(explorer)
 
     NSLayoutConstraint.activate([
-      header.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
-      header.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
-      header.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
-      header.heightAnchor.constraint(equalToConstant: 58),
-      titleLabel.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: 16),
-      titleLabel.centerYAnchor.constraint(equalTo: header.centerYAnchor),
-      close.trailingAnchor.constraint(equalTo: header.trailingAnchor, constant: -16),
-      close.centerYAnchor.constraint(equalTo: header.centerYAnchor),
-
       // The explorer owns the rest of the screen below the header; each step manages its own margins.
       // The bottom rides the keyboard guide, so the inline editor is exactly the space above the keyboard.
       explorer.topAnchor.constraint(equalTo: header.bottomAnchor),
@@ -1757,17 +1730,13 @@ extension SpaceController {
   // Open Moshxplore full screen over the current tab. Defaults to the tab's connected host (if
   // it's a saved one) so a connected session browses itself with one tap; else the host picker.
   func openMoshxplore() {
-    let presenter = moshroomTopPresenter   // stack over the launcher (no dismiss-then-present flash)
-    guard presenter.presentedViewController == nil else { return }
-    dismissMoshnector()
-    view.subviews.compactMap({ $0 as? MoshkeysBar }).first?.closeIfOpen()
-    let ctrl = MoshxploreController()
-    ctrl.space = self
-    ctrl.preferredHost = currentTerm()?.moshroomUploadHost
-    let nav = UINavigationController(rootViewController: ctrl)
-    // .overFullScreen keeps the terminal in the window (see openMoshkitor).
-    nav.modalPresentationStyle = .overFullScreen
-    presenter.present(nav, animated: false)   // instant, no slide (see SpaceController.dismiss)
+    // No `from:` — stack over the launcher when it opened us (no dismiss-then-present flash).
+    moshroomPresentFullScreen {
+      let ctrl = MoshxploreController()
+      ctrl.space = self
+      ctrl.preferredHost = currentTerm()?.moshroomUploadHost
+      return UINavigationController(rootViewController: ctrl)
+    }
   }
 
   func dismissMoshxplore() {

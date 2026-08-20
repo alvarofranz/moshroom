@@ -77,31 +77,30 @@
     ios_setMiniRoot(homePath);
     [self updateAllowedPaths];
 
-    // We are restoring mosh session if possible first.
-    if ([@"mosh" isEqualToString:self.sessionParams.childSessionType] && self.sessionParams.hasEncodedState) {
-      MoshParams *moshParams = (MoshParams *)self.sessionParams.childSessionParams;
-
-      MoshroomMosh *mosh = [[MoshroomMosh alloc] initWithMcpSession: self device:_device andParams:moshParams];
-      _childSession = mosh;
-      [_childSession executeAttachedWithArgs:@""];
-      _childSession = nil;
-      // Re-suspended before it ever settled, or still has state: keep everything for the resume.
-      if (self.sessionParams.hasEncodedState || self.moshroomAppSuspending) {
-        return;
+    // A suspended mosh session is restored before anything else — `mosh` is the current client,
+    // `mosh1` the legacy one. Both resume the same way, so they share one path (a fix to how a
+    // resumed session ends must never land on only one of them).
+    if (self.sessionParams.hasEncodedState) {
+      Session *restored = nil;
+      if ([@"mosh" isEqualToString:self.sessionParams.childSessionType]) {
+        MoshParams *moshParams = (MoshParams *)self.sessionParams.childSessionParams;
+        restored = [[MoshroomMosh alloc] initWithMcpSession:self device:_device andParams:moshParams];
+      } else if ([@"mosh1" isEqualToString:self.sessionParams.childSessionType]) {
+        MoshSession *mosh = [[MoshSession alloc] initWithDevice:_device andParams:self.sessionParams.childSessionParams];
+        mosh.mcpSession = self;
+        restored = mosh;
       }
-      // The resumed session ended for real — back to a plain local shell (see _runCommand).
-      [self _clearChildSession];
-    }
-    if ([@"mosh1" isEqualToString:self.sessionParams.childSessionType] && self.sessionParams.hasEncodedState) {
-      MoshSession *mosh = [[MoshSession alloc] initWithDevice:_device andParams:self.sessionParams.childSessionParams];
-      mosh.mcpSession = self;
-      _childSession = mosh;
-      [_childSession executeAttachedWithArgs:@""];
-      _childSession = nil;
-      if (self.sessionParams.hasEncodedState || self.moshroomAppSuspending) {
-        return;
+      if (restored) {
+        _childSession = restored;
+        [_childSession executeAttachedWithArgs:@""];
+        _childSession = nil;
+        // Re-suspended before it ever settled, or still holding state: keep everything for the resume.
+        if (self.sessionParams.hasEncodedState || self.moshroomAppSuspending) {
+          return;
+        }
+        // The resumed session ended for real — back to a plain local shell (see _runCommand).
+        [self _clearChildSession];
       }
-      [self _clearChildSession];
     }
     NSString *initialCommand = self.sessionParams.initialCommand;
     if (initialCommand.length > 0) {

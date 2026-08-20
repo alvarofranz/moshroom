@@ -77,10 +77,6 @@ private struct StoreData: Codable {
 
   // MARK: - Resolution
 
-  func resolveSelected() -> TerminalStyle.Resolved {
-    selectedStyle.resolved()
-  }
-
   func resolve(_ id: UUID) -> TerminalStyle.Resolved {
     let s = style(for: id) ?? builtInDefault
     return s.resolved()
@@ -111,42 +107,6 @@ private struct StoreData: Codable {
     styles.append(style)
     save()
     return style
-  }
-
-  @discardableResult
-  func duplicateStyle(_ id: UUID) -> TerminalStyle? {
-    guard let original = style(for: id) else { return nil }
-    let copy = TerminalStyle(
-      id: UUID(),
-      name: uniqueName(for: "\(original.name) Copy"),
-      themeName: original.themeName,
-      fontName: original.fontName,
-      fontSize: original.fontSize,
-      cursorBlink: original.cursorBlink,
-      boldMode: original.boldMode,
-      boldAsBright: original.boldAsBright
-    )
-    styles.append(copy)
-    save()
-    return copy
-  }
-
-  // Used by import path where the style already has identity
-  @discardableResult
-  internal func addStyle(_ style: TerminalStyle) -> TerminalStyle {
-    let deduped = TerminalStyle(
-      id: style.id,
-      name: uniqueName(for: style.name),
-      themeName: style.themeName,
-      fontName: style.fontName,
-      fontSize: style.fontSize,
-      cursorBlink: style.cursorBlink,
-      boldMode: style.boldMode,
-      boldAsBright: style.boldAsBright
-    )
-    styles.append(deduped)
-    save()
-    return deduped
   }
 
   // MARK: - Update

@@ -182,21 +182,13 @@ extension SpaceController {
   // The topmost presented controller. A launcher destination is presented ON TOP of the launcher
   // (over this) instead of dismissing the launcher first — dismiss-then-present flashed the terminal
   // for a frame in between. Closing a destination dismisses the whole stack at once (see the closes).
-  var moshroomTopPresenter: UIViewController {
-    var vc: UIViewController = self
-    while let presented = vc.presentedViewController { vc = presented }
-    return vc
-  }
-
   // Open the launcher full screen. Works on any tab; needs no shell/connection.
   func openMoshlauncher() {
-    guard presentedViewController == nil else { return }
-    dismissMoshnector()
-    view.subviews.compactMap({ $0 as? MoshkeysBar }).first?.closeIfOpen()
-    let ctrl = MoshlauncherController()
-    ctrl.space = self
-    ctrl.modalPresentationStyle = .overFullScreen
-    present(ctrl, animated: false)   // instant, no slide (see SpaceController.dismiss)
+    moshroomPresentFullScreen(from: self) {
+      let ctrl = MoshlauncherController()
+      ctrl.space = self
+      return ctrl
+    }
   }
 
   // Dismiss the launcher, then run `then` (used to open a chosen destination once the launcher is

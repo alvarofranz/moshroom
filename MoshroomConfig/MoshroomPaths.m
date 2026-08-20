@@ -162,11 +162,6 @@ NSString *__iCloudsDriveDocumentsPath = nil;
   return [NSURL fileURLWithPath:[self moshroomAgentSettings]];
 }
 
-+ (NSURL *)sshURL
-{
-  return [NSURL fileURLWithPath:[self ssh]];
-}
-
 + (NSString *)moshroomKeysFile
 {
   return [[self moshroomHome] stringByAppendingPathComponent:@"keys"];
@@ -193,11 +188,6 @@ NSString *__iCloudsDriveDocumentsPath = nil;
 }
 
 
-+ (NSString *)moshroomSyncItemsFile
-{
-  return [[self moshroomHome] stringByAppendingPathComponent:@"syncItems"];
-}
-
 + (NSString *)moshroomProfileFile
 {
   return [[self moshroomHome] stringByAppendingPathComponent:@"profile"];
@@ -206,11 +196,6 @@ NSString *__iCloudsDriveDocumentsPath = nil;
 + (NSString *)historyFile
 {
   return [[self moshroomHome] stringByAppendingPathComponent:@"history.txt"];
-}
-
-+ (NSURL *)historyURL
-{
-  return [NSURL fileURLWithPath:[self historyFile]];
 }
 
 + (NSURL *)localSnippetsLocationURL

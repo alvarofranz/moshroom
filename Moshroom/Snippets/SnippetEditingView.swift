@@ -67,16 +67,6 @@ extension TextView {
 }
 
 class TextViewBuilder {
-  static func createForSnippetPreview() -> TextView {
-    let tv = textView()
-    tv.isEditable = false
-    tv.isScrollEnabled = false
-    tv.isSelectable = false
-    tv.indentStrategy = .space(length: 4)
-
-    return tv
-  }
-
   static func createForSnippetEditing() -> TextView {
     return textView()
   }

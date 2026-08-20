@@ -587,12 +587,9 @@ final class MoshdropUploader {
   }
 
   private func publisher(localURL: URL, hostAlias: String, device: TermDevice, remoteName: String) -> CopyProgressInfoPublisher {
-    let resolved: (hostName: String, host: MoshSSHHost)
-    let config: SSHClientConfig
+    let target: (hostName: String, host: MoshSSHHost, config: SSHClientConfig)
     do {
-      let command = try SSHCommand.parse([hostAlias])
-      resolved = try command.resolveHost()
-      config = try SSHClientConfigProvider.config(host: resolved.host, using: device)
+      target = try MoshroomSSH.resolveTarget(hostAlias: hostAlias, device: device)
     } catch {
       return Fail(error: error).eraseToAnyPublisher()
     }
@@ -608,7 +605,7 @@ final class MoshdropUploader {
 
     let localFile = MoshroomFiles.Local().walkTo(staged.path)
 
-    let destDir = SSHClient.dial(resolved.hostName, with: config, withProxy: MoshroomSSH.executeProxyCommand)
+    let destDir = SSHClient.dial(target.hostName, with: target.config, withProxy: MoshroomSSH.executeProxyCommand)
       .flatMap { $0.requestSFTP() }
       .tryMap { try SFTPTranslator(on: $0) as Translator }
       .flatMap { root in Self.ensureRemoteDir(root, path: "/~/\(Moshdrop.remoteDir)") }

@@ -1099,31 +1099,24 @@ extension SpaceController {
   // single probe keystroke, or by a tap on the terminal's input line (the cursor row — see
   // the tap dispatch in WKWebView.swift/term.js). Long-press select/copy is untouched.
   func openMoshkitor(seed: String = "", pasteOnOpen: Bool = false) {
-    dismissMoshnector()
-    view.subviews.compactMap({ $0 as? MoshkeysBar }).first?.closeIfOpen()
-    guard presentedViewController == nil, let device = currentDevice else { return }
-    let composer = MoshkitorComposer(device: device, seed: seed,
-                                     connectedHost: currentTerm()?.moshroomUploadHost,
-                                     pasteOnAppear: pasteOnOpen)
-    composer.onSend = { [weak self] command in
-      // The user ran something in this tab → the terminal now has content; don't pop Quick Connect back.
-      self?.currentTerm()?.moshroomUserHasInteracted = true
-      // Catch an `ssh`/`mosh` typed here so the next attachment uploads to that host.
-      self?.noteConnectionCommand(command)
+    // The composer owns the whole screen, on every device — writing to the agent is the main event,
+    // and a sheet (iPhone) or centered card (iPad) wastes canvas. Close is the ✕ up top. Presenting
+    // instantly also keeps the hardware-keyboard guarantee: with a seed, the editor must be on
+    // screen and first responder immediately, or the next keystroke lands with no responder and Mac
+    // Catalyst beeps (and drops the key). See moshroomPresentFullScreen for the rest of the rules.
+    moshroomPresentFullScreen(from: self) {
+      guard let device = currentDevice else { return nil }
+      let composer = MoshkitorComposer(device: device, seed: seed,
+                                       connectedHost: currentTerm()?.moshroomUploadHost,
+                                       pasteOnAppear: pasteOnOpen)
+      composer.onSend = { [weak self] command in
+        // The user ran something in this tab → the terminal now has content; don't pop Quick Connect back.
+        self?.currentTerm()?.moshroomUserHasInteracted = true
+        // Catch an `ssh`/`mosh` typed here so the next attachment uploads to that host.
+        self?.noteConnectionCommand(command)
+      }
+      return UINavigationController(rootViewController: composer)
     }
-    let nav = UINavigationController(rootViewController: composer)
-    // The composer owns the whole screen, on every device — writing to the agent is the main
-    // event, and a sheet (iPhone) or centered card (iPad) wastes canvas. Close is the ✕ up top.
-    // .overFullScreen (NOT .fullScreen): the covered terminal must STAY in the window — pulling
-    // the web view out and back re-latches WebKit's selection painting into a dead near-black
-    // box that no responder dance reliably heals (reproduced live 2026-07-10). Same look, and
-    // SpaceController's dismiss override restores what viewDidAppear no longer re-fires for.
-    nav.modalPresentationStyle = .overFullScreen
-    // Always present instantly (no slide) — consistent with every other full-screen surface and with
-    // the instant dismiss (see SpaceController.dismiss). This also keeps the old hardware-keyboard
-    // guarantee: with a seed, the editor must be on screen and first responder immediately, or the
-    // next keystroke lands with no responder and Mac Catalyst beeps (and drops the key).
-    present(nav, animated: false)
   }
 
   // Cmd+V while no composer is up: everything the user SENDS goes through Moshkitor, so a paste
@@ -1138,7 +1131,7 @@ extension SpaceController {
   // Settings = the built-in config screen (same as the `config` command), so everything
   // lives in one place.
   func openSettings() {
-    view.subviews.compactMap({ $0 as? MoshkeysBar }).first?.closeIfOpen()
+    moshroomCloseQuickKeys()
     showConfigAction()
   }
 }

@@ -42,7 +42,6 @@
 
 + (NSURL *) moshroomURL;
 + (NSURL *) moshroomAgentSettingsURL;
-+ (NSURL *) sshURL;
 + (NSURL *) moshroomSSHConfigFileURL;
 + (NSURL *) moshroomGlobalSSHConfigFileURL;
 + (NSURL *) moshroomKBConfigURL;
@@ -50,10 +49,8 @@
 + (NSString *) moshroomKeysFile;
 + (NSString *) moshroomHostsFile;
 + (NSString *) moshroomDefaultsFile;
-+ (NSString *) moshroomSyncItemsFile;
 + (NSString *) moshroomProfileFile;
 
-+ (NSURL *) historyURL;
 + (NSString *) historyFile;
 + (NSString *) knownHostsFile;
 

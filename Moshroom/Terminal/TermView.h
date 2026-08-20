@@ -113,6 +113,8 @@ extern NSString * TermViewTitleDidChangeNotificationKey;
 - (void)displayInput:(NSString *)input;
 - (void)apiResponse:(NSString *)name response:(NSString *)response;
 
+// Both are driven from Swift as modifySideOfSelection() / modifySelection(inDirection:granularity:)
+// — the second one's bridged spelling hides it from a grep for the ObjC name.
 - (void)modifySideOfSelection;
 - (void)modifySelectionInDirection:(NSString *)direction granularity:(NSString *)granularity;
 

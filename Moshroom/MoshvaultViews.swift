@@ -251,7 +251,19 @@ private struct MoshNoMatches: View {
 // OS auto-clear it after a short window, so a copied password/code doesn't linger for the next app
 // that reads the pasteboard. Values never touch anything but the local clipboard.
 enum MoshClipboard {
-  static func copy(_ value: String, clearAfter seconds: TimeInterval = 90) {
+  /// How long a copied secret stays on the clipboard: a password long enough to paste it somewhere,
+  /// a 2FA code barely past its own 30s life.
+  static let passwordSeconds: TimeInterval = 90
+  static let codeSeconds: TimeInterval = 30
+
+  /// The one way the vault copies: clipboard + the success buzz that tells the user it landed.
+  static func copyWithFeedback(_ value: String, clearAfter seconds: TimeInterval = passwordSeconds) {
+    guard !value.isEmpty else { return }
+    copy(value, clearAfter: seconds)
+    UINotificationFeedbackGenerator().notificationOccurred(.success)
+  }
+
+  static func copy(_ value: String, clearAfter seconds: TimeInterval = passwordSeconds) {
     guard !value.isEmpty else { return }
     UIPasteboard.general.setItems(
       [["public.utf8-plain-text": value]],
@@ -263,64 +275,35 @@ enum MoshClipboard {
   }
 }
 
-// A tappable "Copied" flash used across both tabs.
-private struct CopyChip: View {
-  let text: String
-  let value: String
-  var mono: Bool = false
-  @State private var copied = false
-  var body: some View {
-    Button {
-      guard !value.isEmpty else { return }
-      MoshClipboard.copy(value)
-      withAnimation { copied = true }
-      UINotificationFeedbackGenerator().notificationOccurred(.success)
-      DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) { withAnimation { copied = false } }
-    } label: {
-      // Stable layout: the label text never changes width (no "Copied" swap that shifts the row),
-      // and the icon flips to a green check in place. Dimmed when there is nothing to copy.
-      HStack(spacing: 6) {
-        if !text.isEmpty {
-          Text(text)
-            .font(mono ? .system(.body, design: .monospaced) : .body)
-            .foregroundColor(.primary)
-        }
-        Image(systemName: copied ? "checkmark" : "doc.on.doc")
-          .font(.footnote)
-          .foregroundColor(copied ? .moshGreen : (value.isEmpty ? Color.secondary.opacity(0.35) : .secondary))
-      }
-    }
-    .buttonStyle(.plain)
-  }
-}
-
-// One copy button on a password row: the field's icon, which flips to a tick for a moment when the
-// value lands on the clipboard, and NOTHING at all when that field is empty. Sized and weighted so
-// three of them sit quietly at the trailing edge of a row instead of shouting at it.
-private struct MoshVaultRowCopyButton: View {
+// The one copy button in Moshvault: tap puts the value on the clipboard and the icon flips to a
+// green tick in place, so nothing in the row shifts. Callers pick the icon and what an empty field
+// looks like — omitted entirely (the row's trailing buttons) or dimmed in place (an editor field,
+// where the chip belongs to the layout even when there is nothing to copy yet).
+private struct MoshVaultCopyButton: View {
   let icon: String
   let value: String
+  /// Named for VoiceOver: "Copy password".
   let field: String
-  /// How long the clipboard keeps it (see MoshClipboard: a password should not outlive its use).
-  var clearAfter: TimeInterval = 90
+  /// How long the clipboard keeps it (see MoshClipboard).
+  var clearAfter: TimeInterval = MoshClipboard.passwordSeconds
+  var hideWhenEmpty = false
   @State private var copied = false
 
   private var trimmed: String { value.trimmingCharacters(in: .whitespacesAndNewlines) }
 
   var body: some View {
-    if trimmed.isEmpty {
+    if trimmed.isEmpty && hideWhenEmpty {
       // Not defined on this entry: no button, no placeholder, no gap to explain.
       EmptyView()
     } else {
       Button {
-        MoshClipboard.copy(trimmed, clearAfter: clearAfter)
-        UINotificationFeedbackGenerator().notificationOccurred(.success)
+        MoshClipboard.copyWithFeedback(trimmed, clearAfter: clearAfter)
         withAnimation { copied = true }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { withAnimation { copied = false } }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.3) { withAnimation { copied = false } }
       } label: {
         Image(systemName: copied ? "checkmark" : icon)
-          .font(.system(size: 15, weight: .regular))
-          .foregroundColor(copied ? .moshGreen : .secondary)
+          .font(.system(size: 15))
+          .foregroundColor(copied ? .moshGreen : (trimmed.isEmpty ? Color.secondary.opacity(0.35) : .secondary))
           // A fixed box so the tick swap cannot nudge the row, and a comfortable touch target.
           .frame(width: 30, height: 30)
           .contentShape(Rectangle())
@@ -339,9 +322,9 @@ private struct MoshVaultRowCopyButtons: View {
   let entry: MoshVaultEntry
   var body: some View {
     HStack(spacing: 2) {
-      MoshVaultRowCopyButton(icon: "person", value: entry.username, field: "username")
-      MoshVaultRowCopyButton(icon: "envelope", value: entry.email, field: "email")
-      MoshVaultRowCopyButton(icon: "key", value: entry.password, field: "password")
+      MoshVaultCopyButton(icon: "person", value: entry.username, field: "username", hideWhenEmpty: true)
+      MoshVaultCopyButton(icon: "envelope", value: entry.email, field: "email", hideWhenEmpty: true)
+      MoshVaultCopyButton(icon: "key", value: entry.password, field: "password", hideWhenEmpty: true)
     }
   }
 }
@@ -455,7 +438,7 @@ private struct MoshvaultPasswordEditor: View {
               Image(systemName: revealPassword ? "eye.slash" : "eye").foregroundColor(.secondary)
             }
             .buttonStyle(.plain)
-            CopyChip(text: "", value: entry.password)
+            MoshVaultCopyButton(icon: "doc.on.doc", value: entry.password, field: "password")
           }
         }
         Section {
@@ -481,7 +464,7 @@ private struct MoshvaultPasswordEditor: View {
         .keyboardType(keyboard)
         .autocorrectionDisabled()
         .textInputAutocapitalization(keyboard == .default ? .sentences : .never)
-      CopyChip(text: "", value: text.wrappedValue)
+      MoshVaultCopyButton(icon: "doc.on.doc", value: text.wrappedValue, field: title)
     }
   }
 }
@@ -546,8 +529,7 @@ struct MoshvaultTOTPView: View {
 
   private func copyCode(_ account: MoshTOTPAccount) {
     // A code only lives ~30s; clear it from the clipboard fast so a stale one can't be pasted later.
-    MoshClipboard.copy(MoshTOTP.code(for: account), clearAfter: 30)
-    UINotificationFeedbackGenerator().notificationOccurred(.success)
+    MoshClipboard.copyWithFeedback(MoshTOTP.code(for: account), clearAfter: MoshClipboard.codeSeconds)
     // A green check appears left of the code for 2s — no banner, nothing shifts.
     withAnimation { copiedID = account.id }
     let id = account.id

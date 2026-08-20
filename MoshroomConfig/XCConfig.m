@@ -31,18 +31,6 @@
   return [bundle objectForInfoDictionaryKey:key];
 }
 
-+ (NSString *) infoPlistWhatsNewURL {
-  return [self _valueForKey:@"MOSHROOM_WHATS_NEW_URL"];
-}
-
-+ (NSString *) infoPlistWhatsNewGithubURL {
-  return [self _valueForKey:@"MOSHROOM_WHATS_NEW_GITHUB_URL"];
-}
-
-+ (NSString *) infoPlistConversionOpportunityURL {
-  return [self _valueForKey:@"MOSHROOM_CONVERSION_OPPORTUNITY_URL"];
-}
-
 + (NSString *) infoPlistKeyChainID1 {
   return [self _valueForKey:@"MOSHROOM_KEYCHAIN_ID1"];
 }

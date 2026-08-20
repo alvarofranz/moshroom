@@ -309,20 +309,6 @@ sshConfigAttachment:(NSString *)sshConfigAttachment
   return bkHost;
 }
 
-// Helper to replace a Host, but won't process changes like passwords, etc...
-+ (void)_replaceHost:(MoshHosts *)newHost
-{
-  for (int i = 0; i < __hosts.count; i++) {
-    MoshHosts *host = __hosts[i];
-    if ([host->_host isEqualToString:newHost->_host]) {
-      newHost.lastModified = [NSDate date];
-      __hosts[i] = newHost;
-      [self saveHosts];
-      return;
-    }
-  }
-}
-
 + (BOOL)saveHosts {
   return [self saveHostsAndEnforce:false];
 }

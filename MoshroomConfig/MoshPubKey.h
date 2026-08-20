@@ -50,6 +50,10 @@ typedef enum: NSUInteger {
 
 - (nullable NSString *)loadPrivateKey;
 - (nullable NSString *)loadCertificate;
+// Called from Swift as storePrivateKey(inKeychain:) / storeCertificate(inKeychain:) — the bridged
+// spelling, which is why a grep for the ObjC name finds no callers.
+- (void)storePrivateKeyInKeychain:(nonnull NSString *) privateKey;
+- (void)storeCertificateInKeychain:(nullable NSString *) certificate;
 
 + (void)initialize;
 + (nullable instancetype)withID:(nullable NSString *)ID;
@@ -65,10 +69,7 @@ typedef enum: NSUInteger {
 
 + (void)loadIDS;
 + (BOOL)saveIDS;
-+ (BOOL)saveGroupContainerKeys:(NSArray<MoshPubKey *> *)keys;
 + (void)addCard:(nonnull MoshPubKey *)pubKey;
-- (void)storePrivateKeyInKeychain:(nonnull NSString *) privateKey;
-- (void)storeCertificateInKeychain:(nullable NSString *) certificate;
 + (nonnull NSArray<MoshPubKey *> *)all;
 + (NSInteger)count;
 - (BOOL)isEncrypted;

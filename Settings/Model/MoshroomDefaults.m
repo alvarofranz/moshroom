@@ -227,16 +227,6 @@ static void __mirrorICloudSyncFlag(BOOL enabled) {
   [TerminalStyleStore.shared setStyleCursorBlink:state];
 }
 
-+ (void)setBoldAsBright:(BOOL)state
-{
-  [TerminalStyleStore.shared setStyleBoldAsBright:state];
-}
-
-+ (void)setEnableBold:(NSUInteger)state
-{
-  [TerminalStyleStore.shared setStyleEnableBold:state];
-}
-
 + (void)setFontName:(NSString *)fontName
 {
   [TerminalStyleStore.shared setStyleFontName:fontName];
@@ -269,10 +259,6 @@ static void __mirrorICloudSyncFlag(BOOL enabled) {
 
 + (void)setPlaySoundOnBell:(BOOL)state {
   defaults.playSoundOnBell = state;
-}
-
-+ (void)setInvertedVerticalScroll:(BOOL) state {
-  defaults.invertVerticalScroll = state;
 }
 
 + (void)setNotificationOnBellUnfocused:(BOOL)state {

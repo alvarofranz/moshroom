@@ -325,6 +325,13 @@ enum Moshnector {
   }
 }
 
+extension Notification.Name {
+  /// A tab's session went live, or its local shell printed its `moshroom>` prompt — the deterministic
+  /// moments when Quick Connect may need to reveal itself. Posted by TermController (session start /
+  /// restore) and by MCPSession, which is ObjC and posts the same string on the wire.
+  static let moshroomPromptReady = Notification.Name("MoshroomPromptReadyNotification")
+}
+
 extension SpaceController {
   // Saved SSH host aliases — the only hosts Moshdrop can upload to (each reuses its own keys/config).
   // One source of truth for the card list and for validating a connection's host.

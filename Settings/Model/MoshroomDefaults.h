@@ -60,8 +60,6 @@ typedef NS_ENUM(NSInteger, MoshLayoutMode) {
 + (void)loadDefaults NS_SWIFT_NAME(loadDefaults());
 + (BOOL)saveDefaults NS_SWIFT_NAME(save());
 + (void)setCursorBlink:(BOOL)state;
-+ (void)setBoldAsBright:(BOOL)state;
-+ (void)setEnableBold:(NSUInteger)state;
 + (void)setDisableCustomKeyboards:(BOOL)state;
 + (void)setFontName:(NSString *)fontName;
 + (void)setThemeName:(NSString *)themeName;
@@ -70,7 +68,6 @@ typedef NS_ENUM(NSInteger, MoshLayoutMode) {
 + (void)setNotificationOnBellUnfocused:(BOOL)state;
 + (void)setHapticFeedbackOnBellOff:(BOOL)state;
 + (void)setOscNotifications:(BOOL)state;
-+ (void)setInvertedVerticalScroll:(BOOL) state;
 + (void)setICloudSyncEnabled:(BOOL)state;
 + (void)setRequireBiometricUnlock:(BOOL)state;
 + (BOOL)isRequireBiometricUnlock;
