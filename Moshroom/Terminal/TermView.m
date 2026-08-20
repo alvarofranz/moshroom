@@ -33,6 +33,7 @@
 #import "Moshroom-Swift.h"
 
 NSString * TermViewReadyNotificationKey = @"TermViewReadyNotificationKey";
+NSString * TermViewTitleDidChangeNotificationKey = @"TermViewTitleDidChangeNotificationKey";
 
 struct winsize __winSizeFromJSON(NSDictionary *json) {
   struct winsize res;
@@ -601,8 +602,14 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
   } else if ([operation isEqualToString:@"ring-bell"]) {
     [_device viewDidReceiveBellRing];
   } else if ([operation isEqualToString:@"setTitle"]) {
-    // The program set its terminal title (OSC 0/2) — remember it for the tab name.
-    _oscTitle = data[@"title"];
+    // The program set its terminal title (OSC 0/2) — remember it for the tab name, and tell the tab
+    // chrome so the pill next to the Tabs button follows a name we do not own. Only on a real change:
+    // a TUI can re-set the same title repeatedly.
+    NSString *title = data[@"title"];
+    if (title != _oscTitle && ![title isEqualToString:_oscTitle]) {
+      _oscTitle = title;
+      [[NSNotificationCenter defaultCenter] postNotificationName:TermViewTitleDidChangeNotificationKey object:self];
+    }
   } else if ([operation isEqualToString:@"openLink"]) {
     [self _openLink:data[@"url"]];
   }

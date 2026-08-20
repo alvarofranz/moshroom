@@ -76,19 +76,18 @@ enum Moshkeys {
     sc.view.bringSubviewToFront(tabs)
     sc.view.bringSubviewToFront(launcher)
 
-    // Tab-switch toast — a small red pill just right of Tabs that names the tab a swipe landed on,
-    // then fades away. Only shown on a completed swipe (SpaceController.didFinishAnimating). It caps
-    // its width against the folder/Settings buttons and truncates a long alias.
-    let toast = MoshroomTabToast()
-    toast.translatesAutoresizingMaskIntoConstraints = false
-    sc.view.addSubview(toast)
+    // The tab label — a red pill just right of Tabs naming the tab on screen, always. It caps its
+    // width against the launcher button and truncates a long alias.
+    let tabLabel = MoshroomTabLabel()
+    tabLabel.translatesAutoresizingMaskIntoConstraints = false
+    sc.view.addSubview(tabLabel)
     NSLayoutConstraint.activate([
-      toast.leadingAnchor.constraint(equalTo: tabs.trailingAnchor, constant: 10),
-      toast.centerYAnchor.constraint(equalTo: tabs.centerYAnchor),
-      toast.trailingAnchor.constraint(lessThanOrEqualTo: launcher.leadingAnchor, constant: -8),
+      tabLabel.leadingAnchor.constraint(equalTo: tabs.trailingAnchor, constant: 10),
+      tabLabel.centerYAnchor.constraint(equalTo: tabs.centerYAnchor),
+      tabLabel.trailingAnchor.constraint(lessThanOrEqualTo: launcher.leadingAnchor, constant: -8),
     ])
-    sc.view.bringSubviewToFront(toast)
-    sc.moshroomTabToast = toast
+    sc.view.bringSubviewToFront(tabLabel)
+    sc.moshroomTabLabel = tabLabel
 
     // "Back to live" chip — the terminal is a transcript you can read back through, and a viewport
     // parked up in the scrollback while the session prints below it reads exactly like a frozen
@@ -746,10 +745,12 @@ private final class _TabLongPress: UILongPressGestureRecognizer {
   var key: UUID?
 }
 
-// The red pill that names the tab a swipe just landed on, sitting next to the Tabs button. A padded
-// UILabel (Moshroom red, white text); fades in/out via SpaceController.moshroomShowTabToast. It never
-// takes touches — a tap passes straight through to the terminal underneath.
-final class MoshroomTabToast: UILabel {
+// The red pill next to the Tabs button that names the tab you are looking at. PERMANENT: it used to
+// flash for three seconds after a swipe and fade out, but the strip it lives in is empty anyway and
+// "which host am I on" is worth having on screen at all times, so it is simply always there and
+// always current (SpaceController.moshroomUpdateTabLabel). A padded UILabel (Moshroom red, white
+// text) that never takes touches — a tap passes straight through to the terminal underneath.
+final class MoshroomTabLabel: UILabel {
   private let insets = UIEdgeInsets(top: 6, left: 12, bottom: 6, right: 12)
   override init(frame: CGRect) {
     super.init(frame: frame)
@@ -760,7 +761,8 @@ final class MoshroomTabToast: UILabel {
     clipsToBounds = true
     lineBreakMode = .byTruncatingTail
     isUserInteractionEnabled = false
-    alpha = 0
+    // Hidden only until the first title lands, so an empty pill never shows as a red stub.
+    isHidden = true
   }
   required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
   override func drawText(in rect: CGRect) { super.drawText(in: rect.inset(by: insets)) }

@@ -294,6 +294,58 @@ private struct CopyChip: View {
   }
 }
 
+// One copy button on a password row: the field's icon, which flips to a tick for a moment when the
+// value lands on the clipboard, and NOTHING at all when that field is empty. Sized and weighted so
+// three of them sit quietly at the trailing edge of a row instead of shouting at it.
+private struct MoshVaultRowCopyButton: View {
+  let icon: String
+  let value: String
+  let field: String
+  /// How long the clipboard keeps it (see MoshClipboard: a password should not outlive its use).
+  var clearAfter: TimeInterval = 90
+  @State private var copied = false
+
+  private var trimmed: String { value.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+  var body: some View {
+    if trimmed.isEmpty {
+      // Not defined on this entry: no button, no placeholder, no gap to explain.
+      EmptyView()
+    } else {
+      Button {
+        MoshClipboard.copy(trimmed, clearAfter: clearAfter)
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
+        withAnimation { copied = true }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { withAnimation { copied = false } }
+      } label: {
+        Image(systemName: copied ? "checkmark" : icon)
+          .font(.system(size: 15, weight: .regular))
+          .foregroundColor(copied ? .moshGreen : .secondary)
+          // A fixed box so the tick swap cannot nudge the row, and a comfortable touch target.
+          .frame(width: 30, height: 30)
+          .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .moshCatalystPlainButtons()
+      .accessibilityLabel("Copy \(field)")
+    }
+  }
+}
+
+/// The trailing copy buttons of a password row: username, email, password, each present only when the
+/// entry actually has that field. One tap puts it on the clipboard, so the common case (grab a
+/// password, grab a login) never needs the editor.
+private struct MoshVaultRowCopyButtons: View {
+  let entry: MoshVaultEntry
+  var body: some View {
+    HStack(spacing: 2) {
+      MoshVaultRowCopyButton(icon: "person", value: entry.username, field: "username")
+      MoshVaultRowCopyButton(icon: "envelope", value: entry.email, field: "email")
+      MoshVaultRowCopyButton(icon: "key", value: entry.password, field: "password")
+    }
+  }
+}
+
 // MARK: - Passwords
 
 struct MoshvaultPasswordsView: View {
@@ -322,14 +374,25 @@ struct MoshvaultPasswordsView: View {
       } else {
         MoshSearchList(query: $query, prompt: "Search passwords", showSearch: entries.count > 10, noMatches: filtered.isEmpty) {
           ForEach(filtered) { entry in
-            Button { onEdit(entry) } label: {
-              VStack(alignment: .leading, spacing: 2) {
-                Text(entry.service.isEmpty ? "Untitled" : entry.service)
-                  .foregroundColor(.primary)
-                if !entry.subtitle.isEmpty {
-                  Text(entry.subtitle).font(.footnote).foregroundColor(.secondary)
+            // Two tap targets in one row: the name opens the editor, the trailing icons copy a field
+            // each. Both are plain buttons (a row-wide Button would swallow the icons' taps), and the
+            // icons are centred against the whole row however tall the name wraps.
+            HStack(spacing: 8) {
+              Button { onEdit(entry) } label: {
+                VStack(alignment: .leading, spacing: 2) {
+                  Text(entry.service.isEmpty ? "Untitled" : entry.service)
+                    .foregroundColor(.primary)
+                  if !entry.subtitle.isEmpty {
+                    Text(entry.subtitle).font(.footnote).foregroundColor(.secondary)
+                  }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
               }
+              .buttonStyle(.plain)
+              .moshCatalystPlainButtons()
+
+              MoshVaultRowCopyButtons(entry: entry)
             }
             // Right-click (Mac) / long-press (iOS) — the Mac has no swipe, so edit & delete live here too.
             .contextMenu {

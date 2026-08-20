@@ -32,6 +32,9 @@
 @class LayoutConstraintManager;
 
 extern NSString * TermViewReadyNotificationKey;
+// A program changed its terminal title (OSC 0/2) — posted with the TermView, so the tab pill and the
+// Tabs list can follow a name they do not own. Only posted when the title actually changes.
+extern NSString * TermViewTitleDidChangeNotificationKey;
 
 @protocol TermViewDeviceProtocol
 

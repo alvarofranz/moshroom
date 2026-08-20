@@ -193,6 +193,31 @@ class TermController: UIViewController {
   // shell still reads as fresh for a moment — the clear path uses this to not wipe it (Moshnector).
   var moshroomConnectedHostSetAt: Date? = nil
 
+  /// An ssh/mosh child is running in this tab right now (as opposed to the local `moshroom>` prompt,
+  /// with or without a local command running on it).
+  var moshroomHasLiveChildSession: Bool {
+    guard let mcp = _session as? MCPSession else { return false }
+    return !(mcp.sessionParams?.childSessionType ?? "").isEmpty
+  }
+
+  /// The host this tab is ON right now: the connection recorded in THIS run, and failing that — while
+  /// a child session is actually live — the host the tab is persisted as being on.
+  ///
+  /// The two differ after an app relaunch, which is the whole point: a mosh session survives it and
+  /// comes back live, but the in-memory record does not, so attaching a file in a session that was
+  /// plainly still there was refused with "Not connected" until the user quit the app and reconnected.
+  /// The persisted name (`meta.connectedHost`, the same fact the tab is titled with) is the answer, and
+  /// an upload needs nothing more: it opens its own SSH/SFTP connection to that alias.
+  ///
+  /// Nil whenever there is no live child, which is also what the tab pill keys off — one predicate, so
+  /// "there is a host to upload to" and "there is a host worth naming" can never disagree.
+  var moshroomUploadHost: String? {
+    if let live = moshroomConnectedHost, !live.isEmpty { return live }
+    guard moshroomHasLiveChildSession else { return nil }
+    let persisted = (meta.connectedHost ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    return persisted.isEmpty ? nil : persisted
+  }
+
   // Once the user has sent any command in this tab (ls, ssh, connect…), the Quick Connect card stays
   // hidden — the terminal now has content and the card must not pop back over it. Per-tab; a fresh tab
   // (or a fresh restored shell) starts false, so the card still appears on a brand-new, untouched terminal.

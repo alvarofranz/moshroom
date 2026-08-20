@@ -82,12 +82,8 @@ final class MoshnectorView: UIView {
     layer.cornerRadius = Moshstyle.overlayRadius
     Moshstyle.applyOverlayShadow(layer)
 
-    let title = UILabel()
-    title.text = "Quick Connect"
-    title.textAlignment = .center
-    title.font = .systemFont(ofSize: 17, weight: .semibold)
-    title.textColor = .label
-
+    // No card title on purpose: the switcher and the host rows say what this is, and a "Quick Connect"
+    // heading over them was a label explaining the obvious. The card starts at the Mosh/SSH switcher.
     modeControl.selectedSegmentIndex = 0
     // Mushroom-red selection with white text — the house switcher, styled once for the whole
     // app in MoshstyleAppearance.install() (Moshvault's Passwords/2FA picker matches for free).
@@ -115,7 +111,7 @@ final class MoshnectorView: UIView {
     emptyLabel.numberOfLines = 0
     emptyLabel.isHidden = true
 
-    let stack = UIStackView(arrangedSubviews: [title, modeControl, scroll, emptyLabel])
+    let stack = UIStackView(arrangedSubviews: [modeControl, scroll, emptyLabel])
     stack.axis = .vertical
     stack.spacing = 12
     stack.alignment = .fill
@@ -389,6 +385,10 @@ extension SpaceController {
   // Reveal the card only for a fresh, unconnected shell; keep it hidden for a restored or
   // still-connected ssh/mosh session (so reopening into a live mosh shows no card).
   func showMoshnectorIfIdle() {
+    // This is the app's "the session state changed" trigger (a prompt printed, a session started or
+    // ended, a modal closed), so it is also where the tab pill is re-read: a connection that just
+    // ended must take its name off the top bar.
+    defer { moshroomUpdateTabLabel() }
     // Never compete with a full-screen hub — while the launcher, Moshxplore or Moshvault is open,
     // Quick Connect stays hidden.
     if moshroomMoshlauncherIsOpen || moshroomMoshxploreIsOpen || moshroomMoshvaultIsOpen {
@@ -433,6 +433,7 @@ extension SpaceController {
       term?.moshroomConnectedHost = alias
       term?.meta.connectedHost = alias          // persisted → the tab name survives an app relaunch
       SessionRegistry.shared.persistMetaIndex()
+      moshroomUpdateTabLabel()                  // the tab is this host now — say so in the pill
     }
   }
 

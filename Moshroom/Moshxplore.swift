@@ -1763,7 +1763,7 @@ extension SpaceController {
     view.subviews.compactMap({ $0 as? MoshkeysBar }).first?.closeIfOpen()
     let ctrl = MoshxploreController()
     ctrl.space = self
-    ctrl.preferredHost = currentTerm()?.moshroomConnectedHost
+    ctrl.preferredHost = currentTerm()?.moshroomUploadHost
     let nav = UINavigationController(rootViewController: ctrl)
     // .overFullScreen keeps the terminal in the window (see openMoshkitor).
     nav.modalPresentationStyle = .overFullScreen

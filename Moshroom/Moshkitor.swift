@@ -66,7 +66,8 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
   // to Moshroom via the system share sheet); tapping it opens the tray grid — see openTray / Moshtray.
   private var trayButton: UIButton?
 
-  // The host attachments upload to (the current Quick Connect connection), or nil if not connected.
+  // The host attachments upload to (see TermController.moshroomUploadHost), or nil when this tab has
+  // no session to attach for.
   private let connectedHost: String?
   // Fired with the final command as it's written to the terminal, so SpaceController can notice an
   // `ssh`/`mosh` connect and record its host as the next upload target.
@@ -1102,7 +1103,7 @@ extension SpaceController {
     view.subviews.compactMap({ $0 as? MoshkeysBar }).first?.closeIfOpen()
     guard presentedViewController == nil, let device = currentDevice else { return }
     let composer = MoshkitorComposer(device: device, seed: seed,
-                                     connectedHost: currentTerm()?.moshroomConnectedHost,
+                                     connectedHost: currentTerm()?.moshroomUploadHost,
                                      pasteOnAppear: pasteOnOpen)
     composer.onSend = { [weak self] command in
       // The user ran something in this tab → the terminal now has content; don't pop Quick Connect back.

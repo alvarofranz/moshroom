@@ -55,9 +55,8 @@ class SpaceController: UIViewController {
   // closed every tab and that state was restored" (stay at zero tabs) from a launch with nothing
   // to restore (fresh install / discarded scene), which still starts the first shell.
   private var _restoredState = false
-  // The red tab-switch toast next to the Tabs button (created in Moshkeys.install) + its hide timer.
-  var moshroomTabToast: MoshroomTabToast?
-  private var _tabToastHide: DispatchWorkItem?
+  // The red pill next to the Tabs button naming the tab on screen (created in Moshkeys.install).
+  var moshroomTabLabel: MoshroomTabLabel?
   // The "back to live" chip (created in Moshkeys.install): shown only while the visible terminal's
   // viewport is parked up in its scrollback.
   var moshroomLiveButton: UIButton?
@@ -137,9 +136,9 @@ class SpaceController: UIViewController {
       _ = ctrl.removeFromContainer()
     }
     current?.placeToContainer()
-    // Whether the transcript is at its live end is per terminal, so the chip has to be re-read for
-    // the tab that just became visible.
+    // Both of these are per terminal, so they are re-read for the tab that just became visible.
     moshroomSyncLiveButton()
+    moshroomUpdateTabLabel()
   }
 
   private func forEachActive(block:(TermController) -> ()) {
@@ -402,6 +401,11 @@ class SpaceController: UIViewController {
     nc.addObserver(self, selector: #selector(_terminalTailingChanged(_:)),
                    name: NSNotification.Name(MoshroomTerminalTailingNotification), object: nil)
 
+    // Moshroom: a program renamed its terminal (OSC 0/2) — the tab pill shows that name for a tab
+    // with no host of its own, so it has to follow.
+    nc.addObserver(self, selector: #selector(_terminalTitleChanged),
+                   name: NSNotification.Name(TermViewTitleDidChangeNotificationKey), object: nil)
+
     nc.addObserver(self, selector: #selector(_UISceneDidEnterBackgroundNotification(_:)),
                    name: UIScene.didEnterBackgroundNotification, object: nil)
     
@@ -425,6 +429,10 @@ class SpaceController: UIViewController {
     // keyboard to type deliberately. Once connected or interacted, the card is gone and a tap composes.
     if _freshOverlayVisible { return }
     openMoshkitor()
+  }
+
+  @objc func _terminalTitleChanged() {
+    moshroomUpdateTabLabel()
   }
 
   @objc func _terminalTailingChanged(_ n: Notification) {
@@ -740,8 +748,9 @@ extension SpaceController: UIPageViewControllerDelegate {
     _currentKey = termController.meta.key
     _syncTerminalBackground()
     _attachInputToCurrentTerm()
-    // A swipe just landed on this tab — flash its alias next to the Tabs button for 3 s.
-    moshroomShowTabToast(moshroomTitle(for: termController.meta.key))
+    // A swipe just landed here: run the same "this tab is the visible one" pass an install does, so
+    // the hidden/front bookkeeping, the tab label and the back-to-live chip all follow one path.
+    _showOnlyCurrentTerminal()
   }
 }
 
@@ -1379,16 +1388,23 @@ extension SpaceController {
     let isActive: Bool
   }
 
-  // A tab's display title: forced custom name, then the connected host's alias (a tab that is an
-  // ssh/mosh session to "awesomehost" IS awesomehost to the user), then the program's own OSC title
-  // (opencode / vim / ssh). An unconnected tab has no live title and says so honestly: it is the
-  // quick-connect canvas, not a "shell" (that name read as a phantom session in the tab list).
-  func moshroomTitle(for key: UUID) -> String {
+  /// A tab's name when it HAS one: forced custom name, then the connected host's alias (a tab that is
+  /// an ssh/mosh session to "awesomehost" IS awesomehost to the user), then the program's own OSC
+  /// title (opencode / vim / ssh). Nil for a tab that is none of those — the quick-connect canvas.
+  /// The one resolution both the Tabs list and the tab pill are built on.
+  func moshroomTabName(for key: UUID) -> String? {
     let term: TermController = SessionRegistry.shared[key]
-    let custom = (term.meta.customName ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-    let connected = (term.meta.connectedHost ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-    let osc = (term.termView.title ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-    return !custom.isEmpty ? custom : !connected.isEmpty ? connected : (osc.isEmpty ? "not connected" : osc)
+    for candidate in [term.meta.customName, term.meta.connectedHost, term.termView.title] {
+      let name = (candidate ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+      if !name.isEmpty { return name }
+    }
+    return nil
+  }
+
+  // The Tabs list needs a row label for every tab, so a nameless one says so honestly there: it is
+  // the quick-connect canvas, not a "shell" (that name read as a phantom session in the list).
+  func moshroomTitle(for key: UUID) -> String {
+    moshroomTabName(for: key) ?? "not connected"
   }
 
   /// The open terminal tabs, in order, each with its display title and whether it is active.
@@ -1396,19 +1412,30 @@ extension SpaceController {
     _viewportsKeys.map { MoshroomTabInfo(key: $0, title: moshroomTitle(for: $0), isActive: $0 == _currentKey) }
   }
 
-  // Flash the red pill next to the Tabs button with the tab a swipe just landed on, then fade it out
-  // after 3 s. Reschedules cleanly if another swipe lands within the window.
-  func moshroomShowTabToast(_ title: String) {
-    guard let toast = moshroomTabToast else { return }
-    toast.text = title
-    _tabToastHide?.cancel()
-    view.bringSubviewToFront(toast)
-    UIView.animate(withDuration: 0.2) { toast.alpha = 1 }
-    let work = DispatchWorkItem { [weak toast] in
-      UIView.animate(withDuration: 0.3) { toast?.alpha = 0 }
+  /// Put the name of the tab on screen into the red pill next to the Tabs button, and leave it there.
+  /// The ONE place that writes it: it reads `moshroomTabName`, the same resolution the Tabs list is
+  /// built on (custom name → connected host → the program's own title), so the pill can never
+  /// disagree with the list. A tab with no name of its own shows NO pill — an empty canvas needs no
+  /// label telling it so. Called from `_showOnlyCurrentTerminal` (every switch, install and return to
+  /// the foreground), from a rename, from a recorded connection, and when a program changes its
+  /// terminal title. Idempotent and cheap.
+  func moshroomUpdateTabLabel() {
+    guard let label = moshroomTabLabel else { return }
+    // Only a tab with a LIVE session gets a pill. On a fresh local prompt the Quick Connect card is
+    // offering to connect, and a pill naming the host that tab used last says the opposite of what
+    // the rest of the screen says — so it shows nothing at all there.
+    let name = _currentKey.flatMap { key -> String? in
+      let term: TermController = SessionRegistry.shared[key]
+      guard term.moshroomUploadHost != nil else { return nil }
+      return moshroomTabName(for: key)
     }
-    _tabToastHide = work
-    DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: work)
+    if let name {
+      if label.text != name { label.text = name }
+      label.isHidden = false
+      view.bringSubviewToFront(label)
+    } else {
+      label.isHidden = true
+    }
   }
 
   func moshroomSwitch(toTab key: UUID) {
@@ -1439,8 +1466,9 @@ extension SpaceController {
       tf.autocapitalizationType = .none
     }
     alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-    alert.addAction(UIAlertAction(title: "Save", style: .default) { _ in
+    alert.addAction(UIAlertAction(title: "Save", style: .default) { [weak self] _ in
       SessionRegistry.shared.renameSession(key, to: alert.textFields?.first?.text)
+      self?.moshroomUpdateTabLabel()
       onDone()
     })
     // The rename can be asked for from the full-screen Tabs modal — present from the top.
