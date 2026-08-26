@@ -396,9 +396,10 @@ extension SpaceController {
     // ended, a modal closed), so it is also where the tab pill is re-read: a connection that just
     // ended must take its name off the top bar.
     defer { moshroomUpdateTabLabel() }
-    // Never compete with a full-screen hub — while the launcher, Moshxplore or Moshvault is open,
-    // Quick Connect stays hidden.
-    if moshroomMoshlauncherIsOpen || moshroomMoshxploreIsOpen || moshroomMoshvaultIsOpen {
+    // Never compete with a full-screen hub — while the launcher or Moshvault is open, Quick
+    // Connect stays hidden. (The explorer is a TAB now: currentTerm() is nil there, so the
+    // fresh-shell check below keeps the card away on its own.)
+    if moshroomMoshlauncherIsOpen || moshroomMoshvaultIsOpen {
       dismissMoshnector(); return
     }
     let term = currentTerm()

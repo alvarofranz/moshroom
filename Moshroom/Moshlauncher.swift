@@ -58,7 +58,11 @@ final class MoshlauncherController: UIHostingController<MoshlauncherView> {
     [
       MoshLauncherItem(id: "moshxplore", icon: "folder", title: "Moshxplore",
                        subtitle: "Browse, preview and edit files on your servers.") { [weak space] in
-        space?.openMoshxplore()
+        space?.openMoshxploreTab()
+      },
+      MoshLauncherItem(id: "moshify", icon: "music.note", title: "Moshify",
+                       subtitle: "Your music, played from your own server.") { [weak space] in
+        space?.openMoshifyTab()
       },
       MoshLauncherItem(id: "moshvault", icon: "key.fill", title: "Moshvault",
                        subtitle: "Your passwords and 2FA codes, synced securely.") { [weak space] in

@@ -33,6 +33,7 @@ struct SettingsView: View {
   @State private var _iCloudSyncOn = MoshroomDefaults.isICloudSyncEnabled()
   @State private var _requireBiometric = MoshroomDefaults.isRequireBiometricUnlock()
   @AppStorage(MoshxploreStyle.textSizeKey) private var _moshxploreTextSize: Int = MoshxploreStyle.defaultTextSize
+  @AppStorage(Moshify.cacheGBKey) private var _moshifyCacheGB: Int = 2
   private var _iCloudAvailable: Bool { FileManager.default.ubiquityIdentityToken != nil }
   @State private var _defaultUser = MoshroomDefaults.defaultUserName() ?? ""
 
@@ -113,6 +114,22 @@ struct SettingsView: View {
         Text("Moshxplore")
       } footer: {
         Text("Text size for the file viewer and editor content.")
+      }
+
+      Section {
+        HStack {
+          Label("Music Cache", systemImage: "music.note")
+          Spacer()
+          Text("\(_moshifyCacheGB) GB")
+            .foregroundColor(.secondary)
+            .monospacedDigit()
+          Stepper("", value: $_moshifyCacheGB, in: 1...8)
+            .labelsHidden()
+        }
+      } header: {
+        Text("Moshify")
+      } footer: {
+        Text("How much downloaded music to keep on this device.")
       }
 
       Section {

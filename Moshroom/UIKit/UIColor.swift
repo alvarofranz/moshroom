@@ -33,6 +33,13 @@ extension UIColor {
     UIColor.init(displayP3Red: 0.878, green: 0.20, blue: 0.227, alpha: 1)
   }
 
+  // The house near-black ground. MUST match the Default terminal theme's background
+  // (Resources/Themes/Default.js: 'rgb(16, 16, 16)') — the strips around the viewport, the
+  // zero-tabs empty state and every non-terminal tab page all rest on this value, so the
+  // screen reads as ONE surface instead of bands meeting a different black.
+  @objc class var moshroomBackground: UIColor {
+    return UIColor(red: 16.0 / 255.0, green: 16.0 / 255.0, blue: 16.0 / 255.0, alpha: 1)
+  }
 }
 
 extension Color {

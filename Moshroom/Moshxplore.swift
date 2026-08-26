@@ -1000,6 +1000,8 @@ final class MoshxploreView: UIView {
 
   private var session: MoshxploreSession?
   private var hostAlias: String?
+  // The picked host, exposed for the explorer TAB's title (nil while the host picker shows).
+  var connectedHostAlias: String? { hostAlias }
   private var currentPath = "/"
   private var detailEntry: MoshxploreEntry?
   private var previewURL: URL?      // a fetched temp copy, reused as the save source when present
@@ -1648,11 +1650,18 @@ final class MoshxploreView: UIView {
   }
 }
 
-// MARK: - Full-screen presentation + SpaceController glue
+// MARK: - The explorer tab + SpaceController glue
 
-// Moshxplore owns the whole screen (matching the composer and Settings): a fullscreen controller
-// whose navigation bar carries the title and the standard system Close — hosting the explorer.
-final class MoshxploreController: UIViewController {
+// Moshxplore is a TAB (kind .explorer): a page inside the tabs page VC, living alongside the
+// terminals. Its SFTP session survives tab switches — that is the point of being a tab — and is
+// torn down when the tab closes. No in-content header: tabs close from Moshtabs, and the top
+// chrome (Tabs / launcher) floats above every page alike.
+final class MoshxploreTabController: UIViewController, MoshroomTabPage {
+
+  let moshroomTabKey: UUID
+  var moshroomTabKind: MoshroomTabKind { .explorer }
+  // The Tabs list re-reads this on every open, so the row names the host once one is picked.
+  var moshroomTabTitle: String? { explorer.connectedHostAlias ?? "Files" }
 
   let explorer = MoshxploreView()
   weak var space: SpaceController?
@@ -1660,17 +1669,24 @@ final class MoshxploreController: UIViewController {
 
   private var hostsObservers: [NSObjectProtocol] = []
 
+  init(key: UUID = UUID()) {
+    moshroomTabKey = key
+    super.init(nibName: nil, bundle: nil)
+  }
+
+  required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
   override func viewDidLoad() {
     super.viewDidLoad()
-    view.backgroundColor = MoshxploreStyle.screen   // adaptive — dark theme gets the Settings look
-
-    // The close action is not named `_close` — that selector collides with a private Apple API and
-    // App Store upload rejects it.
-    let header = moshroomInstallFullScreenHeader(in: self, title: "Moshxplore",
-                                                 target: self, action: #selector(_closeMoshxplore))
+    // The page rests on the live root ground (last terminal theme / house near-black) so it never
+    // cuts a different black into the strips around the viewport; the explorer's own rows and
+    // cards paint their semantic surfaces on top.
+    view.backgroundColor = space?.view.backgroundColor ?? .moshroomBackground
 
     explorer.savedHosts = { [weak self] in self?.space?.moshroomSavedHostAliases ?? [] }
-    explorer.device = { [weak self] in self?.space?.currentDevice }
+    // Any live terminal's device, not the current tab's: while THIS tab is front, currentTerm()
+    // is nil by design, and connecting from the host picker must still work.
+    explorer.device = { [weak self] in self?.space?.moshroomAnyTermDevice }
     // Hand a saved file to the system share sheet (Save to Files, Quick Look, open-in apps…).
     explorer.presentShare = { [weak self] url in
       guard let self else { return }
@@ -1681,9 +1697,9 @@ final class MoshxploreController: UIViewController {
     view.addSubview(explorer)
 
     NSLayoutConstraint.activate([
-      // The explorer owns the rest of the screen below the header; each step manages its own margins.
-      // The bottom rides the keyboard guide, so the inline editor is exactly the space above the keyboard.
-      explorer.topAnchor.constraint(equalTo: header.bottomAnchor),
+      // The explorer owns the whole page; each step manages its own margins. The bottom rides the
+      // keyboard guide, so the inline editor is exactly the space above the keyboard.
+      explorer.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
       explorer.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
       explorer.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
       explorer.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor),
@@ -1700,55 +1716,27 @@ final class MoshxploreController: UIViewController {
     explorer.present(preferredHost: preferredHost)
   }
 
-  override func viewWillAppear(_ animated: Bool) {
-    super.viewWillAppear(animated)
-    // No system nav bar: our in-content header carries the title + close, and hiding the bar keeps
-    // the Mac title bar compact (see the header note in viewDidLoad).
-    navigationController?.setNavigationBarHidden(true, animated: false)
-  }
-
   deinit {
     hostsObservers.forEach { NotificationCenter.default.removeObserver($0) }
   }
 
-  // Tear down the SSH session, then dismiss the whole modal stack (launcher + Moshxplore) back to
-  // the terminal in one shot — no flash. (dismissMoshxplore stays for the tab-switch teardown path.)
-  @objc private func _closeMoshxplore() {
+  // The tab is closing: tear the SFTP session down with it.
+  func moshroomTabWillClose() {
     explorer.teardown()
-    space?.dismiss(animated: false)
   }
 }
 
 extension SpaceController {
-  private var moshxploreController: MoshxploreController? {
-    (presentedViewController as? UINavigationController)?.viewControllers.first as? MoshxploreController
-  }
-
-  // True while the file explorer is on screen — Quick Connect checks this so the two never overlap.
-  var moshroomMoshxploreIsOpen: Bool { moshxploreController != nil }
-
-  // Open Moshxplore full screen over the current tab. Defaults to the tab's connected host (if
-  // it's a saved one) so a connected session browses itself with one tap; else the host picker.
-  func openMoshxplore() {
-    // No `from:` — stack over the launcher when it opened us (no dismiss-then-present flash).
-    moshroomPresentFullScreen {
-      let ctrl = MoshxploreController()
-      ctrl.space = self
-      ctrl.preferredHost = currentTerm()?.moshroomUploadHost
-      return UINavigationController(rootViewController: ctrl)
-    }
-  }
-
-  func dismissMoshxplore() {
-    guard let ctrl = moshxploreController else { return }
-    ctrl.explorer.teardown()
-    ctrl.navigationController?.dismiss(animated: false) { [weak self] in
-      guard let self, Moshroom.scratchOnly else { return }
-      // The inline editor may have taken the first responder — reclaim it so hardware-keyboard
-      // routing keeps reaching SpaceController (same restore Moshkitor does), then let Quick
-      // Connect reappear if this is a fresh idle prompt.
-      self.becomeFirstResponder()
-      self.showMoshnectorIfIdle()
-    }
+  // Open a NEW explorer tab — several make sense (one per host), so unlike Moshify this never
+  // focuses an existing one. Defaults to the current tab's connected host (if it's a saved one)
+  // so a connected session browses itself with one tap; else the host picker.
+  func openMoshxploreTab() {
+    // Capture the host BEFORE any dismissal/switch; the launcher modal may be on top right now.
+    let host = currentTerm()?.moshroomUploadHost
+    if presentedViewController != nil { dismiss(animated: false) }
+    let ctrl = MoshxploreTabController()
+    ctrl.space = self
+    ctrl.preferredHost = host
+    moshroomOpenTabPage(ctrl)
   }
 }

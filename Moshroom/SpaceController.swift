@@ -23,15 +23,48 @@
 
 import SwiftUI
 
+// MARK: - Typed tabs
+
+// What a tab IS. A tab used to be a terminal by definition; now the terminal is one kind among
+// several (the music player, the file explorer, more later). The raw value is persisted in
+// UIState, so renaming a case is a migration.
+enum MoshroomTabKind: String {
+  case term, moshify, explorer
+}
+
+// What every page inside the tabs page VC must answer: which tab key it is, what kind, and (for
+// non-terminal kinds) a live display title. `moshroomTabWillClose` is the close hook — stop the
+// engine, tear the connection down. TermController conforms below; non-terminal pages are plain
+// UIViewControllers rebuilt fresh per run (whatever state they need survives elsewhere).
+protocol MoshroomTabPage: UIViewController {
+  var moshroomTabKey: UUID { get }
+  var moshroomTabKind: MoshroomTabKind { get }
+  var moshroomTabTitle: String? { get }
+  func moshroomTabWillClose()
+}
+
+extension MoshroomTabPage {
+  func moshroomTabWillClose() {}
+}
+
+extension TermController: MoshroomTabPage {
+  var moshroomTabKey: UUID { meta.key }
+  var moshroomTabKind: MoshroomTabKind { .term }
+  var moshroomTabTitle: String? { nil }
+}
 
 // MARK: UIViewController
 class SpaceController: UIViewController {
-  
+
   struct UIState: UserActivityCodable {
     var keys: [UUID] = []
     var currentKey: UUID? = nil
     var bgColor: CodableColor? = nil
-    
+    // Kind per tab, keyed by uuidString, `.term` entries omitted. Optional ON PURPOSE: a UIState
+    // written before typed tabs existed must keep decoding (an incompatible shape fails BOTH
+    // restore branches and every tab is silently forgotten).
+    var kinds: [String: String]? = nil
+
     static var activityType: String { "space.ctrl.ui.state" }
   }
 
@@ -42,11 +75,18 @@ class SpaceController: UIViewController {
   
   private var _viewportsKeys = [UUID]()
   private var _currentKey: UUID? = nil
-  
+
+  // Typed tabs. `_tabKinds` answers "what is this key" (missing = .term, the historical default).
+  // Non-terminal page controllers live HERE, never in the SessionRegistry: the registry's
+  // fabricating subscript mints a phantom TermController for any key it is asked about, and a
+  // phantom gets archived by suspend() and resumes as a real MCP shell.
+  private var _tabKinds = [UUID: MoshroomTabKind]()
+  private var _pageControllers = [UUID: UIViewController & MoshroomTabPage]()
+
   private var _overlay = UIView()
   private var _spaceControllerAnimating: Bool = false
   // The newest switch requested while a page transition was in flight — replayed (unanimated)
-  // when the live transition ends, so a racing tap can never corrupt the page VC. See _installTerm.
+  // when the live transition ends, so a racing tap can never corrupt the page VC. See _installPage.
   private var _pendingMoveKey: UUID? = nil
   // Zero tabs is a real state: an empty-state install requested mid-transition replays when the
   // live transition ends, same discipline as _pendingMoveKey.
@@ -57,6 +97,10 @@ class SpaceController: UIViewController {
   private var _restoredState = false
   // The red pill next to the Tabs button naming the tab on screen (created in Moshkeys.install).
   var moshroomTabLabel: MoshroomTabLabel?
+  // The bottom quick-keys cluster (iOS only; created in Moshkeys.install): faded out while the
+  // current tab is not a terminal — those keys type into the current TermDevice and a music or
+  // explorer tab has none.
+  var moshroomBottomKeys: [UIView] = []
   // The "back to live" chip (created in Moshkeys.install): shown only while the visible terminal's
   // viewport is parked up in its scrollback.
   var moshroomLiveButton: UIButton?
@@ -136,9 +180,21 @@ class SpaceController: UIViewController {
       _ = ctrl.removeFromContainer()
     }
     current?.placeToContainer()
-    // Both of these are per terminal, so they are re-read for the tab that just became visible.
+    // All of these are per tab, so they are re-read for the tab that just became visible.
     moshroomSyncLiveButton()
     moshroomUpdateTabLabel()
+    moshroomSyncQuickKeysVisibility()
+  }
+
+  // The bottom quick-keys cluster only makes sense over a terminal (its keys write into the
+  // current TermDevice). Faded, not hidden: the arrow mode manages isHidden on its own members.
+  private func moshroomSyncQuickKeysVisibility() {
+    guard !moshroomBottomKeys.isEmpty else { return }
+    let terminalTab = _currentKey.map { moshroomTabKind(for: $0) == .term } ?? true
+    for v in moshroomBottomKeys {
+      v.alpha = terminalTab ? 1 : 0
+      v.isUserInteractionEnabled = terminalTab
+    }
   }
 
   private func forEachActive(block:(TermController) -> ()) {
@@ -171,8 +227,11 @@ class SpaceController: UIViewController {
       return
     }
     // Moshroom: route hardware-keyboard input — a probe keystroke goes live to the agent,
-    // typing more opens Moshkitor seeded with what's been typed.
-    if Moshroom.scratchOnly, presentedViewController == nil,
+    // typing more opens Moshkitor seeded with what's been typed. Terminal tabs (and the zero-tab
+    // state, which keeps its historical behaviour) only: on a music/explorer tab the page's own
+    // responders must see the keys — MoshroomKeyboard.handle would swallow them into a nil device.
+    let terminalOwnsKeys = _currentKey.map { moshroomTabKind(for: $0) == .term } ?? true
+    if Moshroom.scratchOnly, presentedViewController == nil, terminalOwnsKeys,
        MoshroomKeyboard.handle(presses, device: currentDevice, openComposer: { [weak self] seed in self?.openMoshkitor(seed: seed) }) {
       return
     }
@@ -273,14 +332,19 @@ class SpaceController: UIViewController {
   // terminal) the same colour as the terminal, so they blend in instead of showing a black
   // band. The terminal's theme background only becomes known once its web view is ready, so
   // this is driven by layout passes, by tab changes, and by TermViewReadyNotificationKey.
+  // With no terminal current (zero tabs, a non-terminal tab) the last terminal's colour — or
+  // the house ground — is re-asserted on every surface, so the screen stays ONE flat shade
+  // instead of the page painting a different black than the strips.
   @objc private func _syncTerminalBackground() {
-    guard Moshroom.scratchOnly,
-          let termBg = currentTerm()?.termView.backgroundColor,
-          termBg != .clear
-    else { return }
-    view.backgroundColor = termBg
-    _viewportsController.view.backgroundColor = termBg
-    view.window?.backgroundColor = termBg
+    guard Moshroom.scratchOnly else { return }
+    let termBg = currentTerm()?.termView.backgroundColor
+    let bg = (termBg != nil && termBg != .clear) ? termBg!
+      : (view.backgroundColor ?? .moshroomBackground)
+    view.backgroundColor = bg
+    _viewportsController.view.backgroundColor = bg
+    view.window?.backgroundColor = bg
+    (_viewportsController.viewControllers?.first as? MoshroomNoTabsController)?
+      .view.backgroundColor = bg
   }
 
   // A terminal's web view just became ready: its theme background is now known. Sync the strip colour.
@@ -372,11 +436,22 @@ class SpaceController: UIViewController {
         _newShellAction(animated: false)
       }
     } else if let key = _currentKey {
-      let term: TermController = SessionRegistry.shared[key]
-      term.delegate = self
-      // term.layoutProvider = self
-      term.bgColor = view.backgroundColor ?? .black
-      _viewportsController.setViewControllers([term], direction: .forward, animated: false)
+      MoshLog.log("tabs", "bootstrap: current kind=\(moshroomTabKind(for: key).rawValue) kinds=\(_tabKinds.count) keys=\(_viewportsKeys.count)")
+      if let page = _pageController(for: key) {
+        _viewportsController.setViewControllers([page], direction: .forward, animated: false)
+      } else {
+        // A restored key whose page cannot be rebuilt (a kind this build no longer knows): drop
+        // it rather than fabricating something, and land on the first tab that CAN be built.
+        MoshLog.log("tabs", "restore: no page for current key, dropping it")
+        _viewportsKeys.removeAll { $0 == key }
+        _tabKinds[key] = nil
+        if let fallback = _viewportsKeys.first, let page = _pageController(for: fallback) {
+          _currentKey = fallback
+          _viewportsController.setViewControllers([page], direction: .forward, animated: false)
+        } else {
+          _installEmptyState()
+        }
+      }
     }
 
 
@@ -578,7 +653,7 @@ class SpaceController: UIViewController {
     term.delegate = self
     //term.layoutProvider = self
     term.userActivity = userActivity
-    term.bgColor = view.backgroundColor ?? .black
+    term.bgColor = view.backgroundColor ?? .moshroomBackground
     
     if let currentKey = _currentKey,
       let idx = _viewportsKeys.firstIndex(of: currentKey)?.advanced(by: 1) {
@@ -588,10 +663,11 @@ class SpaceController: UIViewController {
     }
     
     SessionRegistry.shared.track(session: term)
-    
+    _tabKinds[term.meta.key] = .term
+
     _currentKey = term.meta.key
 
-    _installTerm(term, direction: .forward, animated: animated, completion: completion)
+    _installPage(term, direction: .forward, animated: animated, completion: completion)
   }
   
   func _closeCurrentSpace() {
@@ -606,8 +682,16 @@ class SpaceController: UIViewController {
     else {
       return
     }
-    currentTerm()?.delegate = nil
-    SessionRegistry.shared.remove(forKey: currentKey)
+    // Kind-aware close: a terminal leaves the registry; any other kind gets its close hook
+    // (stop the music, tear the SFTP session down) and leaves the local page map.
+    if moshroomTabKind(for: currentKey) == .term {
+      currentTerm()?.delegate = nil
+      SessionRegistry.shared.remove(forKey: currentKey)
+    } else {
+      _pageControllers[currentKey]?.moshroomTabWillClose()
+      _pageControllers[currentKey] = nil
+    }
+    _tabKinds[currentKey] = nil
     _viewportsKeys.remove(at: idx)
     if _viewportsKeys.isEmpty {
       // No tabs is a real state, never an auto-resurrected shell: the page VC gets the
@@ -617,20 +701,24 @@ class SpaceController: UIViewController {
     }
 
     let direction: UIPageViewController.NavigationDirection
-    let term: TermController
-    
+    let nextKey: UUID
+
     if idx < _viewportsKeys.endIndex {
       direction = .forward
-      term = SessionRegistry.shared[_viewportsKeys[idx]]
+      nextKey = _viewportsKeys[idx]
     } else {
       direction = .reverse
-      term = SessionRegistry.shared[_viewportsKeys[idx - 1]]
+      nextKey = _viewportsKeys[idx - 1]
     }
-    term.bgColor = view.backgroundColor ?? .black
-    
-    self._currentKey = term.meta.key
+    guard let page = _pageController(for: nextKey) else {
+      MoshLog.log("tabs", "close: no page for next key, falling back to empty state")
+      _installEmptyState()
+      return
+    }
 
-    _installTerm(term, direction: direction, animated: true, attachInput: attachInput)
+    self._currentKey = nextKey
+
+    _installPage(page, direction: direction, animated: true, attachInput: attachInput)
   }
   
   @objc func _focusOnShell() {
@@ -649,24 +737,54 @@ class SpaceController: UIViewController {
   var currentDevice: TermDevice? {
     currentTerm()?.termDevice
   }
-  
+
+  // A live terminal device for an APP-initiated SSH connection (Moshify, the explorer): the
+  // current tab's when it is a terminal, else the first materialized terminal tab's.
+  // resolveTarget needs one for interactive auth prompts; key auth against a known host never
+  // touches it. Nil only when no terminal tab is alive — the caller shows an honest error.
+  var moshroomAnyTermDevice: TermDevice? {
+    if let device = currentDevice { return device }
+    // The subscript is safe here: the key's kind is verified .term, so materializing (the
+    // restore path — e.g. a restored music tab is current and its terminal neighbour has not
+    // been shown yet) builds a REAL terminal, never a phantom.
+    for key in _viewportsKeys where moshroomTabKind(for: key) == .term {
+      let ctrl: TermController = SessionRegistry.shared[key]
+      return ctrl.termDevice
+    }
+    return nil
+  }
+
 }
 
 // MARK: UIStateRestorable
 extension SpaceController: UIStateRestorable {
   func restore(withState state: UIState) {
+    MoshLog.log("tabs", "restore: keys=\(state.keys.count) kinds=\(state.kinds?.count ?? -1)")
     _restoredState = true
     _viewportsKeys = state.keys
     _currentKey = state.currentKey
+    // Kinds BEFORE anything touches `view`: the bgColor line below forces viewDidLoad, whose
+    // bootstrap resolves the current key's kind — with the map still empty, a music/explorer key
+    // would read as .term and fabricate a phantom shell. (Keys and kinds must land together.)
+    state.kinds?.forEach { id, raw in
+      if let key = UUID(uuidString: id), let kind = MoshroomTabKind(rawValue: raw) {
+        _tabKinds[key] = kind
+      }
+    }
     if let bgColor = UIColor(codableColor: state.bgColor) {
       view.backgroundColor = bgColor
     }
   }
-  
+
   func dumpUIState() -> UIState {
+    let kinds = Dictionary(uniqueKeysWithValues: _viewportsKeys.compactMap { key -> (String, String)? in
+      let kind = moshroomTabKind(for: key)
+      return kind == .term ? nil : (key.uuidString, kind.rawValue)
+    })
     return UIState(keys: _viewportsKeys,
             currentKey: _currentKey,
-            bgColor: CodableColor(uiColor: view.backgroundColor)
+            bgColor: CodableColor(uiColor: view.backgroundColor),
+            kinds: kinds.isEmpty ? nil : kinds
     )
   }
 
@@ -698,9 +816,11 @@ extension SpaceController: UIStateRestorable {
   // some, our own snapshot when there is not (see moshroomPersistUIState).
   func moshroomRestore(from session: UISceneSession) {
     if let activity = session.stateRestorationActivity, UIState(userActivity: activity) != nil {
+      MoshLog.log("tabs", "restore via scene activity")
       restoreWith(stateRestorationActivity: activity)
       return
     }
+    MoshLog.log("tabs", "restore via uistate file")
     #if targetEnvironment(macCatalyst)
     guard
       let data = try? Data(contentsOf: Self._uiStateFileURL),
@@ -741,7 +861,7 @@ extension SpaceController: UIStateRestorable {
 // MARK: UIPageViewControllerDelegate
 extension SpaceController: UIPageViewControllerDelegate {
   // A user swipe is a live transition too — flag it so a programmatic switch that races it gets
-  // queued (see _installTerm) instead of corrupting the .scroll page VC mid-flight.
+  // queued (see _installPage) instead of corrupting the .scroll page VC mid-flight.
   public func pageViewController(
     _ pageViewController: UIPageViewController,
     willTransitionTo pendingViewControllers: [UIViewController]) {
@@ -773,14 +893,21 @@ extension SpaceController: UIPageViewControllerDelegate {
       return
     }
 
-    guard let termController = pageViewController.viewControllers?.first as? TermController
+    guard let page = pageViewController.viewControllers?.first as? (UIViewController & MoshroomTabPage)
     else {
       return
     }
-    termController.resumeIfNeeded()
-    _currentKey = termController.meta.key
+    // Landing on a non-terminal page: release the outgoing terminal's focus BEFORE _currentKey
+    // moves (the focused terminal refuses to hide, and currentTerm() still names the old tab here).
+    if page.moshroomTabKind != .term {
+      currentTerm()?.resignInput()
+    }
+    (page as? TermController)?.resumeIfNeeded()
+    _currentKey = page.moshroomTabKey
     _syncTerminalBackground()
-    _attachInputToCurrentTerm()
+    if page.moshroomTabKind == .term {
+      _attachInputToCurrentTerm()
+    }
     // A swipe just landed here: run the same "this tab is the visible one" pass an install does, so
     // the hidden/front bookkeeping, the tab label and the back-to-live chip all follow one path.
     _showOnlyCurrentTerminal()
@@ -790,23 +917,21 @@ extension SpaceController: UIPageViewControllerDelegate {
 // MARK: UIPageViewControllerDataSource
 extension SpaceController: UIPageViewControllerDataSource {
   private func _controller(controller: UIViewController, advancedBy: Int) -> UIViewController? {
-    guard let ctrl = controller as? TermController else {
+    // Kind-blind: any tab page (terminal or not) can answer "who is my neighbour", so a music or
+    // explorer tab is swipeable in both directions. The zero-tab placeholder is not a tab page
+    // and stays un-swipeable, as before.
+    guard let page = controller as? (UIViewController & MoshroomTabPage) else {
       return nil
     }
-    let key = ctrl.meta.key
+    let key = page.moshroomTabKey
     guard
       let idx = _viewportsKeys.firstIndex(of: key)?.advanced(by: advancedBy),
       _viewportsKeys.indices.contains(idx)
     else {
       return nil
     }
-    
-    let newKey = _viewportsKeys[idx]
-    let newCtrl: TermController = SessionRegistry.shared[newKey]
-    newCtrl.delegate = self
-    //newCtrl.layoutProvider = self
-    newCtrl.bgColor = view.backgroundColor ?? .black
-    return newCtrl
+
+    return _pageController(for: _viewportsKeys[idx])
   }
   
   public func pageViewController(_ pageViewController: UIPageViewController, viewControllerBefore viewController: UIViewController) -> UIViewController? {
@@ -1198,15 +1323,15 @@ extension SpaceController {
     guard
       let currentKey = _currentKey,
       let currentIdx = _viewportsKeys.firstIndex(of: currentKey),
-      let idx = _viewportsKeys.firstIndex(of: key)
+      let idx = _viewportsKeys.firstIndex(of: key),
+      let page = _pageController(for: key)
     else {
       return
     }
 
-    let term: TermController = SessionRegistry.shared[key]
     let direction: UIPageViewController.NavigationDirection = currentIdx < idx ? .forward : .reverse
 
-    _installTerm(term, direction: direction, animated: animated)
+    _installPage(page, direction: direction, animated: animated)
   }
 
   // The ONE serialized installer for every page-VC transition. A .scroll UIPageViewController
@@ -1217,25 +1342,33 @@ extension SpaceController {
   // hid B for good. So: one transition at a time (later requests remember only the newest target
   // and replay when the live one ends), and a didComplete == false transition is unconditionally
   // re-issued without animation — which cannot be interrupted.
-  private func _installTerm(
-    _ term: TermController,
+  private func _installPage(
+    _ page: UIViewController & MoshroomTabPage,
     direction: UIPageViewController.NavigationDirection,
     animated: Bool,
     attachInput: Bool = true,
     completion: ((Bool) -> Void)? = nil
   ) {
     if _spaceControllerAnimating {
-      _pendingMoveKey = term.meta.key
+      _pendingMoveKey = page.moshroomTabKey
       return
     }
 
+    // A non-terminal page cannot go up while a terminal web view holds the input focus: the
+    // focused terminal REFUSES to hide (removeFromContainer bails while KBTracker points at its
+    // web view), so the page would render over a live terminal. Release the focus first —
+    // _currentKey still names the outgoing tab here.
+    if page.moshroomTabKind != .term {
+      currentTerm()?.resignInput()
+    }
+
     _spaceControllerAnimating = true
-    _viewportsController.setViewControllers([term], direction: direction, animated: animated) { (didComplete) in
+    _viewportsController.setViewControllers([page], direction: direction, animated: animated) { (didComplete) in
       if !didComplete {
-        self._viewportsController.setViewControllers([term], direction: direction, animated: false)
+        self._viewportsController.setViewControllers([page], direction: direction, animated: false)
       }
-      term.resumeIfNeeded()
-      self._currentKey = term.meta.key
+      (page as? TermController)?.resumeIfNeeded()
+      self._currentKey = page.moshroomTabKey
       // Keep the on-disk tab layout current (Catalyst relaunch path, see moshroomPersistUIState).
       self.moshroomPersistUIState()
       // Assert the visible web view on every install. The page VC being right is not enough: the
@@ -1243,7 +1376,7 @@ extension SpaceController {
       // other path would keep covering the tab just switched to.
       self._showOnlyCurrentTerminal()
       self._syncTerminalBackground()
-      if attachInput {
+      if attachInput, page.moshroomTabKind == .term {
         self._attachInputToCurrentTerm()
       }
       self._spaceControllerAnimating = false
@@ -1258,7 +1391,7 @@ extension SpaceController {
       }
       if let pendingKey = self._pendingMoveKey {
         self._pendingMoveKey = nil
-        if pendingKey != term.meta.key {
+        if pendingKey != page.moshroomTabKey {
           self._moveToShell(key: pendingKey, animated: false)
         }
       }
@@ -1266,8 +1399,8 @@ extension SpaceController {
   }
 
   // Zero tabs: install the empty-state placeholder page. Same serialized discipline as
-  // _installTerm (an unanimated setViewControllers racing a live transition is exactly the
-  // page-VC corruption _installTerm exists to prevent), so a request made mid-flight replays
+  // _installPage (an unanimated setViewControllers racing a live transition is exactly the
+  // page-VC corruption _installPage exists to prevent), so a request made mid-flight replays
   // when the live transition ends.
   private func _installEmptyState() {
     _currentKey = nil
@@ -1283,6 +1416,10 @@ extension SpaceController {
       self._spaceControllerAnimating = false
       // Zero tabs is a real state the user chose — persist it too, so it survives a relaunch.
       self.moshroomPersistUIState()
+      // Keep the page the same shade as the strips around it (last terminal theme or the
+      // house ground) — currentTerm() is nil here, so the layout-driven sync alone would
+      // land after a visible flash of the default.
+      self._syncTerminalBackground()
       // Same replay discipline as the other two completion sites: an empty-install requested
       // while this one was in flight re-runs (only meaningful if keys are still empty), and a
       // tab born while the placeholder was installing (New tab racing the close) replays
@@ -1296,9 +1433,9 @@ extension SpaceController {
       }
       if let pendingKey = self._pendingMoveKey {
         self._pendingMoveKey = nil
-        if self._viewportsKeys.contains(pendingKey) {
-          let term: TermController = SessionRegistry.shared[pendingKey]
-          self._installTerm(term, direction: .forward, animated: false)
+        if self._viewportsKeys.contains(pendingKey),
+           let page = self._pageController(for: pendingKey) {
+          self._installPage(page, direction: .forward, animated: false)
         }
       }
     }
@@ -1336,11 +1473,80 @@ extension SpaceController {
 
 // MARK: Current term
 extension SpaceController {
+  // Honest by kind: nil when the current tab is not a terminal, exactly like the zero-tab state
+  // — the ~40 ambient callers (background sync, live chip, composer, quick keys, Moshnector...)
+  // already handle nil gracefully because zero tabs exercises it. Indexing the registry with a
+  // non-terminal key would fabricate a phantom TermController instead.
   @objc func currentTerm() -> TermController? {
-    if let currentKey = _currentKey {
-      return SessionRegistry.shared[currentKey]
+    guard let currentKey = _currentKey, moshroomTabKind(for: currentKey) == .term else {
+      return nil
     }
-    return nil
+    return SessionRegistry.shared[currentKey]
+  }
+
+  /// What kind of tab a key is. Missing means `.term` — the historical default, and what every
+  /// key restored from a pre-typed-tabs UIState is.
+  func moshroomTabKind(for key: UUID) -> MoshroomTabKind {
+    _tabKinds[key] ?? .term
+  }
+
+  /// The one page factory: key → the page controller for its kind. Terminals resolve through the
+  /// SessionRegistry (the ONLY gate to its fabricating subscript); other kinds resolve to their
+  /// live controller or are rebuilt fresh by `_makeTabPage`.
+  private func _pageController(for key: UUID) -> (UIViewController & MoshroomTabPage)? {
+    switch moshroomTabKind(for: key) {
+    case .term:
+      let term: TermController = SessionRegistry.shared[key]
+      term.delegate = self
+      term.bgColor = view.backgroundColor ?? .moshroomBackground
+      return term
+    case .moshify, .explorer:
+      if let page = _pageControllers[key] { return page }
+      guard let page = _makeTabPage(kind: moshroomTabKind(for: key), key: key) else { return nil }
+      _pageControllers[key] = page
+      return page
+    }
+  }
+
+  /// Builds a fresh non-terminal page (restore path, or the first open). Pages paint themselves
+  /// with the live root background (see _syncTerminalBackground) so they never cut a different
+  /// black into the strips around the viewport.
+  private func _makeTabPage(kind: MoshroomTabKind, key: UUID) -> (UIViewController & MoshroomTabPage)? {
+    switch kind {
+    case .term:
+      return nil // terminals never come through here
+    case .moshify:
+      // A restored music tab comes back attached to the engine (config in UserDefaults).
+      let ctrl = MoshifyTabController(key: key)
+      ctrl.space = self
+      return ctrl
+    case .explorer:
+      // A restored explorer tab comes back fresh, at its host picker.
+      let ctrl = MoshxploreTabController(key: key)
+      ctrl.space = self
+      return ctrl
+    }
+  }
+
+  /// Registers a freshly created non-terminal tab (key + kind + live controller) and installs it,
+  /// inserting right after the current tab like a new terminal does. Used by the launcher flows.
+  func moshroomOpenTabPage(_ page: UIViewController & MoshroomTabPage) {
+    let key = page.moshroomTabKey
+    _tabKinds[key] = page.moshroomTabKind
+    _pageControllers[key] = page
+    if let currentKey = _currentKey,
+       let idx = _viewportsKeys.firstIndex(of: currentKey)?.advanced(by: 1) {
+      _viewportsKeys.insert(key, at: idx)
+    } else {
+      _viewportsKeys.append(key)
+    }
+    _installPage(page, direction: .forward, animated: false)
+  }
+
+  /// The key of the first open tab of a kind, if any — the launcher uses it to focus a singleton
+  /// tab (Moshify) instead of opening a second one.
+  func moshroomFirstTab(ofKind kind: MoshroomTabKind) -> UUID? {
+    _viewportsKeys.first { moshroomTabKind(for: $0) == kind }
   }
 }
 
@@ -1421,30 +1627,46 @@ extension SpaceController {
     let key: UUID
     let title: String
     let isActive: Bool
+    let kind: MoshroomTabKind
   }
 
-  /// A tab's name when it HAS one: forced custom name, then the connected host's alias (a tab that is
-  /// an ssh/mosh session to "awesomehost" IS awesomehost to the user), then the program's own OSC
-  /// title (opencode / vim / ssh). Nil for a tab that is none of those — the quick-connect canvas.
+  /// A tab's name when it HAS one. Terminals: forced custom name, then the connected host's alias
+  /// (a tab that is an ssh/mosh session to "awesomehost" IS awesomehost to the user), then the
+  /// program's own OSC title (opencode / vim / ssh); nil for none of those — the quick-connect
+  /// canvas. Other kinds: whatever their live page reports (the explorer names its host).
   /// The one resolution both the Tabs list and the tab pill are built on.
   func moshroomTabName(for key: UUID) -> String? {
-    let term: TermController = SessionRegistry.shared[key]
-    for candidate in [term.meta.customName, term.meta.connectedHost, term.termView.title] {
-      let name = (candidate ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-      if !name.isEmpty { return name }
+    switch moshroomTabKind(for: key) {
+    case .term:
+      let term: TermController = SessionRegistry.shared[key]
+      for candidate in [term.meta.customName, term.meta.connectedHost, term.termView.title] {
+        let name = (candidate ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !name.isEmpty { return name }
+      }
+      return nil
+    case .moshify, .explorer:
+      return _pageControllers[key]?.moshroomTabTitle
     }
-    return nil
   }
 
-  // The Tabs list needs a row label for every tab, so a nameless one says so honestly there: it is
-  // the quick-connect canvas, not a "shell" (that name read as a phantom session in the list).
+  // The Tabs list needs a row label for every tab, so a nameless one says so honestly there: a
+  // terminal with no name is the quick-connect canvas, not a "shell" (that name read as a phantom
+  // session in the list); a non-terminal tab falls back to its feature's name.
   func moshroomTitle(for key: UUID) -> String {
-    moshroomTabName(for: key) ?? "not connected"
+    if let name = moshroomTabName(for: key) { return name }
+    switch moshroomTabKind(for: key) {
+    case .term: return "not connected"
+    case .moshify: return "Moshify"
+    case .explorer: return "Files"
+    }
   }
 
-  /// The open terminal tabs, in order, each with its display title and whether it is active.
+  /// The open tabs, in order, each with its display title, kind and whether it is active.
   func moshroomTabs() -> [MoshroomTabInfo] {
-    _viewportsKeys.map { MoshroomTabInfo(key: $0, title: moshroomTitle(for: $0), isActive: $0 == _currentKey) }
+    _viewportsKeys.map {
+      MoshroomTabInfo(key: $0, title: moshroomTitle(for: $0),
+                      isActive: $0 == _currentKey, kind: moshroomTabKind(for: $0))
+    }
   }
 
   /// Put the name of the tab on screen into the red pill next to the Tabs button, and leave it there.
@@ -1460,6 +1682,9 @@ extension SpaceController {
     // offering to connect, and a pill naming the host that tab used last says the opposite of what
     // the rest of the screen says — so it shows nothing at all there.
     let name = _currentKey.flatMap { key -> String? in
+      // The pill is a terminal thing: it names the host a session is on. A music or explorer
+      // tab IS its whole screen — no label restating it.
+      guard moshroomTabKind(for: key) == .term else { return nil }
       let term: TermController = SessionRegistry.shared[key]
       guard term.moshroomUploadHost != nil else { return nil }
       return moshroomTabName(for: key)
@@ -1475,7 +1700,6 @@ extension SpaceController {
 
   func moshroomSwitch(toTab key: UUID) {
     dismissMoshnector()
-    dismissMoshxplore()
     guard key != _currentKey, let idx = _viewportsKeys.firstIndex(of: key) else { return }
     // The switch happens BEHIND the full-screen Moshtabs modal that is dismissing at this same
     // moment — animating the page VC here is invisible AND races the dismiss (the interrupted
@@ -1490,7 +1714,9 @@ extension SpaceController {
 
   // Rename a tab. On save, persist the forced name and call `onDone` so the caller can refresh
   // the Tabs pad. An empty name clears the override (back to the program's own title).
+  // Terminal tabs only: custom names live in the SessionMeta, which other kinds don't have.
   func moshroomRename(tab key: UUID, onDone: @escaping () -> Void) {
+    guard moshroomTabKind(for: key) == .term else { return }
     let term: TermController = SessionRegistry.shared[key]
     let current = term.meta.customName ?? (term.termView.title ?? "")
     let alert = UIAlertController(title: "Rename tab", message: "Leave empty to use the session's own name.", preferredStyle: .alert)
@@ -1528,7 +1754,10 @@ final class MoshroomNoTabsController: UIViewController {
 
   override func viewDidLoad() {
     super.viewDidLoad()
-    view.backgroundColor = .systemBackground
+    // The house ground, NOT .systemBackground: semantic black resolves to #000 while the strips
+    // around the viewport wear the terminal theme's rgb(16,16,16) — the page must not cut a
+    // darker rectangle into them. _syncTerminalBackground re-asserts the live colour on top.
+    view.backgroundColor = .moshroomBackground
 
     let icon = UIImageView(image: UIImage(
       systemName: "rectangle.stack",

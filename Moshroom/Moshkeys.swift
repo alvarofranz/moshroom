@@ -115,6 +115,10 @@ enum Moshkeys {
     bar.chrome = [compose, tabs, launcher, arrowEnter, live]   // kept tappable above the dismiss overlay
     bar.composeButton = compose                      // stepped aside while the ↕ arrow mode is active
     bar.arrowEnterButton = arrowEnter                // takes the compose spot during arrow mode
+    // The bottom cluster types into the current terminal — on a music/explorer tab there is
+    // nothing to type into, so SpaceController fades the whole cluster out per tab kind
+    // (alpha, not isHidden: the arrow mode manages isHidden on compose/arrowEnter itself).
+    sc.moshroomBottomKeys = [bar, compose, arrowEnter]
 
     NSLayoutConstraint.activate([
       bar.leadingAnchor.constraint(equalTo: sc.view.safeAreaLayoutGuide.leadingAnchor, constant: 14),
@@ -633,6 +637,16 @@ final class MoshtabsController: UIViewController {
     attr.font = .systemFont(ofSize: 15, weight: active ? .semibold : .regular)
     cfg.attributedTitle = AttributedString(tab.title, attributes: attr)
     cfg.titleLineBreakMode = .byWordWrapping   // the whole title, however long
+    // The kind's glyph in front of the title, so a music or files tab reads as one at a glance.
+    let kindIcon: String
+    switch tab.kind {
+    case .term: kindIcon = "apple.terminal"
+    case .moshify: kindIcon = "music.note"
+    case .explorer: kindIcon = "folder"
+    }
+    cfg.image = UIImage(systemName: kindIcon,
+                        withConfiguration: UIImage.SymbolConfiguration(pointSize: 13, weight: .medium))
+    cfg.imagePadding = 8
     cfg.baseForegroundColor = active ? .white : MoshxploreStyle.dark
     // Leading space comes from the layout constraint below, NOT from these insets — Mac Catalyst
     // ignores configuration contentInsets on .system buttons and the title sat glued to the edge.
@@ -664,9 +678,13 @@ final class MoshtabsController: UIViewController {
       close.bottomAnchor.constraint(equalTo: row.bottomAnchor),
     ])
 
-    let rename = _TabLongPress(target: self, action: #selector(_rowLongPressed(_:)))
-    rename.key = tab.key
-    row.addGestureRecognizer(rename)
+    // Rename is a terminal affair (custom names live in the SessionMeta) — other kinds name
+    // themselves, so they get no long-press.
+    if tab.kind == .term {
+      let rename = _TabLongPress(target: self, action: #selector(_rowLongPressed(_:)))
+      rename.key = tab.key
+      row.addGestureRecognizer(rename)
+    }
     return row
   }
 
