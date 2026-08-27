@@ -1691,6 +1691,15 @@ final class MoshifyTabController: UIViewController, MoshroomTabPage,
     _syncControls()
   }
 
+  override func viewDidAppear(_ animated: Bool) {
+    super.viewDidAppear(animated)
+    // Coming back to this tab should show where the music IS, not wherever the list happened to be
+    // left (a tab switch or a resize rebuilds the table and its offset). Forget what was centred so
+    // the playing row is brought back to the middle.
+    _centeredKey = nil
+    _centerCurrentTrack()
+  }
+
   func moshroomTabWillClose() {
     // Tab semantics: closing the tab stops the music — but only if this tab is the one playing.
     // Closing a music tab that had handed the engine over must not silence the tab that owns it.
