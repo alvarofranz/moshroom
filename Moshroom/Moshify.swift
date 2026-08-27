@@ -193,8 +193,9 @@ extension Notification.Name {
 /// Turns a downloaded file the player cannot play into one it can, in place: an AVAssetExportSession
 /// to m4a (AAC), which is native everywhere, keeps the size in the same ballpark as the Opus source
 /// and leaves seeking and duration working exactly as before. Runs off the SFTP worker so a long
-/// export never holds the connection, and on ANY failure the original is kept and reported — a track
-/// that cannot be converted is skipped honestly rather than silently replaced by nothing.
+/// export never holds the connection. A failure is REPORTED, and the caller then drops the download
+/// too (see MoshifySession.download): the cache never keeps a file the player cannot play, and the
+/// track is skipped honestly instead of sitting there looking cached and refusing to start.
 enum MoshifyTranscoder {
 
   /// Convert if needed and hand back the file to store. Calls back on the main queue.
