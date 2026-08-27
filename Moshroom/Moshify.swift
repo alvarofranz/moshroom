@@ -83,6 +83,17 @@ enum Moshify {
   struct Recent: Codable, Equatable {
     let host: String
     let folder: String
+
+    /// Just the folder's own name ("Media"), which is what identifies a library at a glance. The
+    /// full path is what we connect to, not what the card has to read out.
+    var folderName: String { Moshify.folderName(folder) }
+  }
+
+  /// The last component of a remote path, or the path itself when there is nothing shorter to say
+  /// (the root).
+  static func folderName(_ path: String) -> String {
+    let name = (path as NSString).lastPathComponent
+    return name.isEmpty || name == "/" ? path : name
   }
 
   static let recentsLimit = 6
@@ -1487,7 +1498,17 @@ final class MoshifyTabController: UIViewController, MoshroomTabPage,
 
   let moshroomTabKey: UUID
   var moshroomTabKind: MoshroomTabKind { .moshify }
-  var moshroomTabTitle: String? { "Moshify" }
+  /// The library this tab plays — host and folder name — because the row's music glyph already
+  /// says what kind of tab it is. A tab still choosing (its picker is up, or another tab took the
+  /// engine) has no library to name yet.
+  var moshroomTabTitle: String? {
+    let engine = MoshifyEngine.shared
+    guard engine.ownerKey == moshroomTabKey,
+          let host = Moshify.configuredHost,
+          let folder = Moshify.configuredFolder
+    else { return "Moshify" }
+    return "\(host) · \(Moshify.folderName(folder))"
+  }
 
   weak var space: SpaceController?
 
@@ -1771,7 +1792,7 @@ final class MoshifyTabController: UIViewController, MoshroomTabPage,
     if !recents.isEmpty {
       stack.addArrangedSubview(_setupGroupLabel("Recent"))
       for recent in recents {
-        let b = moshHostCardButton(alias: recent.host, description: recent.folder, icon: "music.note")
+        let b = moshHostCardButton(alias: recent.host, description: recent.folderName, icon: "music.note")
         b.addAction(UIAction { [weak self] _ in
           self?._start(host: recent.host, folder: recent.folder)
         }, for: .touchUpInside)
@@ -2224,10 +2245,9 @@ extension SpaceController {
   // pages over one player would lie to somebody.
   func openMoshifyTab() {
     if presentedViewController != nil { dismiss(animated: false) }
-    if let existing = moshroomFirstTab(ofKind: .moshify) {
-      moshroomSwitch(toTab: existing)
-      return
-    }
+    // Always a NEW tab with its picker: tapping Moshify means "I want to open a library", and
+    // jumping to the one already playing took that choice away (the playing tab is one tap away in
+    // Tabs, or through the title in the top-bar controls).
     let ctrl = MoshifyTabController()
     ctrl.space = self
     moshroomOpenTabPage(ctrl)
