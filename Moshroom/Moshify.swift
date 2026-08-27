@@ -53,13 +53,11 @@ struct MoshifyTrack: Equatable {
 
 enum MoshifyError: LocalizedError {
   case notConfigured
-  case noDevice
   case timeout
 
   var errorDescription: String? {
     switch self {
     case .notConfigured: return "Moshify is not set up yet."
-    case .noDevice: return "Connecting needs an open terminal tab. Open one and try again."
     case .timeout: return "Connection timed out."
     }
   }
@@ -77,6 +75,40 @@ enum Moshify {
   static let folderKey = "MoshroomMoshifyFolder"
   static let shuffleKey = "MoshroomMoshifyShuffle"
   static let cacheGBKey = "MoshroomMoshifyCacheGB"
+  static let recentsKey = "MoshroomMoshifyRecents"
+
+  /// One library the user has actually listened to: a host and the folder inside it. A music tab
+  /// always opens on the picker (it is its own tab, not a continuation of the last one), so these
+  /// are what make that cheap — one tap and the library is back.
+  struct Recent: Codable, Equatable {
+    let host: String
+    let folder: String
+  }
+
+  static let recentsLimit = 6
+
+  static var recents: [Recent] {
+    guard let data = UserDefaults.standard.data(forKey: recentsKey),
+          let decoded = try? JSONDecoder().decode([Recent].self, from: data) else { return [] }
+    return decoded
+  }
+
+  /// Most recent first, no duplicates, capped. Called when a library actually starts playing.
+  static func noteRecent(host: String, folder: String) {
+    let entry = Recent(host: host, folder: folder)
+    var list = recents.filter { $0 != entry }
+    list.insert(entry, at: 0)
+    list = Array(list.prefix(recentsLimit))
+    guard let data = try? JSONEncoder().encode(list) else { return }
+    UserDefaults.standard.set(data, forKey: recentsKey)
+  }
+
+  static func forgetRecent(host: String, folder: String) {
+    let entry = Recent(host: host, folder: folder)
+    let list = recents.filter { $0 != entry }
+    guard let data = try? JSONEncoder().encode(list) else { return }
+    UserDefaults.standard.set(data, forKey: recentsKey)
+  }
 
   static var configuredHost: String? {
     UserDefaults.standard.string(forKey: hostKey).flatMap { $0.isEmpty ? nil : $0 }
@@ -120,6 +152,9 @@ enum Moshify {
 }
 
 extension Notification.Name {
+  /// The engine changed hands: one library plays at a time, so every OTHER music tab drops back to
+  /// its picker when this fires.
+  static let moshifyOwnerDidChange = Notification.Name("MoshroomMoshifyOwnerDidChange")
   static let moshifyStateDidChange = Notification.Name("MoshroomMoshifyStateDidChange")
   static let moshifyLibraryDidChange = Notification.Name("MoshroomMoshifyLibraryDidChange")
   static let moshifyProgressDidChange = Notification.Name("MoshroomMoshifyProgressDidChange")
@@ -139,6 +174,9 @@ final class MoshifyCache {
     var size: UInt64
     var lastPlayed: Date?
     var playCount: Int
+    /// Known only once the bytes are here (the player reads it exactly). Optional so an index
+    /// written before durations existed still decodes.
+    var duration: TimeInterval?
   }
 
   private(set) var entries: [String: Entry] = [:]   // keyed by cacheKey
@@ -238,9 +276,21 @@ final class MoshifyCache {
                                     fileName: url.lastPathComponent,
                                     size: size?.uint64Value ?? track.size,
                                     lastPlayed: entries[track.cacheKey]?.lastPlayed,
-                                    playCount: entries[track.cacheKey]?.playCount ?? 0)
+                                    playCount: entries[track.cacheKey]?.playCount ?? 0,
+                                    duration: entries[track.cacheKey]?.duration)
     save()
   }
+
+  /// The exact length, learned when the file plays (or is read locally). Written once; a track the
+  /// user has never had on the device simply shows its size, never a guessed time.
+  func noteDuration(_ seconds: TimeInterval, for track: MoshifyTrack) {
+    guard seconds > 0, var e = entries[track.cacheKey], e.duration != seconds else { return }
+    e.duration = seconds
+    entries[track.cacheKey] = e
+    save()
+  }
+
+  func duration(of track: MoshifyTrack) -> TimeInterval? { entries[track.cacheKey]?.duration }
 
   func notePlayed(_ track: MoshifyTrack) {
     guard var e = entries[track.cacheKey] else { return }
@@ -408,7 +458,7 @@ final class MoshifySession {
     start()
     enqueue(Op(priority: .user, retryOnReconnect: true, remotePath: nil, describe: "scan",
                make: { root, done in
-      Self.listRecursive(root: root, base: folder, depth: Moshify.scanDepth)
+      Self.listRecursive(root: root, base: folder, depth: Moshify.scanDepth, visited: ScanVisited())
         .sink(receiveCompletion: { c in
           if case .failure(let e) = c { done(e) }
         }, receiveValue: { tracks in
@@ -573,10 +623,11 @@ final class MoshifySession {
   private func dial() {
     guard dialC == nil else { return }
     guard let alias = hostAlias else { failAll(MoshifyError.notConfigured); return }
-    guard let device else { failAll(MoshifyError.noDevice); return }
+    // No terminal needed: a music tab connects on its own (see SSHClientConfigProvider — saved keys
+    // and saved passwords work headless, anything needing an answer says so).
     let target: (hostName: String, host: MoshSSHHost, config: SSHClientConfig)
     do {
-      target = try MoshroomSSH.resolveTarget(hostAlias: alias, device: device)
+      target = try MoshroomSSH.resolveTarget(hostAlias: alias, device: device)   // device may be nil
     } catch {
       failAll(error)
       return
@@ -605,20 +656,38 @@ final class MoshifySession {
     DispatchQueue.main.async { ops.forEach { $0.deliverFailure(error) } }
   }
 
-  // A depth-capped, serial BFS over the library folder. Skips dotfiles, symlinks (files AND
-  // directories — no cycle risk) and any name containing "/" (the sweepRemote leaf-safety trick).
-  private static func listRecursive(root: Translator, base: String, depth: Int) -> AnyPublisher<[MoshifyTrack], Error> {
+  /// Every directory this scan has already walked, by CANONICAL path. Only the link branch consults
+  /// it, and that is enough: a plain tree cannot repeat itself, a link is the only way back up it.
+  /// Lives for one scan, touched only from the SFTP worker thread (every op there is serial).
+  private final class ScanVisited {
+    var canonical = Set<String>()
+  }
+
+  // A depth-capped, serial BFS over the library folder. Skips dotfiles and any name containing "/"
+  // (the sweepRemote leaf-safety trick). A symlink is RESOLVED before it is judged, through the one
+  // shared rule (Translator.moshroomStatFollowingLinks): a linked track plays, a linked album folder
+  // is walked like any other but through its canonical path and only once — which is what keeps a
+  // link pointing back up the tree from being walked for ever — and a broken link is skipped.
+  private static func listRecursive(root: Translator, base: String, depth: Int,
+                                    visited: ScanVisited) -> AnyPublisher<[MoshifyTrack], Error> {
     root.cloneWalkTo(base)
-      .flatMap { $0.directoryFilesAndAttributes() }
+      .flatMap { dir -> AnyPublisher<[FileAttributes], Error> in
+        visited.canonical.insert(dir.current)
+        return dir.directoryFilesAndAttributes()
+      }
       .flatMap { rows -> AnyPublisher<[MoshifyTrack], Error> in
         var tracks: [MoshifyTrack] = []
         var subdirs: [String] = []
+        var links: [String] = []
         for attrs in rows {
           guard let name = attrs[.name] as? String, !name.isEmpty,
                 name != ".", name != "..",
                 !name.hasPrefix("."), !name.contains("/") else { continue }
           let type = attrs[.type] as? FileAttributeType
-          if type == .typeSymbolicLink { continue }
+          if type == .typeSymbolicLink {
+            links.append(name)
+            continue
+          }
           if type == .typeDirectory {
             if depth > 0 { subdirs.append(name) }
             continue
@@ -629,16 +698,50 @@ final class MoshifySession {
           let size = (attrs[.size] as? NSNumber)?.uint64Value ?? 0
           tracks.append(MoshifyTrack(remotePath: base + "/" + name, fileName: name, size: size))
         }
-        guard !subdirs.isEmpty else {
+
+        var branches: [AnyPublisher<[MoshifyTrack], Error>] = subdirs.map { sub in
+          listRecursive(root: root, base: base + "/" + sub, depth: depth - 1, visited: visited)
+        }
+        branches += links.map { name in
+          Self.linkBranch(root: root, base: base, name: name, depth: depth, visited: visited)
+        }
+        guard !branches.isEmpty else {
           return Just(tracks).setFailureType(to: Error.self).eraseToAnyPublisher()
         }
-        return Publishers.Sequence(sequence: subdirs.map { sub in
-          listRecursive(root: root, base: base + "/" + sub, depth: depth - 1)
-        })
-        .flatMap(maxPublishers: .max(1)) { $0 }
-        .collect()
-        .map { tracks + $0.flatMap { $0 } }
-        .eraseToAnyPublisher()
+        return Publishers.Sequence(sequence: branches)
+          .flatMap(maxPublishers: .max(1)) { $0 }
+          .collect()
+          .map { tracks + $0.flatMap { $0 } }
+          .eraseToAnyPublisher()
+      }
+      .eraseToAnyPublisher()
+  }
+
+  /// One symlink, resolved: a track if it points at audio, a walk if it points at a folder nobody has
+  /// walked yet, nothing at all if it is broken. A link that cannot be read is not a scan failure.
+  private static func linkBranch(root: Translator, base: String, name: String, depth: Int,
+                                 visited: ScanVisited) -> AnyPublisher<[MoshifyTrack], Error> {
+    let none = Just([MoshifyTrack]()).setFailureType(to: Error.self).eraseToAnyPublisher()
+    return root.moshroomStatFollowingLinks(child: name, in: base)
+      .flatMap { attrs -> AnyPublisher<[MoshifyTrack], Error> in
+        guard let attrs, let type = attrs[.type] as? FileAttributeType else { return none }
+        if type == .typeDirectory {
+          guard depth > 0 else { return none }
+          return root.cloneWalkTo(base + "/" + name)
+            .flatMap { target -> AnyPublisher<[MoshifyTrack], Error> in
+              guard visited.canonical.insert(target.current).inserted else { return none }
+              return listRecursive(root: root, base: target.current, depth: depth - 1, visited: visited)
+            }
+            .catch { _ in none }
+            .eraseToAnyPublisher()
+        }
+        guard type == .typeRegular,
+              Moshify.audioExtensions.contains((name as NSString).pathExtension.lowercased())
+        else { return none }
+        let size = (attrs[.size] as? NSNumber)?.uint64Value ?? 0
+        return Just([MoshifyTrack(remotePath: base + "/" + name, fileName: name, size: size)])
+          .setFailureType(to: Error.self)
+          .eraseToAnyPublisher()
       }
       .eraseToAnyPublisher()
   }
@@ -678,6 +781,11 @@ final class MoshifyEngine: NSObject, AVAudioPlayerDelegate {
     }
   }
 
+  /// Which music tab the engine currently belongs to. There is ONE audio pipeline in the app, so
+  /// there is one owner: starting a library in another tab takes it over and stops what was
+  /// playing. nil means nobody has claimed it this run (a fresh launch, or the owner tab closed).
+  private(set) var ownerKey: UUID?
+
   private(set) var tracks: [MoshifyTrack] = []
   private(set) var currentTrack: MoshifyTrack?
   private(set) var prefetch: (track: MoshifyTrack, fraction: Double)?
@@ -689,7 +797,10 @@ final class MoshifyEngine: NSObject, AVAudioPlayerDelegate {
   var shuffle: Bool {
     get { UserDefaults.standard.bool(forKey: Moshify.shuffleKey) }
     set {
+      // Remembered across launches, and OFF until the user asks for it (a bare UserDefaults bool
+      // starts false — nothing here or anywhere else turns it on by itself).
       UserDefaults.standard.set(newValue, forKey: Moshify.shuffleKey)
+      MoshLog.log("moshify", "shuffle \(newValue ? "on" : "off")")
       bag.removeAll()
       rebuildUpcoming()
       NotificationCenter.default.post(name: .moshifyStateDidChange, object: nil)
@@ -729,7 +840,11 @@ final class MoshifyEngine: NSObject, AVAudioPlayerDelegate {
 
   var isConfigured: Bool { Moshify.configuredHost != nil && Moshify.configuredFolder != nil }
 
-  func configure(hostAlias: String, folder: String) {
+  /// Point the engine at a library and hand it to `owner`. Whatever was playing stops: one sound
+  /// at a time, by construction.
+  func configure(hostAlias: String, folder: String, owner: UUID) {
+    let handover = (ownerKey != owner)
+    ownerKey = owner
     let previousHost = Moshify.configuredHost
     if let previousHost, previousHost != hostAlias {
       // A different host: the old library is meaningless. Clean and ordered.
@@ -741,8 +856,12 @@ final class MoshifyEngine: NSObject, AVAudioPlayerDelegate {
     tracks = []
     cache = MoshifyCache(host: hostAlias)
     MoshLog.log("moshify", "configured host + folder")
+    if handover { NotificationCenter.default.post(name: .moshifyOwnerDidChange, object: nil) }
     refreshLibrary()
   }
+
+  /// What this track lasts, if the file has ever been on the device (see MoshifyCache.noteDuration).
+  func duration(of track: MoshifyTrack) -> TimeInterval? { cache?.duration(of: track) }
 
   func refreshLibrary() {
     guard let host = Moshify.configuredHost, let folder = Moshify.configuredFolder else {
@@ -756,6 +875,10 @@ final class MoshifyEngine: NSObject, AVAudioPlayerDelegate {
       guard let self else { return }
       switch result {
       case .success(let found):
+        // Reached it: only now is it worth offering as a recent library.
+        if let host = Moshify.configuredHost, let folder = Moshify.configuredFolder {
+          Moshify.noteRecent(host: host, folder: folder)
+        }
         self.tracks = found
         self.cache?.purge(notIn: found)
         if let current = self.currentTrack, !found.contains(current) {
@@ -852,6 +975,7 @@ final class MoshifyEngine: NSObject, AVAudioPlayerDelegate {
 
   // Closing the Moshify tab stops the music — tab semantics. Config and cache stay for next time.
   func shutdown() {
+    ownerKey = nil
     stopPlayback()
     session.stop()
     tracks = []
@@ -864,6 +988,7 @@ final class MoshifyEngine: NSObject, AVAudioPlayerDelegate {
       audioSessionConfigured = false
     }
     MoshLog.log("moshify", "engine shut down")
+    NotificationCenter.default.post(name: .moshifyOwnerDidChange, object: nil)
   }
 
   // MARK: playback internals
@@ -914,6 +1039,7 @@ final class MoshifyEngine: NSObject, AVAudioPlayerDelegate {
       }
       endGapTask()
       cache?.notePlayed(track)
+      cache?.noteDuration(p.duration, for: track)
       rebuildUpcoming()
       updateNowPlaying()
       installRemoteCommandsIfNeeded()
@@ -1198,6 +1324,158 @@ final class MoshifyProgressLine: UIView {
   }
 }
 
+// MARK: - Track row
+
+/// One track: a card with the title, its length and size underneath, and the cached dot. A card
+/// (not a bare table row) so rows have air between them and the playing one reads as a filled
+/// mushroom pill — the same row language as Moshxplore's listings.
+final class MoshifyTrackCell: UITableViewCell {
+
+  static let reuseID = "MoshifyTrackCell"
+  static let height: CGFloat = 68
+
+  private let card = UIView()
+  private let title = UILabel()
+  private let meta = UILabel()
+  private let dot = UIImageView()
+
+  override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
+    super.init(style: style, reuseIdentifier: reuseIdentifier)
+    backgroundColor = .clear
+    selectionStyle = .none
+
+    card.translatesAutoresizingMaskIntoConstraints = false
+    card.layer.cornerRadius = Moshstyle.rowRadius
+    contentView.addSubview(card)
+
+    title.translatesAutoresizingMaskIntoConstraints = false
+    title.font = .systemFont(ofSize: 15, weight: .regular)
+    title.lineBreakMode = .byTruncatingMiddle
+    meta.translatesAutoresizingMaskIntoConstraints = false
+    meta.font = .systemFont(ofSize: 12)
+    dot.translatesAutoresizingMaskIntoConstraints = false
+    dot.contentMode = .center
+    dot.setContentHuggingPriority(.required, for: .horizontal)
+
+    let labels = UIStackView(arrangedSubviews: [title, meta])
+    labels.axis = .vertical
+    labels.spacing = 3
+    labels.translatesAutoresizingMaskIntoConstraints = false
+    card.addSubview(labels)
+    card.addSubview(dot)
+
+    NSLayoutConstraint.activate([
+      // The 5pt inset IS the gap between rows.
+      card.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 5),
+      card.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -5),
+      card.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+      card.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+      labels.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 14),
+      labels.centerYAnchor.constraint(equalTo: card.centerYAnchor),
+      labels.trailingAnchor.constraint(lessThanOrEqualTo: dot.leadingAnchor, constant: -10),
+      dot.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -14),
+      dot.centerYAnchor.constraint(equalTo: card.centerYAnchor),
+      dot.widthAnchor.constraint(equalToConstant: 12),
+    ])
+  }
+
+  required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+  func configure(title trackTitle: String, meta metaText: String, isCurrent: Bool, cached: Bool) {
+    title.text = trackTitle
+    title.font = .systemFont(ofSize: 15, weight: isCurrent ? .semibold : .regular)
+    title.textColor = isCurrent ? .white : MoshxploreStyle.dark
+    meta.text = metaText
+    meta.textColor = isCurrent ? UIColor(white: 1, alpha: 0.85) : MoshxploreStyle.gray
+    card.backgroundColor = isCurrent ? .moshroomTint : MoshxploreStyle.row
+    dot.isHidden = !cached
+    dot.image = UIImage(systemName: "circle.fill",
+                        withConfiguration: UIImage.SymbolConfiguration(pointSize: 7))?
+      .withTintColor(isCurrent ? .white : UIColor.moshroomTint.withAlphaComponent(0.7),
+                     renderingMode: .alwaysOriginal)
+  }
+}
+
+// MARK: - Mini player (top bar of every other tab)
+
+/// The music keeps playing when you leave its tab, so the chrome carries the controls: one compact
+/// white capsule to the LEFT of the launcher key with play/pause, skip and the song's title. Tapping
+/// the title jumps to the tab that owns the music. Sized to sit on one line next to the Tabs key and
+/// the tab pill on a phone, with the title taking whatever room is left.
+final class MoshifyMiniPlayer: UIView {
+
+  private let playButton = moshButton()
+  private let nextButton = moshButton()
+  private let titleLabel = UILabel()
+  var onOpen: (() -> Void)?
+
+  static let height: CGFloat = 34
+
+  init() {
+    super.init(frame: .zero)
+    translatesAutoresizingMaskIntoConstraints = false
+    backgroundColor = Moshstyle.chipFill
+    layer.cornerRadius = Self.height / 2
+    Moshstyle.applyChipShadow(layer)
+
+    playButton.setMoshIcon("play.fill", pointSize: 12, weight: .semibold)
+    playButton.addAction(UIAction { _ in MoshifyEngine.shared.togglePlayPause() }, for: .touchUpInside)
+    nextButton.setMoshIcon("forward.end.fill", pointSize: 11, weight: .semibold)
+    nextButton.addAction(UIAction { _ in MoshifyEngine.shared.next() }, for: .touchUpInside)
+
+    titleLabel.font = .systemFont(ofSize: 13, weight: .medium)
+    titleLabel.textColor = Moshstyle.ink
+    titleLabel.lineBreakMode = .byTruncatingTail
+    titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+    titleLabel.isUserInteractionEnabled = true
+    titleLabel.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(_open)))
+
+    let stack = UIStackView(arrangedSubviews: [playButton, nextButton, titleLabel])
+    stack.axis = .horizontal
+    stack.alignment = .center
+    stack.spacing = 8
+    stack.translatesAutoresizingMaskIntoConstraints = false
+    addSubview(stack)
+
+    NSLayoutConstraint.activate([
+      heightAnchor.constraint(equalToConstant: Self.height),
+      stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+      stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
+      stack.centerYAnchor.constraint(equalTo: centerYAnchor),
+      playButton.widthAnchor.constraint(equalToConstant: 16),
+      nextButton.widthAnchor.constraint(equalToConstant: 16),
+      // Long titles truncate instead of pushing the tab pill off the bar.
+      titleLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 220),
+    ])
+  }
+
+  required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+  @objc private func _open() { onOpen?() }
+
+  /// True when there is music to control. Reads the engine; the caller owns the visibility.
+  @discardableResult
+  func sync() -> Bool {
+    let engine = MoshifyEngine.shared
+    switch engine.state {
+    case .playing(let t):
+      titleLabel.text = t.title
+      playButton.setMoshIcon("pause.fill", pointSize: 12, weight: .semibold)
+      return true
+    case .paused(let t):
+      titleLabel.text = t.title
+      playButton.setMoshIcon("play.fill", pointSize: 12, weight: .semibold)
+      return true
+    case .downloading(let t, _):
+      titleLabel.text = t.title
+      playButton.setMoshIcon("play.fill", pointSize: 12, weight: .semibold)
+      return true
+    default:
+      return false
+    }
+  }
+}
+
 // MARK: - The Moshify tab
 
 // A thin observer over the engine, plus the one-time setup flow (pick a host → pick a folder).
@@ -1238,6 +1516,8 @@ final class MoshifyTabController: UIViewController, MoshroomTabPage,
   // Setup chrome (built per step into `setupContainer`).
   private let setupContainer = UIView()
   private var observers: [NSObjectProtocol] = []
+  /// The track the list is already centred on — see _centerCurrentTrack.
+  private var _centeredKey: String?
   private var progressTimer: Timer?
 
   init(key: UUID = UUID()) {
@@ -1275,12 +1555,20 @@ final class MoshifyTabController: UIViewController, MoshroomTabPage,
       nc.addObserver(forName: .moshifyProgressDidChange, object: nil, queue: .main) { [weak self] _ in
         self?._syncProgress()
       },
+      // Another music tab took the engine: this one is no longer a player, so it goes back to its
+      // picker instead of showing controls that would drive someone else's library.
+      nc.addObserver(forName: .moshifyOwnerDidChange, object: nil, queue: .main) { [weak self] _ in
+        guard let self, self.step == .player,
+              MoshifyEngine.shared.ownerKey != self.moshroomTabKey else { return }
+        self._show(step: .host)
+      },
     ]
 
-    if engine.isConfigured {
+    // A music tab is its own thing: it ALWAYS opens on the picker (recents make that one tap),
+    // never as a silent continuation of whatever played last. The one exception is the tab that
+    // already owns the engine — switching back to it must find its player, not a wizard.
+    if engine.ownerKey == moshroomTabKey, engine.isConfigured {
       _show(step: .player)
-      // Re-attach to a live engine (music kept playing while the tab was closed this run? No —
-      // closing the tab shuts the engine down; this is the reopen path) or start it up.
       if case .idle = engine.state { engine.refreshLibrary() }
     } else {
       _show(step: .host)
@@ -1289,10 +1577,13 @@ final class MoshifyTabController: UIViewController, MoshroomTabPage,
   }
 
   func moshroomTabWillClose() {
-    // Tab semantics: closing the tab stops the music. Setup browsing dies with it too.
+    // Tab semantics: closing the tab stops the music — but only if this tab is the one playing.
+    // Closing a music tab that had handed the engine over must not silence the tab that owns it.
     setupSession?.stop()
     setupSession = nil
-    MoshifyEngine.shared.shutdown()
+    if MoshifyEngine.shared.ownerKey == moshroomTabKey {
+      MoshifyEngine.shared.shutdown()
+    }
   }
 
   // MARK: chrome building
@@ -1303,7 +1594,8 @@ final class MoshifyTabController: UIViewController, MoshroomTabPage,
     table.separatorStyle = .none
     table.dataSource = self
     table.delegate = self
-    table.register(UITableViewCell.self, forCellReuseIdentifier: "track")
+    table.register(MoshifyTrackCell.self, forCellReuseIdentifier: MoshifyTrackCell.reuseID)
+    table.rowHeight = MoshifyTrackCell.height
     view.addSubview(table)
 
     bottomBar.translatesAutoresizingMaskIntoConstraints = false
@@ -1366,23 +1658,23 @@ final class MoshifyTabController: UIViewController, MoshroomTabPage,
       bottomBar.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
       bottomBar.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
       bottomBar.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
-      bottomBar.heightAnchor.constraint(equalToConstant: 118),
+      bottomBar.heightAnchor.constraint(equalToConstant: 134),
 
-      nowPlayingLabel.topAnchor.constraint(equalTo: bottomBar.topAnchor, constant: 4),
+      nowPlayingLabel.topAnchor.constraint(equalTo: bottomBar.topAnchor, constant: 12),
       nowPlayingLabel.leadingAnchor.constraint(equalTo: bottomBar.leadingAnchor, constant: 24),
       nowPlayingLabel.trailingAnchor.constraint(equalTo: bottomBar.trailingAnchor, constant: -24),
 
-      progressBar.topAnchor.constraint(equalTo: nowPlayingLabel.bottomAnchor, constant: 8),
+      progressBar.topAnchor.constraint(equalTo: nowPlayingLabel.bottomAnchor, constant: 14),
       progressBar.leadingAnchor.constraint(equalTo: bottomBar.leadingAnchor, constant: 24),
       progressBar.trailingAnchor.constraint(equalTo: bottomBar.trailingAnchor, constant: -24),
       progressBar.heightAnchor.constraint(equalToConstant: 4),
 
-      playButton.topAnchor.constraint(equalTo: progressBar.bottomAnchor, constant: 12),
+      playButton.topAnchor.constraint(equalTo: progressBar.bottomAnchor, constant: 18),
       playButton.centerXAnchor.constraint(equalTo: bottomBar.centerXAnchor),
       shuffleButton.centerYAnchor.constraint(equalTo: playButton.centerYAnchor),
-      shuffleButton.trailingAnchor.constraint(equalTo: playButton.leadingAnchor, constant: -28),
+      shuffleButton.trailingAnchor.constraint(equalTo: playButton.leadingAnchor, constant: -34),
       nextButton.centerYAnchor.constraint(equalTo: playButton.centerYAnchor),
-      nextButton.leadingAnchor.constraint(equalTo: playButton.trailingAnchor, constant: 28),
+      nextButton.leadingAnchor.constraint(equalTo: playButton.trailingAnchor, constant: 34),
 
       statusLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
       statusLabel.centerYAnchor.constraint(equalTo: view.centerYAnchor),
@@ -1445,6 +1737,16 @@ final class MoshifyTabController: UIViewController, MoshroomTabPage,
     return l
   }
 
+  /// A quiet heading inside the setup list ("Recent", "Browse a host").
+  private func _setupGroupLabel(_ text: String) -> UILabel {
+    let l = UILabel()
+    l.text = text.uppercased()
+    l.font = .systemFont(ofSize: 12, weight: .semibold)
+    l.textColor = .secondaryLabel
+    l.translatesAutoresizingMaskIntoConstraints = false
+    return l
+  }
+
   private func _buildHostStep() {
     _clearSetupContainer()
     let title = _setupTitle("Where does your music live?")
@@ -1459,13 +1761,32 @@ final class MoshifyTabController: UIViewController, MoshroomTabPage,
     scroll.translatesAutoresizingMaskIntoConstraints = false
     let stack = UIStackView()
     stack.axis = .vertical
-    stack.spacing = 10
+    stack.spacing = 12
     stack.translatesAutoresizingMaskIntoConstraints = false
     scroll.addSubview(stack)
 
+    // Recents first: a library you have played before is one tap away, host AND folder, no
+    // browsing. This is what makes "every music tab asks" cheap instead of tedious.
+    let recents = Moshify.recents
+    if !recents.isEmpty {
+      stack.addArrangedSubview(_setupGroupLabel("Recent"))
+      for recent in recents {
+        let b = moshHostCardButton(alias: recent.host, description: recent.folder, icon: "music.note")
+        b.addAction(UIAction { [weak self] _ in
+          self?._start(host: recent.host, folder: recent.folder)
+        }, for: .touchUpInside)
+        stack.addArrangedSubview(b)
+      }
+    }
+
     let cards = space?.moshroomSavedHostCards ?? []
     if cards.isEmpty {
-      subtitle.text = "No saved hosts yet. Add one in Settings → Hosts first."
+      subtitle.text = recents.isEmpty
+        ? "No saved hosts yet. Add one in Settings → Hosts first."
+        : "Pick a recent library, or add a host in Settings → Hosts to browse a new one."
+    }
+    if !cards.isEmpty && !recents.isEmpty {
+      stack.addArrangedSubview(_setupGroupLabel("Browse a host"))
     }
     for card in cards {
       let b = moshHostCardButton(alias: card.alias, description: card.description)
@@ -1496,10 +1817,8 @@ final class MoshifyTabController: UIViewController, MoshroomTabPage,
   }
 
   private func _pickHost(_ alias: String) {
-    guard let device = space?.moshroomAnyTermDevice else {
-      _showSetupError("Connecting needs an open terminal tab. Open one and try again.")
-      return
-    }
+    // A music tab stands on its own: no terminal tab required, here or in the worker.
+    let device = space?.moshroomAnyTermDevice
     setupHost = alias
     _showSetupBusy("Connecting to \(alias)…")
     let session = MoshxploreSession()
@@ -1646,11 +1965,18 @@ final class MoshifyTabController: UIViewController, MoshroomTabPage,
 
   private func _useCurrentFolder() {
     guard let host = setupHost else { return }
+    _start(host: host, folder: setupPath)
+  }
+
+  /// Take the engine and play this library here. The one door into the player, from both the folder
+  /// browser and a recents row.
+  private func _start(host: String, folder: String) {
     setupSession?.stop()
     setupSession = nil
+    setupHost = host
     _show(step: .player)
-    MoshifyEngine.shared.configure(hostAlias: host, folder: setupPath)
-    MoshLog.log("moshify", "setup finished")
+    MoshifyEngine.shared.configure(hostAlias: host, folder: folder, owner: moshroomTabKey)
+    MoshLog.log("moshify", "library started in this tab")
   }
 
   private func _showSetupBusy(_ text: String) {
@@ -1753,6 +2079,25 @@ final class MoshifyTabController: UIViewController, MoshroomTabPage,
     _syncProgress()
     _syncProgressTimer()
     table.reloadData()
+    _centerCurrentTrack()
+  }
+
+  /// Every song change (tapped, continued or shuffled) brings the playing row to the MIDDLE of the
+  /// list, so the eye never has to hunt for where the music is. Only on an actual change of track:
+  /// re-centering on every state tick would fight the user scrolling through the library.
+  private func _centerCurrentTrack() {
+    let engine = MoshifyEngine.shared
+    guard let track = engine.currentTrack else { _centeredKey = nil; return }
+    guard _centeredKey != track.cacheKey, let row = engine.currentIndex,
+          engine.tracks.indices.contains(row) else { return }
+    _centeredKey = track.cacheKey
+    let path = IndexPath(row: row, section: 0)
+    // After the reload above, so the row exists to scroll to.
+    DispatchQueue.main.async { [weak self] in
+      guard let self, self.step == .player,
+            self.table.numberOfRows(inSection: 0) > row else { return }
+      self.table.scrollToRow(at: path, at: .middle, animated: true)
+    }
   }
 
   private func _syncProgress() {
@@ -1787,40 +2132,33 @@ final class MoshifyTabController: UIViewController, MoshroomTabPage,
   }
 
   func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-    let cell = tableView.dequeueReusableCell(withIdentifier: "track", for: indexPath)
+    let cell = tableView.dequeueReusableCell(withIdentifier: MoshifyTrackCell.reuseID, for: indexPath)
     let engine = MoshifyEngine.shared
-    guard engine.tracks.indices.contains(indexPath.row) else { return cell }
+    guard let cell = cell as? MoshifyTrackCell,
+          engine.tracks.indices.contains(indexPath.row) else { return cell }
     let track = engine.tracks[indexPath.row]
-    let isCurrent = (track == engine.currentTrack)
-
-    var cfg = cell.defaultContentConfiguration()
-    cfg.text = track.title
-    cfg.textProperties.font = .systemFont(ofSize: 15, weight: isCurrent ? .semibold : .regular)
-    cfg.textProperties.color = isCurrent ? .white : .label
-    cfg.secondaryText = ByteCountFormatter.string(fromByteCount: Int64(track.size), countStyle: .file)
-    cfg.secondaryTextProperties.font = .systemFont(ofSize: 12)
-    cfg.secondaryTextProperties.color = isCurrent ? UIColor(white: 1, alpha: 0.8) : .secondaryLabel
-    cell.contentConfiguration = cfg
-
-    cell.backgroundColor = .clear
-    let bg = UIView()
-    bg.backgroundColor = isCurrent ? .moshroomTint : .clear
-    bg.layer.cornerRadius = 12
-    cell.backgroundView = bg
-    cell.selectionStyle = .none
-
-    // The cached dot: this track plays instantly, no network needed.
-    if engine.isCached(track) {
-      let dot = UIImageView(image: UIImage(
-        systemName: "circle.fill",
-        withConfiguration: UIImage.SymbolConfiguration(pointSize: 8))?
-        .withTintColor(isCurrent ? .white : UIColor.moshroomTint.withAlphaComponent(0.7),
-                       renderingMode: .alwaysOriginal))
-      cell.accessoryView = dot
-    } else {
-      cell.accessoryView = nil
-    }
+    cell.configure(title: track.title,
+                   meta: Self._meta(for: track, engine: engine),
+                   isCurrent: track == engine.currentTrack,
+                   cached: engine.isCached(track))
     return cell
+  }
+
+  /// Length and size, with the length only when it is KNOWN (the file has been on the device) —
+  /// a guessed time would be worse than none.
+  private static func _meta(for track: MoshifyTrack, engine: MoshifyEngine) -> String {
+    let size = ByteCountFormatter.string(fromByteCount: Int64(track.size), countStyle: .file)
+    guard let seconds = engine.duration(of: track), seconds > 0 else { return size }
+    return "\(_clock(seconds)) · \(size)"
+  }
+
+  private static func _clock(_ seconds: TimeInterval) -> String {
+    let total = Int(seconds.rounded())
+    let minutes = total / 60, secs = total % 60
+    if minutes >= 60 {
+      return String(format: "%d:%02d:%02d", minutes / 60, minutes % 60, secs)
+    }
+    return String(format: "%d:%02d", minutes, secs)
   }
 
   func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {

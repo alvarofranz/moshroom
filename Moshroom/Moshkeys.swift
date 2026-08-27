@@ -65,16 +65,30 @@ enum Moshkeys {
     launcher.setMoshIcon("square.grid.2x2")
     launcher.translatesAutoresizingMaskIntoConstraints = false
     launcher.addAction(UIAction { [weak sc] _ in sc?.openMoshlauncher() }, for: .touchUpInside)
-    sc.view.addSubview(launcher)
+
+    // The music controls ride to the LEFT of the launcher key, in the same row. One stack view, so
+    // hiding the player collapses the space instead of leaving a hole (and the tab pill gets its
+    // width back automatically).
+    let mini = MoshifyMiniPlayer()
+    mini.isHidden = true
+    mini.onOpen = { [weak sc] in sc?.moshroomOpenPlayingMusicTab() }
+    let trailing = UIStackView(arrangedSubviews: [mini, launcher])
+    trailing.axis = .horizontal
+    trailing.alignment = .center
+    trailing.spacing = 10
+    trailing.translatesAutoresizingMaskIntoConstraints = false
+    sc.view.addSubview(trailing)
+    sc.moshroomMiniPlayer = mini
 
     NSLayoutConstraint.activate([
       tabs.leadingAnchor.constraint(equalTo: sc.view.safeAreaLayoutGuide.leadingAnchor, constant: 14),
       tabs.topAnchor.constraint(equalTo: sc.view.safeAreaLayoutGuide.topAnchor, constant: 10),
-      launcher.trailingAnchor.constraint(equalTo: sc.view.safeAreaLayoutGuide.trailingAnchor, constant: -14),
-      launcher.topAnchor.constraint(equalTo: sc.view.safeAreaLayoutGuide.topAnchor, constant: 10),
+      trailing.trailingAnchor.constraint(equalTo: sc.view.safeAreaLayoutGuide.trailingAnchor, constant: -14),
+      trailing.centerYAnchor.constraint(equalTo: tabs.centerYAnchor),
+      trailing.leadingAnchor.constraint(greaterThanOrEqualTo: tabs.trailingAnchor, constant: 10),
     ])
     sc.view.bringSubviewToFront(tabs)
-    sc.view.bringSubviewToFront(launcher)
+    sc.view.bringSubviewToFront(trailing)
 
     // The tab label — a red pill just right of Tabs naming the tab on screen, always. It caps its
     // width against the launcher button and truncates a long alias.
@@ -84,7 +98,7 @@ enum Moshkeys {
     NSLayoutConstraint.activate([
       tabLabel.leadingAnchor.constraint(equalTo: tabs.trailingAnchor, constant: 10),
       tabLabel.centerYAnchor.constraint(equalTo: tabs.centerYAnchor),
-      tabLabel.trailingAnchor.constraint(lessThanOrEqualTo: launcher.leadingAnchor, constant: -8),
+      tabLabel.trailingAnchor.constraint(lessThanOrEqualTo: trailing.leadingAnchor, constant: -8),
     ])
     sc.view.bringSubviewToFront(tabLabel)
     sc.moshroomTabLabel = tabLabel
@@ -112,7 +126,7 @@ enum Moshkeys {
     #endif
 
     #if !targetEnvironment(macCatalyst)
-    bar.chrome = [compose, tabs, launcher, arrowEnter, live]   // kept tappable above the dismiss overlay
+    bar.chrome = [compose, tabs, trailing, arrowEnter, live]   // kept tappable above the dismiss overlay
     bar.composeButton = compose                      // stepped aside while the ↕ arrow mode is active
     bar.arrowEnterButton = arrowEnter                // takes the compose spot during arrow mode
     // The bottom cluster types into the current terminal — on a music/explorer tab there is
@@ -144,6 +158,23 @@ enum Moshkeys {
 /// A UIButton that renders the same on iOS and Mac Catalyst. On Mac, a `.system` button adopts
 /// the native Mac chrome (a bordered capsule + washed-out icons) that clashes with our iOS-style
 /// custom buttons; `.custom` keeps the app looking like its iPhone/iPad self.
+/// A symbol image padded to a FIXED width, centred, so a column of rows lines its titles up no
+/// matter how wide each glyph is (a music note is narrow, a terminal is wide). Template-rendered, so
+/// the caller's tint still applies.
+func moshFixedWidthSymbol(_ name: String, pointSize: CGFloat, weight: UIImage.SymbolWeight = .medium,
+                          width: CGFloat = 22) -> UIImage? {
+  guard let symbol = UIImage(systemName: name,
+                             withConfiguration: UIImage.SymbolConfiguration(pointSize: pointSize, weight: weight))
+  else { return nil }
+  let size = CGSize(width: max(width, symbol.size.width), height: symbol.size.height)
+  let renderer = UIGraphicsImageRenderer(size: size)
+  let padded = renderer.image { _ in
+    symbol.draw(in: CGRect(x: (size.width - symbol.size.width) / 2, y: 0,
+                           width: symbol.size.width, height: symbol.size.height))
+  }
+  return padded.withRenderingMode(.alwaysTemplate)
+}
+
 func moshButton() -> UIButton {
   #if targetEnvironment(macCatalyst)
   return UIButton(type: .custom)
@@ -627,7 +658,7 @@ final class MoshtabsController: UIViewController {
     let active = tab.isActive
     let row = UIView()
     row.backgroundColor = active ? .moshroomTint : MoshxploreStyle.row
-    row.layer.cornerRadius = 12
+    row.layer.cornerRadius = Moshstyle.rowRadius
     row.translatesAutoresizingMaskIntoConstraints = false
     row.heightAnchor.constraint(greaterThanOrEqualToConstant: 48).isActive = true
 
@@ -644,8 +675,7 @@ final class MoshtabsController: UIViewController {
     case .moshify: kindIcon = "music.note"
     case .explorer: kindIcon = "folder"
     }
-    cfg.image = UIImage(systemName: kindIcon,
-                        withConfiguration: UIImage.SymbolConfiguration(pointSize: 13, weight: .medium))
+    cfg.image = moshFixedWidthSymbol(kindIcon, pointSize: 13)
     cfg.imagePadding = 8
     cfg.baseForegroundColor = active ? .white : MoshxploreStyle.dark
     // Leading space comes from the layout constraint below, NOT from these insets — Mac Catalyst
@@ -691,7 +721,7 @@ final class MoshtabsController: UIViewController {
   private func _newRow() -> UIView {
     let b = UIButton(type: .system)
     var cfg = UIButton.Configuration.plain()
-    cfg.image = UIImage(systemName: "plus", withConfiguration: UIImage.SymbolConfiguration(pointSize: 13, weight: .semibold))
+    cfg.image = moshFixedWidthSymbol("plus", pointSize: 13, weight: .semibold)
     cfg.imagePadding = 8
     var attr = AttributeContainer()
     attr.font = .systemFont(ofSize: 15, weight: .medium)

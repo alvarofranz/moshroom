@@ -148,13 +148,92 @@ struct MoshvaultRootView: View {
 // The one continuous shape comes from clipping the whole VStack to a single rounded rectangle: only
 // the four OUTER corners round (list top + search bottom); the seam where they meet stays straight.
 // A plain list (not insetGrouped) is used so the card is drawn once, by this container.
+/// The search field itself: docked UNDER a list rather than hidden in a nav-bar drawer, so it never
+/// covers the rows and never moves. One implementation for Moshvault's lists and the Settings hubs.
+struct MoshDockedSearch: View {
+  @Binding var query: String
+  var prompt: String
+  /// The vault's lists take the keyboard on appear (search-first screens); a Settings hub does not.
+  var autofocus = false
+  @FocusState private var focused: Bool
+
+  var body: some View {
+    HStack(spacing: 8) {
+      Image(systemName: "magnifyingglass").foregroundColor(.secondary)
+      TextField(prompt, text: $query)
+        .textFieldStyle(.plain)
+        .autocorrectionDisabled()
+        .textInputAutocapitalization(.never)
+        .submitLabel(.search)
+        .focused($focused)
+      if !query.isEmpty {
+        Button { query = "" } label: {
+          Image(systemName: "xmark.circle.fill").foregroundColor(.secondary)
+        }
+        .buttonStyle(.plain)
+        .transition(.opacity)
+      }
+    }
+    .padding(.horizontal, 14)
+    .padding(.vertical, 12)
+    .onAppear { if autofocus { DispatchQueue.main.async { focused = true } } }
+  }
+}
+
+/// The one list shell for a Settings hub screen (Keys, Hosts): inset-grouped rows in a single
+/// section, an optional footer explaining the screen, and the same docked search once the list is
+/// long enough to want one. The two screens used to be built differently for no reason other than
+/// having been written months apart.
+struct MoshSettingsList<Rows: View, Header: View>: View {
+  var search: Binding<String>? = nil
+  var searchPrompt = "Search"
+  var showSearch = false
+  var noMatches = false
+  var footer: String? = nil
+  @ViewBuilder var header: () -> Header
+  @ViewBuilder var rows: () -> Rows
+
+  var body: some View {
+    VStack(spacing: 0) {
+      List {
+        Section {
+          rows()
+        } header: {
+          header()
+        } footer: {
+          if let footer { Text(footer) }
+        }
+        .textCase(nil)
+      }
+      .listStyle(.insetGrouped)
+      .overlay { if showSearch && noMatches { MoshNoMatches() } }
+
+      if let search, showSearch {
+        MoshDockedSearch(query: search, prompt: searchPrompt)
+          .background(Color(.secondarySystemGroupedBackground))
+          .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+          .padding(.horizontal, 16)
+          .padding(.bottom, 10)
+      }
+    }
+    .moshReadableWidth()
+  }
+}
+
+extension MoshSettingsList where Header == EmptyView {
+  init(search: Binding<String>? = nil, searchPrompt: String = "Search", showSearch: Bool = false,
+       noMatches: Bool = false, footer: String? = nil, @ViewBuilder rows: @escaping () -> Rows) {
+    self.init(search: search, searchPrompt: searchPrompt, showSearch: showSearch,
+              noMatches: noMatches, footer: footer, header: { EmptyView() }, rows: rows)
+  }
+}
+
 struct MoshSearchList<Rows: View>: View {
   @Binding var query: String
   var prompt: String
   var showSearch: Bool   // only worth a search bar past a threshold (see callers: count > 10)
   var noMatches: Bool
   @ViewBuilder var rows: () -> Rows
-  @FocusState private var focused: Bool
 
   var body: some View {
     VStack(spacing: 0) {
@@ -167,24 +246,7 @@ struct MoshSearchList<Rows: View>: View {
 
       if showSearch {
         Divider()   // the seam between the list and the docked search
-        HStack(spacing: 8) {
-          Image(systemName: "magnifyingglass").foregroundColor(.secondary)
-          TextField(prompt, text: $query)
-            .textFieldStyle(.plain)
-            .autocorrectionDisabled()
-            .textInputAutocapitalization(.never)
-            .submitLabel(.search)
-            .focused($focused)
-          if !query.isEmpty {
-            Button { query = "" } label: {
-              Image(systemName: "xmark.circle.fill").foregroundColor(.secondary)
-            }
-            .buttonStyle(.plain)
-            .transition(.opacity)
-          }
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
+        MoshDockedSearch(query: $query, prompt: prompt, autofocus: true)
       }
     }
     // One background for the whole thing — the rows, the empty space, and the docked search all share
@@ -197,7 +259,7 @@ struct MoshSearchList<Rows: View>: View {
     .padding(.bottom, 12)
     .moshReadableWidth()
     .animation(.easeInOut(duration: 0.15), value: query.isEmpty)
-    .onAppear { if showSearch { DispatchQueue.main.async { focused = true } } }
+    // (The docked search focuses itself on appear — see MoshDockedSearch.)
   }
 }
 

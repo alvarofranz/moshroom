@@ -323,7 +323,7 @@ struct HostView: View {
       ) {
         Field("HostName",  $_hostName,  next: "Port",      placeholder: "Host or IP address. Required", enabled: _enabled, kbType: .URL)
         Field("Port",      $_port,      next: "User",      placeholder: "22", enabled: _enabled, kbType: .numberPad)
-        Field("User",      $_user,      next: "Password",  placeholder: MoshroomDefaults.defaultUserName(), enabled: _enabled)
+        Field("User",      $_user,      next: "Password",  placeholder: "Login user. Required", enabled: _enabled)
         FieldPassword("Password",  $_password,  next: "ProxyCmd",  placeholder: "Ask Every Time", enabled: _enabled)
         FieldSSHKey(value: $_sshKeyName, enabled: _enabled, hasSSHKey: MoshPubKey.all().contains(where: {
           if let keyName = _sshKeyName.first {

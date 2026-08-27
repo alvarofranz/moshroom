@@ -35,13 +35,13 @@ struct SettingsView: View {
   @AppStorage(MoshxploreStyle.textSizeKey) private var _moshxploreTextSize: Int = MoshxploreStyle.defaultTextSize
   @AppStorage(Moshify.cacheGBKey) private var _moshifyCacheGB: Int = 2
   private var _iCloudAvailable: Bool { FileManager.default.ubiquityIdentityToken != nil }
-  @State private var _defaultUser = MoshroomDefaults.defaultUserName() ?? ""
 
   // Sync status for the iCloud section: "Syncing…" while a pass runs, then "2m ago" plus one
   // honest line about what the pass saw and did ("2 hosts · 14 snips · fetched from iCloud").
   @State private var _isSyncing = HostsCloudMirror.isSyncing
   @State private var _lastSync = HostsCloudMirror.lastSyncDate
   @State private var _syncSummary = HostsCloudMirror.lastSyncSummary
+  @State private var _syncStatus = HostsCloudMirror.lastSyncStatus
   @State private var _now = Date()
   private let _clock = Timer.publish(every: 30, on: .main, in: .common).autoconnect()
 
@@ -62,15 +62,6 @@ struct SettingsView: View {
           Label("Default Agent", systemImage: "key.viewfinder")
         } details: {
           DefaultAgentSettingsView()
-        }
-        Row {
-          HStack {
-            Label("Default User", systemImage: "person")
-            Spacer()
-            Text(_defaultUser).foregroundColor(.secondary)
-          }
-        } details: {
-          MoshDefaultUserView()
         }
       } header: {
         Text("Connect")
@@ -158,29 +149,45 @@ struct SettingsView: View {
         }
 
         if _iCloudSyncOn && _iCloudAvailable {
+          // What the last pass saw, one line per kind. A single trailing paragraph of counts was
+          // unreadable; a row each reads like a receipt and has room to breathe.
+          if let status = _syncStatus {
+            ForEach(status.counts, id: \.label) { item in
+              HStack {
+                Text(item.label).foregroundColor(.secondary)
+                Spacer()
+                Text("\(item.count)").monospacedDigit()
+              }
+              .font(.subheadline)
+            }
+            HStack(alignment: .firstTextBaseline) {
+              Text("Last sync").foregroundColor(.secondary)
+              Spacer()
+              VStack(alignment: .trailing, spacing: 2) {
+                if _isSyncing {
+                  HStack(spacing: 6) { ProgressView(); Text("Syncing…") }
+                } else if let last = _lastSync {
+                  Text(_agoLabel(last))
+                }
+                Text(status.state)
+              }
+              .multilineTextAlignment(.trailing)
+            }
+            .font(.subheadline)
+          } else if let summary = _syncSummary {
+            // Before the first structured pass (or an unavailable container): the plain sentence.
+            Text(summary).font(.subheadline).foregroundColor(.secondary)
+          }
+
+          // Sync Now closes the section: the status above is what you read, this is what you press.
           Button {
             HostsCloudMirror.syncNow()
           } label: {
-            HStack(alignment: .center) {
+            HStack {
               Label("Sync Now", systemImage: "arrow.triangle.2.circlepath")
                 .foregroundColor(.primary)
               Spacer()
-              if _isSyncing {
-                HStack(spacing: 6) {
-                  ProgressView()
-                  Text("Syncing…").foregroundColor(.secondary)
-                }
-              } else {
-                VStack(alignment: .trailing, spacing: 2) {
-                  if let last = _lastSync {
-                    Text(_agoLabel(last))
-                  }
-                  if let summary = _syncSummary {
-                    Text(summary).font(.footnote)
-                  }
-                }
-                .foregroundColor(.secondary)
-              }
+              if _isSyncing { ProgressView() }
             }
           }
           .disabled(_isSyncing)
@@ -221,22 +228,25 @@ struct SettingsView: View {
       MoshLog.ensureFileExists()   // so Export Logs always has a real file to share
       _iCloudSyncOn = MoshroomDefaults.isICloudSyncEnabled()
       _requireBiometric = MoshroomDefaults.isRequireBiometricUnlock()
-      _defaultUser = MoshroomDefaults.defaultUserName() ?? ""
       _isSyncing = HostsCloudMirror.isSyncing
       _lastSync = HostsCloudMirror.lastSyncDate
       _syncSummary = HostsCloudMirror.lastSyncSummary
+      _syncStatus = HostsCloudMirror.lastSyncStatus
       _now = Date()
     }
     .onReceive(NotificationCenter.default.publisher(for: HostsCloudMirror.syncStateNotification)) { _ in
       _isSyncing = HostsCloudMirror.isSyncing
       _lastSync = HostsCloudMirror.lastSyncDate
       _syncSummary = HostsCloudMirror.lastSyncSummary
+      _syncStatus = HostsCloudMirror.lastSyncStatus
       _now = Date()
     }
     .onReceive(_clock) { now in
       _now = now   // keeps the "2m ago" label honest while the screen sits open
     }
     .listStyle(.insetGrouped)
+    // Sections need a visible gap: the default spacing ran them together into one grey slab.
+    .listSectionSpacing(26)
     .moshReadableWidth()
     .moshHubChrome(title: "Settings", leading: {
       Button(action: onClose) { MoshNavGlyph(systemName: "xmark") }
@@ -255,36 +265,5 @@ struct SettingsView: View {
     if seconds < 3600 { return "\(seconds / 60)m ago" }
     if seconds < 86400 { return "\(seconds / 3600)h ago" }
     return "\(seconds / 86400)d ago"
-  }
-}
-
-// The Default User editor — plain SwiftUI in the house style (replaces the old storyboard table).
-// Spaces are stripped as you type, like the host alias field; saved on the way out, and only when
-// non-empty (matching the previous behavior).
-struct MoshDefaultUserView: View {
-  @State private var _name = MoshroomDefaults.defaultUserName() ?? ""
-
-  var body: some View {
-    List {
-      Section {
-        TextField("Username", text: $_name)
-          .autocorrectionDisabled()
-          .textInputAutocapitalization(.never)
-          .onChange(of: _name) { value in
-            let sanitized = value.replacingOccurrences(of: " ", with: "")
-            if sanitized != value { _name = sanitized }
-          }
-      } footer: {
-        Text("Used to connect when a host doesn't set its own user.")
-      }
-    }
-    .listStyle(.insetGrouped)
-    .moshReadableWidth()
-    .moshHubChromeBack(title: "Default User")
-    .onDisappear {
-      guard !_name.isEmpty else { return }
-      MoshroomDefaults.setDefaultUserName(_name)
-      MoshroomDefaults.save()
-    }
   }
 }

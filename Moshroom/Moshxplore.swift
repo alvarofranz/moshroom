@@ -73,6 +73,30 @@ struct MoshxploreEntry {
   }
 }
 
+// MARK: - Symlink resolution
+
+extension Translator {
+  /// What a directory entry REALLY is. `sftp_readdir` answers with lstat semantics, so every symlink
+  /// arrives typed as a link: a link to a directory then sorts, draws and taps like a file, which is
+  /// exactly why a linked folder could not be opened. One stat (which DOES follow the link) settles
+  /// it, and brings the target's real size and date along while it is there — a link's own size is
+  /// the length of the path string it holds, never what the user means by "how big is this".
+  /// nil means the link is broken or unreadable, and then the entry must stay exactly as it came so
+  /// it can never pretend to be a folder. `join` costs nothing (no round trip), `stat` costs one.
+  /// This is the one place either surface asks "link to what?" — Moshxplore's browser and Moshify's
+  /// library scan both come here.
+  func moshroomStatFollowingLinks(child name: String, in dirPath: String) -> AnyPublisher<FileAttributes?, Error> {
+    guard let target = try? clone().join((dirPath as NSString).appendingPathComponent(name)) else {
+      return Just(nil).setFailureType(to: Error.self).eraseToAnyPublisher()
+    }
+    return target.stat()
+      .map { Optional($0) }
+      .replaceError(with: nil)
+      .setFailureType(to: Error.self)
+      .eraseToAnyPublisher()
+  }
+}
+
 enum MoshxploreError: LocalizedError {
   case notConnected
   var errorDescription: String? { "Not connected." }
@@ -228,7 +252,7 @@ final class MoshxploreSession {
   }
 
   // Connect + SFTP + resolve home. `completion` carries the absolute home path to list first.
-  func connect(hostAlias: String, device: TermDevice,
+  func connect(hostAlias: String, device: TermDevice?,
                completion: @escaping (Result<String, Error>) -> Void) {
     start()
     onWorker { [weak self] in
@@ -254,7 +278,9 @@ final class MoshxploreSession {
     }
   }
 
-  // List one absolute directory path. Entries are sorted dirs-first, then case-insensitive name.
+  // List one absolute directory path. Symlinks are resolved first (a linked folder has to BE a
+  // folder here, or nothing downstream lets you open it), then entries sort dirs-first, then by
+  // case-insensitive name.
   func list(path: String, completion: @escaping (Result<[MoshxploreEntry], Error>) -> Void) {
     onWorker { [weak self] in
       guard let self, let root = self.root else {
@@ -262,19 +288,65 @@ final class MoshxploreSession {
         return
       }
       self.listC = root.cloneWalkTo(path)
-        .flatMap { $0.directoryFilesAndAttributes() }
+        .flatMap { dir -> AnyPublisher<[MoshxploreEntry], Error> in
+          dir.directoryFilesAndAttributes()
+            .map { rows in
+              rows.compactMap(MoshxploreEntry.init).filter { $0.name != "." && $0.name != ".." }
+            }
+            // The canonical directory path, not the one asked for: the entries are stat'd by full
+            // path, and the caller may well have walked in through a link itself.
+            .flatMap { Self.resolvingSymlinks($0, in: dir.current, root: root) }
+            .eraseToAnyPublisher()
+        }
         .sink(receiveCompletion: { c in
           if case .failure(let e) = c { DispatchQueue.main.async { completion(.failure(e)) } }
-        }, receiveValue: { rows in
-          let entries = rows.compactMap(MoshxploreEntry.init)
-            .filter { $0.name != "." && $0.name != ".." }
-            .sorted { a, b in
-              a.isDirectory != b.isDirectory ? a.isDirectory
-                : a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
-            }
-          DispatchQueue.main.async { completion(.success(entries)) }
+        }, receiveValue: { entries in
+          let sorted = entries.sorted { a, b in
+            a.isDirectory != b.isDirectory ? a.isDirectory
+              : a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
+          }
+          DispatchQueue.main.async { completion(.success(sorted)) }
         })
     }
+  }
+
+  /// How many links one listing resolves. Each is a round trip on the single (serial) SFTP channel,
+  /// so a directory holding hundreds of them must not keep the browser waiting; past the cap the
+  /// rest stay links, which is all they ever were before this existed.
+  private static let symlinkResolveLimit = 64
+
+  /// Re-tag every symlink with what it actually points at (see moshroomStatFollowingLinks). Order is
+  /// preserved and the caller still sorts; a link we cannot stat is left untouched, on purpose.
+  private static func resolvingSymlinks(_ entries: [MoshxploreEntry], in dirPath: String,
+                                        root: Translator) -> AnyPublisher<[MoshxploreEntry], Error> {
+    let links = Array(entries.enumerated().filter { $0.element.isSymlink }.prefix(symlinkResolveLimit))
+    guard !links.isEmpty else {
+      return Just(entries).setFailureType(to: Error.self).eraseToAnyPublisher()
+    }
+    let lookups = links.map { index, entry in
+      root.moshroomStatFollowingLinks(child: entry.name, in: dirPath)
+        .map { (index, $0) }
+        .eraseToAnyPublisher()
+    }
+    return Publishers.Sequence(sequence: lookups)
+      // One at a time: every op rides the one SFTP channel anyway.
+      .flatMap(maxPublishers: .max(1)) { $0 }
+      .collect()
+      .map { resolved in
+        var out = entries
+        for (index, attrs) in resolved {
+          guard let attrs, out.indices.contains(index) else { continue }
+          let entry = out[index]
+          out[index] = MoshxploreEntry(
+            name: entry.name,
+            isDirectory: (attrs[.type] as? FileAttributeType) == .typeDirectory,
+            isSymlink: true,
+            size: (attrs[.size] as? NSNumber)?.uint64Value ?? entry.size,
+            modified: attrs[.modificationDate] as? Date ?? entry.modified)
+        }
+        return out
+      }
+      .eraseToAnyPublisher()
   }
 
   // Download a single file into `destDir`. Used both to save (→ Documents/Moshroom) and to fetch a
@@ -447,7 +519,7 @@ private final class MoshxploreEntryRow: UIControl {
     self.onTap = onTap
     translatesAutoresizingMaskIntoConstraints = false
     backgroundColor = MoshxploreStyle.row
-    layer.cornerRadius = 12
+    layer.cornerRadius = Moshstyle.rowRadius
 
     let icon = UIImageView(image: UIImage(systemName: symbol))
     icon.tintColor = entry.isDirectory ? .moshroomTint : MoshxploreStyle.dark
@@ -1626,7 +1698,9 @@ final class MoshxploreView: UIView {
   }
 
   private static func symbol(for entry: MoshxploreEntry) -> String {
-    if entry.isDirectory { return "folder.fill" }
+    // A linked folder IS a folder (you open it), drawn hollow so the link shows at a glance; the
+    // row's subtitle says "link" as well.
+    if entry.isDirectory { return entry.isSymlink ? "folder" : "folder.fill" }
     if entry.isSymlink { return "arrow.up.right.square" }
     switch (entry.name as NSString).pathExtension.lowercased() {
     case "png", "jpg", "jpeg", "gif", "heic", "webp", "bmp", "tiff": return "photo"

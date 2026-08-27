@@ -104,6 +104,9 @@ class SpaceController: UIViewController {
   // The "back to live" chip (created in Moshkeys.install): shown only while the visible terminal's
   // viewport is parked up in its scrollback.
   var moshroomLiveButton: UIButton?
+  // The music controls in the top bar, left of the launcher key (created in Moshkeys.install):
+  // shown while something is playing and you are looking at some other tab.
+  var moshroomMiniPlayer: MoshifyMiniPlayer?
   var stuckKeyCode: KeyCode? = nil
 
   private var _snippetsVC: SnippetsViewController? = nil
@@ -184,6 +187,7 @@ class SpaceController: UIViewController {
     moshroomSyncLiveButton()
     moshroomUpdateTabLabel()
     moshroomSyncQuickKeysVisibility()
+    moshroomSyncMoshifyMini()
   }
 
   // The bottom quick-keys cluster only makes sense over a terminal (its keys write into the
@@ -514,6 +518,12 @@ class SpaceController: UIViewController {
     nc.addObserver(self, selector: #selector(_terminalTitleChanged),
                    name: NSNotification.Name(TermViewTitleDidChangeNotificationKey), object: nil)
 
+    // Moshroom: the music started, stopped, or changed hands — the top-bar controls follow it.
+    nc.addObserver(self, selector: #selector(_moshifyDidChange),
+                   name: .moshifyStateDidChange, object: nil)
+    nc.addObserver(self, selector: #selector(_moshifyDidChange),
+                   name: .moshifyOwnerDidChange, object: nil)
+
     nc.addObserver(self, selector: #selector(_UISceneDidEnterBackgroundNotification(_:)),
                    name: UIScene.didEnterBackgroundNotification, object: nil)
     
@@ -543,6 +553,10 @@ class SpaceController: UIViewController {
     moshroomUpdateTabLabel()
   }
 
+  @objc func _moshifyDidChange() {
+    moshroomSyncMoshifyMini()
+  }
+
   @objc func _terminalTailingChanged(_ n: Notification) {
     // Only the terminal the user is looking at may drive the chip: a background tab receiving output
     // posts these too (the web-view identity check also disambiguates multi-window iPad).
@@ -556,6 +570,24 @@ class SpaceController: UIViewController {
 
   /// Show the chip exactly while the visible terminal is scrolled away from its live end. Called on
   /// every tailing change and after any tab switch (the new tab's state is its own).
+  /// The top-bar music controls: visible while the engine has a track and you are looking at any tab
+  /// OTHER than the one playing it — including another music tab, which shows its own picker and has
+  /// no controls of its own. Called from the one place that knows the visible tab changed, plus the
+  /// engine's own notifications.
+  func moshroomSyncMoshifyMini() {
+    guard let mini = moshroomMiniPlayer else { return }
+    let onPlayingTab = (_currentKey != nil && _currentKey == MoshifyEngine.shared.ownerKey)
+    let show = mini.sync() && !onPlayingTab
+    if mini.isHidden != !show { mini.isHidden = !show }
+    if show { view.bringSubviewToFront(mini.superview ?? mini) }
+  }
+
+  /// Bring the tab that owns the music on screen (tapping the title in the top bar).
+  func moshroomOpenPlayingMusicTab() {
+    guard let key = MoshifyEngine.shared.ownerKey else { return }
+    moshroomSwitch(toTab: key)
+  }
+
   func moshroomSyncLiveButton() {
     guard let button = moshroomLiveButton else { return }
     let show = !(currentDevice?.view?.moshroomIsTailing ?? true) && !_freshOverlayVisible

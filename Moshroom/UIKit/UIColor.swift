@@ -60,7 +60,8 @@ enum Moshstyle {
   static let hairline = UIColor(white: 0.8, alpha: 1)
 
   // Corner radius scale — pick by role, never a bare literal:
-  // tappable cards (hosts, launcher tiles) · floating overlays/cards.
+  // list rows (files, tracks, tabs) · tappable cards (hosts, launcher tiles) · floating overlays.
+  static let rowRadius: CGFloat = 12
   static let cardRadius: CGFloat = 14
   static let overlayRadius: CGFloat = 18
 

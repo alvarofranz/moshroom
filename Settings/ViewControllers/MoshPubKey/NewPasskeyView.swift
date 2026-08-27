@@ -115,7 +115,7 @@ fileprivate class NewPasskeyObservable: NSObject, ObservableObject {
   var onSuccess: () -> Void = {}
 
   @Published var keyName = ""
-  @Published var keyComment = "\(MoshroomDefaults.defaultUserName() ?? "")@\(UIDevice.getInfoType(fromDeviceName: MoshDeviceInfoTypeDeviceName) ?? "")"
+  @Published var keyComment = MoshKeyDefaults.comment
 
   @Published var errorMessage = ""
 

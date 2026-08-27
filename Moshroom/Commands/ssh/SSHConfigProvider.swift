@@ -38,12 +38,17 @@ fileprivate let HostKeyChangedNotFoundRequestMessage = "Public key hash: %@.\nTh
 // Pass it a host and get everything necessary to connect, but some functions still need to be setup.
 
 class SSHClientConfigProvider {
-  let device: TermDevice
+  /// The terminal this connect can talk THROUGH: prompts (password, passphrase, an unknown host
+  /// key) and the log go there. nil means headless — the app is connecting on the user's behalf
+  /// with no terminal in front of them (Moshify's library, Moshxplore's browsing), so saved keys
+  /// and saved passwords work exactly as before and anything that would need an answer fails with
+  /// a reason instead of hanging on a prompt nobody can see.
+  let device: TermDevice?
   let logger = PassthroughSubject<String, Never>()
   var logCancel: AnyCancellable? = nil
   let config: MoshConfig
 
-  fileprivate init(using device: TermDevice) throws {
+  fileprivate init(using device: TermDevice?) throws {
     self.device = device
     self.config = try MoshConfig()
 
@@ -51,7 +56,7 @@ class SSHClientConfigProvider {
   }
 
   // Return HostName, SSHClientConfig for the server
-  static func config(host: MoshSSHHost, using device: TermDevice) throws -> SSHClientConfig {
+  static func config(host: MoshSSHHost, using device: TermDevice?) throws -> SSHClientConfig {
     let prov = try SSHClientConfigProvider(using: device)
 
     let agent = prov.agent(for: host)
@@ -87,7 +92,10 @@ extension SSHClientConfigProvider {
     self.printLn(prompt.instruction, err: true)
 
     return prompt.userPrompts.publisher.tryMap { question -> String in
-      guard let input = self.device.readline(question.prompt, secure: true) else {
+      guard let device = self.device else {
+        throw CommandError(message: "This host asks for a password. Connect to it once from a terminal tab (the password can be saved with the host).")
+      }
+      guard let input = device.readline(question.prompt, secure: true) else {
         throw CommandError(message: "Couldn't read input")
       }
       return input
@@ -106,7 +114,11 @@ extension SSHClientConfigProvider {
     signers.forEach { (signer, name) in
       // NOTE We could also keep the reference and just read the key at the proper time.
       if let signer = signer as? MoshroomConfig.InputPrompter {
-        signer.setPromptOnView(device.view)
+        // No view headless: a key needing a passphrase prompt cannot be unlocked without one, and
+        // the signer reports that itself rather than us guessing here.
+        if let view = device?.view {
+          signer.setPromptOnView(view)
+        }
         signer.setLogger(self.logger, verbosity: host.logLevel ?? .none)
       }
       agent.loadKey(signer, aka: name, constraints: consts)
@@ -138,7 +150,14 @@ extension SSHClientConfigProvider {
       messageToShow = String(format: HostKeyChangedNotFoundRequestMessage, serverFingerprint)
     }
 
-    let readAnswer = self.device.readline(messageToShow, secure: false)
+    guard let device = self.device else {
+      // Headless: never accept a key nobody confirmed. The user connects once from a terminal tab,
+      // answers there, and every later app-side connect finds it in known_hosts.
+      printLn("Unknown or changed host key, and no terminal to confirm it in. Connect to this host once from a terminal tab first.", err: true)
+      return .just(SSH.InteractiveResponse.negative)
+    }
+
+    let readAnswer = device.readline(messageToShow, secure: false)
 
     if let answer = readAnswer?.lowercased() {
       if answer.starts(with: "y") || answer.isEmpty {
@@ -152,6 +171,11 @@ extension SSHClientConfigProvider {
   }
   
   fileprivate func printLn(_ string: String, err: Bool = false) {
+    guard let device else {
+      // Headless connects have no transcript to print into; the log keeps the trail.
+      MoshLog.log("ssh", string)
+      return
+    }
     let line = string.appending("\r\n")
     let s = err ? device.stream.err : device.stream.out
     fwrite(line, line.lengthOfBytes(using: .utf8), 1, s)

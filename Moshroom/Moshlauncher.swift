@@ -114,12 +114,14 @@ struct MoshlauncherView: View {
           .frame(maxWidth: 640)
           .frame(maxWidth: .infinity)
         } else {
-          // iPad / Mac: a grid of square cards.
-          LazyVGrid(columns: [GridItem(.adaptive(minimum: 220, maximum: 300), spacing: 18)], spacing: 18) {
+          // iPad / Mac: a TWO-column grid, always. An adaptive grid packed as many cards as fitted
+          // and left the remainder dangling (three across, one alone underneath); two columns keep
+          // every row balanced and the block centred, whatever the window width.
+          LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 18), count: 2), spacing: 18) {
             ForEach(items) { squareCard($0) }
           }
           .padding(28)
-          .frame(maxWidth: 900)
+          .frame(maxWidth: 720)
           .frame(maxWidth: .infinity)
         }
       }

@@ -95,6 +95,32 @@ import MoshroomConfig
     UserDefaults.standard.string(forKey: lastSummaryKey)
   }
 
+  /// What the last pass actually saw, per kind, plus what it did. The one-line summary above still
+  /// exists for the log; Settings renders THIS as one line per kind (a paragraph of counts squeezed
+  /// into a trailing label was unreadable).
+  struct SyncStatus: Codable {
+    var counts: [Item]
+    var state: String
+
+    struct Item: Codable {
+      var label: String
+      var count: Int
+    }
+  }
+
+  private static let lastStatusKey = "MoshroomCloudLastSyncStatus"
+
+  static var lastSyncStatus: SyncStatus? {
+    guard let data = UserDefaults.standard.data(forKey: lastStatusKey) else { return nil }
+    return try? JSONDecoder().decode(SyncStatus.self, from: data)
+  }
+
+  private static func _setStatus(_ status: SyncStatus) {
+    if let data = try? JSONEncoder().encode(status) {
+      UserDefaults.standard.set(data, forKey: lastStatusKey)
+    }
+  }
+
   private static func _setSummary(_ text: String) {
     UserDefaults.standard.set(text, forKey: lastSummaryKey)
     DispatchQueue.main.async { NotificationCenter.default.post(name: syncStateNotification, object: nil) }
@@ -477,6 +503,13 @@ import MoshroomConfig
     case .merged:   state = "merged across devices"
     case .empty:    state = "nothing to sync yet"
     }
+
+    var items: [SyncStatus.Item] = [.init(label: "Hosts", count: hosts), .init(label: "Keys", count: keys)]
+    if let passwords { items.append(.init(label: "Passwords", count: passwords)) }
+    if let totp { items.append(.init(label: "2FA codes", count: totp)) }
+    items.append(.init(label: "Snips", count: snips))
+    _setStatus(SyncStatus(counts: items, state: state))
+
     _setSummary(parts.joined(separator: " · ") + " — " + state)
   }
 

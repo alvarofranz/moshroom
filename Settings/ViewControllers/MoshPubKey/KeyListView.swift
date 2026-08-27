@@ -43,6 +43,15 @@ fileprivate struct KeyCard {
 }
 
 
+/// What a freshly created key is commented with: this device's name. (It used to glue a global
+/// "default user" in front of it — that setting is gone, because a user belongs to a host, not to
+/// every key this device makes.)
+enum MoshKeyDefaults {
+  static var comment: String {
+    UIDevice.getInfoType(fromDeviceName: MoshDeviceInfoTypeDeviceName) ?? "moshroom"
+  }
+}
+
 //MARK: - Key Row View
 struct KeyRow: View {
   fileprivate let card: KeyCard
@@ -303,22 +312,21 @@ struct KeyListView: View {
           Button(action: toggleNewKeyView) { Label("Add Key", systemImage: "plus") }
         }
       } else {
-        List {
-          Section {
-            ForEach(_state.list, id: \.name) {
-              KeyRow(card: $0, reloadCards: _state.reloadCards)
-            }.onDelete(perform: _state.deleteKeys)
-          } header: {
+        MoshSettingsList(
+          footer: "Secure Enclave keys never leave this device. Keychain keys live in your iCloud Keychain — end-to-end encrypted, they survive reinstalls and follow your devices.",
+          header: {
             if _state.list.contains(where: { !$0.isAccessible }) {
               HStack {
                 Image(systemName: "exclamationmark.triangle.fill").foregroundColor(.orange)
                 Text("The Private Key component of some identities is missing. The Public Key is still available so keys can be recycled at the server.")
               }
             }
-          } footer: {
-            Text("Secure Enclave keys never leave this device. Keychain keys live in your iCloud Keychain — end-to-end encrypted, they survive reinstalls and follow your devices.")
-          }.textCase(nil)
-        }
+          },
+          rows: {
+            ForEach(_state.list, id: \.name) {
+              KeyRow(card: $0, reloadCards: _state.reloadCards)
+            }.onDelete(perform: _state.deleteKeys)
+          })
       }
     }
     .alert(isPresented: $showAlert) {

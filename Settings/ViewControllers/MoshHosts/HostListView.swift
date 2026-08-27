@@ -103,22 +103,28 @@ struct HostListView: View {
           Button(action: _addHost) { Label("Add new Host", systemImage: "plus") }
         }
       } else {
-        // Search docked at the bottom (not in the nav-bar drawer), the same one-card look and
-        // autofocus as Moshvault's Passwords / 2FA. No-matches shows in place so the search stays put.
-        MoshSearchList(query: $_state.filterQuery, prompt: "Search hosts", showSearch: _state.list.count > 10, noMatches: _state.filteredList.isEmpty) {
-          ForEach(Array(_state.filteredList.enumerated()), id: \.element.alias) { index, card in
-            HostRow(card: card, reloadList: _state.reloadHosts)
-              .contextMenu(menuItems: {
-                Button(action: {
-                  _duplicateHost(card: card)
-                }, label: { Label("Duplicate", systemImage: "plus.square.on.square")})
-                Divider()
-                Button(role: .destructive, action: {
-                  _state.deleteHosts(indexSet: IndexSet([index]))
-                }, label: { Label("Delete", systemImage: "trash") })
-              })
-          }.onDelete(perform: _state.deleteHosts)
-        }
+        // The same shell Keys wears (MoshSettingsList): one inset-grouped section, a footer that
+        // explains the screen, and the docked search only once the list is long enough to want one.
+        MoshSettingsList(
+          search: $_state.filterQuery,
+          searchPrompt: "Search hosts",
+          showSearch: _state.list.count > 10,
+          noMatches: _state.filteredList.isEmpty,
+          footer: "A saved host is an alias plus how to reach it: address, user, key or password, and anything to run on connect. Quick Connect, Moshxplore, Moshify and file uploads all read this list.",
+          rows: {
+            ForEach(Array(_state.filteredList.enumerated()), id: \.element.alias) { index, card in
+              HostRow(card: card, reloadList: _state.reloadHosts)
+                .contextMenu(menuItems: {
+                  Button(action: {
+                    _duplicateHost(card: card)
+                  }, label: { Label("Duplicate", systemImage: "plus.square.on.square")})
+                  Divider()
+                  Button(role: .destructive, action: {
+                    _state.deleteHosts(indexSet: IndexSet([index]))
+                  }, label: { Label("Delete", systemImage: "trash") })
+                })
+            }.onDelete(perform: _state.deleteHosts)
+          })
       }
     }
     .moshHubChromeBack(title: "Hosts") {

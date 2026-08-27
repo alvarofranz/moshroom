@@ -127,7 +127,7 @@ fileprivate class NewKeyObservable: ObservableObject {
   }
   @Published var keyName: String = ""
   @Published var keyBits: UInt32 = 4096
-  @Published var keyComment: String = "\(MoshroomDefaults.defaultUserName() ?? "")@\(UIDevice.getInfoType(fromDeviceName: MoshDeviceInfoTypeDeviceName) ?? "")"
+  @Published var keyComment: String = MoshKeyDefaults.comment
   
   @Published var errorMessage = ""
   

@@ -31,14 +31,14 @@ enum MoshnectorMode {
 /// THE saved-host card — one builder for every host list (Quick Connect, the Moshxplore host
 /// picker): red server glyph, bold alias, the optional gray description, generous padding.
 /// Semantic colors — the app's one (dark) theme resolves them the same on every surface.
-func moshHostCardButton(alias: String, description: String) -> UIButton {
+func moshHostCardButton(alias: String, description: String, icon: String = "server.rack") -> UIButton {
   var cfg = UIButton.Configuration.filled()
   cfg.baseBackgroundColor = .secondarySystemGroupedBackground
   cfg.baseForegroundColor = .label
   cfg.background.cornerRadius = Moshstyle.cardRadius
   cfg.background.strokeColor = .separator
   cfg.background.strokeWidth = 0.5
-  cfg.image = UIImage(systemName: "server.rack", withConfiguration: UIImage.SymbolConfiguration(pointSize: 16, weight: .semibold))?
+  cfg.image = UIImage(systemName: icon, withConfiguration: UIImage.SymbolConfiguration(pointSize: 16, weight: .semibold))?
     .withTintColor(.moshroomTint, renderingMode: .alwaysOriginal)
   cfg.imagePadding = 12
   var attr = AttributeContainer()
