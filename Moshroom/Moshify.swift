@@ -131,13 +131,6 @@ enum Moshify {
     UserDefaults.standard.set(data, forKey: recentsKey)
   }
 
-  static func forgetRecent(host: String, folder: String) {
-    let entry = Recent(host: host, folder: folder)
-    let list = recents.filter { $0 != entry }
-    guard let data = try? JSONEncoder().encode(list) else { return }
-    UserDefaults.standard.set(data, forKey: recentsKey)
-  }
-
   static var configuredHost: String? {
     UserDefaults.standard.string(forKey: hostKey).flatMap { $0.isEmpty ? nil : $0 }
   }
@@ -240,11 +233,20 @@ enum MoshifyTranscoder {
 
 // MARK: - Cache + index
 
-// The on-disk library cache. Bytes live under Documents/audio/<host>/ with their ORIGINAL
-// basenames (a hash suffix only on a collision) — this folder is user-visible, so no cryptic
-// names. The index maps remotePath → local file + play history and is the identity; the file
-// name is presentation. Main-thread only.
+/// ONE cache for all of Moshify, with ONE budget. The bytes live under `Documents/audio/<host>/`
+/// with their original basenames (a hash suffix only on a collision) because that folder is
+/// user-visible in Files.app; the index maps remotePath → which host, which local file, and the play
+/// history, and IT is the identity — the file name is presentation.
+///
+/// Global on purpose (2026-08-27): it used to be built per host while the index file was shared, so
+/// constructing the cache for host A dropped host B's entries and then deleted B's files as
+/// "orphans", and switching library wiped the previous host outright. Two libraries could never
+/// coexist and the space was thrown away instead of used. Now the Music Cache setting is a budget
+/// for EVERYTHING Moshify has downloaded, whichever host or tab it came from, and the only thing
+/// that frees space is least-recently-played eviction against that budget. Main-thread only.
 final class MoshifyCache {
+
+  static let shared = MoshifyCache()
 
   struct Entry: Codable {
     let remotePath: String
@@ -255,24 +257,33 @@ final class MoshifyCache {
     /// Known only once the bytes are here (the player reads it exactly). Optional so an index
     /// written before durations existed still decodes.
     var duration: TimeInterval?
+    /// Which host's folder holds the file. Optional for the same reason: an index written before the
+    /// cache went global has no host, and those entries are reconciled away on first load rather
+    /// than guessed at.
+    var host: String?
   }
 
   private(set) var entries: [String: Entry] = [:]   // keyed by cacheKey
-  private var host: String
 
-  init(host: String) {
-    self.host = host
+  private init() {
     load()
     reconcile()
   }
 
-  private var dir: URL { Moshify.audioDirectory(host: host) }
+  private func directory(forHost host: String) -> URL { Moshify.audioDirectory(host: host) }
+
+  /// Where an entry's bytes are, or nil for a pre-global entry with no host recorded.
+  private func url(for entry: Entry) -> URL? {
+    guard let host = entry.host else { return nil }
+    return directory(forHost: host).appendingPathComponent(entry.fileName)
+  }
 
   // Everything Moshify writes must stay readable while the device is LOCKED (background playback,
   // gap downloads): the entitlement default is Complete protection, which would kill playback
   // seconds after lock. New files inherit the directory's class.
-  private func ensureDirectory() {
+  private func ensureDirectory(forHost host: String) {
     let fm = FileManager.default
+    let dir = directory(forHost: host)
     try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
     try? fm.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
                           ofItemAtPath: dir.path)
@@ -296,46 +307,60 @@ final class MoshifyCache {
     try? data.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
   }
 
-  // Drop index entries whose file vanished (the user can delete from Files.app) and files with no
-  // entry (a stale run); re-stat sizes so the LRU math is honest.
+  /// Make the index and the disk agree, across EVERY host: drop entries whose file vanished (the
+  /// user can delete from Files.app), delete files no entry claims (a stale run, or an index written
+  /// before the cache went global), re-stat sizes so the LRU maths is honest — and then hold the
+  /// budget, so lowering the Music Cache setting takes effect on the next launch.
   private func reconcile() {
-    ensureDirectory()
     let fm = FileManager.default
     var keep: [String: Entry] = [:]
-    var referenced = Set<String>()
+    var referenced: [String: Set<String>] = [:]   // host → file names an entry claims
     for (key, var e) in entries {
-      let url = dir.appendingPathComponent(e.fileName)
-      guard let attrs = try? fm.attributesOfItem(atPath: url.path),
-            let size = attrs[.size] as? NSNumber else { continue }
+      guard let url = url(for: e), let host = e.host,
+            let attrs = try? fm.attributesOfItem(atPath: url.path),
+            let size = attrs[.size] as? NSNumber
+      else { continue }
       e.size = size.uint64Value
       keep[key] = e
-      referenced.insert(e.fileName)
+      referenced[host, default: []].insert(e.fileName)
     }
     let dropped = entries.count - keep.count
     entries = keep
-    if let onDisk = try? fm.contentsOfDirectory(atPath: dir.path) {
-      for name in onDisk where !referenced.contains(name) {
+
+    // Sweep every host folder we have, not just the one in use.
+    let root = Moshify.audioRootDirectory
+    let hosts = (try? fm.contentsOfDirectory(atPath: root.path)) ?? []
+    for host in hosts {
+      let dir = root.appendingPathComponent(host, isDirectory: true)
+      guard let onDisk = try? fm.contentsOfDirectory(atPath: dir.path) else { continue }
+      let claimed = referenced[host] ?? []
+      for name in onDisk where !claimed.contains(name) {
         try? fm.removeItem(at: dir.appendingPathComponent(name))
+      }
+      // A host folder nothing refers to any more goes with it.
+      if (try? fm.contentsOfDirectory(atPath: dir.path))?.isEmpty == true {
+        try? fm.removeItem(at: dir)
       }
     }
     save()
     if dropped > 0 { MoshLog.log("moshify", "cache reconcile dropped \(dropped) stale entries") }
+    evict(toFit: Moshify.cacheCapBytes, protected: [])
   }
 
   var totalSize: UInt64 { entries.values.reduce(0) { $0 + $1.size } }
 
   func localURL(for track: MoshifyTrack) -> URL? {
-    guard let e = entries[track.cacheKey] else { return nil }
-    return dir.appendingPathComponent(e.fileName)
+    entries[track.cacheKey].flatMap { url(for: $0) }
   }
 
   func isCached(_ track: MoshifyTrack) -> Bool { entries[track.cacheKey] != nil }
 
   // The local name a download should land under: the original basename, or (on a collision with a
-  // DIFFERENT remote path) the basename with a short hash suffix — still readable in Files.app.
-  func localFileName(for track: MoshifyTrack) -> String {
+  // DIFFERENT remote path in the SAME host folder) the basename with a short hash suffix — still
+  // readable in Files.app.
+  func localFileName(for track: MoshifyTrack, host: String) -> String {
     let taken = entries.values.contains {
-      $0.fileName == track.fileName && $0.remotePath != track.remotePath
+      $0.host == host && $0.fileName == track.fileName && $0.remotePath != track.remotePath
     }
     guard taken else { return track.fileName }
     let stem = (track.fileName as NSString).deletingPathExtension
@@ -343,19 +368,20 @@ final class MoshifyCache {
     return track.ext.isEmpty ? "\(stem)-\(suffix)" : "\(stem)-\(suffix).\(track.ext)"
   }
 
-  func destinationURL(for track: MoshifyTrack) -> URL {
-    ensureDirectory()
-    return dir.appendingPathComponent(localFileName(for: track))
+  func destinationURL(for track: MoshifyTrack, host: String) -> URL {
+    ensureDirectory(forHost: host)
+    return directory(forHost: host).appendingPathComponent(localFileName(for: track, host: host))
   }
 
-  func noteDownloaded(_ track: MoshifyTrack, at url: URL) {
+  func noteDownloaded(_ track: MoshifyTrack, at url: URL, host: String) {
     let size = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? NSNumber
     entries[track.cacheKey] = Entry(remotePath: track.remotePath,
                                     fileName: url.lastPathComponent,
                                     size: size?.uint64Value ?? track.size,
                                     lastPlayed: entries[track.cacheKey]?.lastPlayed,
                                     playCount: entries[track.cacheKey]?.playCount ?? 0,
-                                    duration: entries[track.cacheKey]?.duration)
+                                    duration: entries[track.cacheKey]?.duration,
+                                    host: host)
     save()
   }
 
@@ -379,26 +405,29 @@ final class MoshifyCache {
   }
 
   func remove(_ track: MoshifyTrack) {
-    if let e = entries.removeValue(forKey: track.cacheKey) {
-      try? FileManager.default.removeItem(at: dir.appendingPathComponent(e.fileName))
-      save()
-    }
+    guard let e = entries.removeValue(forKey: track.cacheKey) else { return }
+    if let url = url(for: e) { try? FileManager.default.removeItem(at: url) }
+    save()
   }
 
-  // Drop entries whose remote file is gone from the library (deleted on the server outside us).
-  func purge(notIn tracks: [MoshifyTrack]) {
+  /// Drop what this library no longer has (a file deleted on the server outside us). Scoped to the
+  /// library that was just scanned — the same index holds every other host's tracks, and a scan of
+  /// one folder says nothing about them.
+  func purge(notIn tracks: [MoshifyTrack], host: String, folder: String) {
     let live = Set(tracks.map { $0.cacheKey })
-    let stale = entries.keys.filter { !live.contains($0) }
-    for key in stale {
-      if let e = entries.removeValue(forKey: key) {
-        try? FileManager.default.removeItem(at: dir.appendingPathComponent(e.fileName))
-      }
+    let prefix = folder.hasSuffix("/") ? folder : folder + "/"
+    let stale = entries.filter { key, e in
+      e.host == host && !live.contains(key) && (e.remotePath.hasPrefix(prefix) || e.remotePath == folder)
+    }
+    for (key, e) in stale {
+      entries.removeValue(forKey: key)
+      if let url = url(for: e) { try? FileManager.default.removeItem(at: url) }
     }
     if !stale.isEmpty { save(); MoshLog.log("moshify", "purged \(stale.count) tracks gone from the server") }
   }
 
   // Least-recently-played first, never a protected key (playing / downloading / the prefetch
-  // window). Returns how many bytes were freed.
+  // window). One budget for every host. Returns how many bytes were freed.
   @discardableResult
   func evict(toFit cap: UInt64, protected: Set<String>) -> UInt64 {
     var freed: UInt64 = 0
@@ -408,7 +437,7 @@ final class MoshifyCache {
         ($0.value.lastPlayed ?? .distantPast) < ($1.value.lastPlayed ?? .distantPast)
       }) else { break }
       freed += victim.value.size
-      try? FileManager.default.removeItem(at: dir.appendingPathComponent(victim.value.fileName))
+      if let url = url(for: victim.value) { try? FileManager.default.removeItem(at: url) }
       entries.removeValue(forKey: victim.key)
     }
     if freed > 0 { save(); MoshLog.log("moshify", "LRU evicted \(freed) bytes") }
@@ -422,13 +451,6 @@ final class MoshifyCache {
       protected.contains(kv.key) ? sum + kv.value.size : sum
     }
     return protectedBytes + planned + incoming <= cap
-  }
-
-  // The whole host library goes away (host/folder changed in setup).
-  func wipe() {
-    try? FileManager.default.removeItem(at: dir)
-    entries = [:]
-    save()
   }
 }
 
@@ -900,7 +922,7 @@ final class MoshifyEngine: NSObject, AVAudioPlayerDelegate {
   var currentIndex: Int? { currentTrack.flatMap { t in tracks.firstIndex(of: t) } }
 
   private let session = MoshifySession()
-  private var cache: MoshifyCache?
+  private var cache: MoshifyCache { .shared }
   private var player: AVAudioPlayer?
   private var intendsToPlay = false
   private var upcoming: [MoshifyTrack] = []
@@ -932,30 +954,26 @@ final class MoshifyEngine: NSObject, AVAudioPlayerDelegate {
   func configure(hostAlias: String, folder: String, owner: UUID) {
     let handover = (ownerKey != owner)
     ownerKey = owner
-    let previousHost = Moshify.configuredHost
-    if let previousHost, previousHost != hostAlias {
-      // A different host: the old library is meaningless. Clean and ordered.
-      MoshifyCache(host: previousHost).wipe()
-    }
     UserDefaults.standard.set(hostAlias, forKey: Moshify.hostKey)
     UserDefaults.standard.set(folder, forKey: Moshify.folderKey)
     stopPlayback()
     tracks = []
-    cache = MoshifyCache(host: hostAlias)
+    // The cache is global and keeps what it holds: pointing this tab at another library does not
+    // throw away the last one's downloads. The budget alone decides what goes, and only by
+    // least-recently-played.
     MoshLog.log("moshify", "configured host + folder")
     if handover { NotificationCenter.default.post(name: .moshifyOwnerDidChange, object: nil) }
     refreshLibrary()
   }
 
   /// What this track lasts, if the file has ever been on the device (see MoshifyCache.noteDuration).
-  func duration(of track: MoshifyTrack) -> TimeInterval? { cache?.duration(of: track) }
+  func duration(of track: MoshifyTrack) -> TimeInterval? { cache.duration(of: track) }
 
   func refreshLibrary() {
     guard let host = Moshify.configuredHost, let folder = Moshify.configuredFolder else {
       state = .idle
       return
     }
-    if cache == nil { cache = MoshifyCache(host: host) }
     state = .connecting
     session.configure(hostAlias: host, device: deviceProvider?())
     session.scan(folder: folder) { [weak self] result in
@@ -967,7 +985,7 @@ final class MoshifyEngine: NSObject, AVAudioPlayerDelegate {
           Moshify.noteRecent(host: host, folder: folder)
         }
         self.tracks = found
-        self.cache?.purge(notIn: found)
+        self.cache.purge(notIn: found, host: host, folder: folder)
         if let current = self.currentTrack, !found.contains(current) {
           self.stopPlayback()
         }
@@ -983,7 +1001,7 @@ final class MoshifyEngine: NSObject, AVAudioPlayerDelegate {
     }
   }
 
-  func isCached(_ track: MoshifyTrack) -> Bool { cache?.isCached(track) ?? false }
+  func isCached(_ track: MoshifyTrack) -> Bool { cache.isCached(track) }
 
   // MARK: transport
 
@@ -1045,7 +1063,7 @@ final class MoshifyEngine: NSObject, AVAudioPlayerDelegate {
       guard let self else { return }
       switch result {
       case .success:
-        self.cache?.remove(track)
+        self.cache.remove(track)
         self.tracks.removeAll { $0 == track }
         self.bag.removeAll { $0 == track.cacheKey }
         if self.upcoming.contains(track) { self.rebuildUpcoming() }
@@ -1081,16 +1099,17 @@ final class MoshifyEngine: NSObject, AVAudioPlayerDelegate {
   // MARK: playback internals
 
   private func startOrFetch(track: MoshifyTrack) {
-    guard let cache else { return }
     if let url = cache.localURL(for: track) {
       startPlayback(track: track, url: url)
       return
     }
+    // The host owns the folder the bytes land in, so a download cannot start without knowing it.
+    guard let host = Moshify.configuredHost else { return }
     state = .downloading(track, 0)
     beginGapTaskIfNeeded()
     session.updateDevice(deviceProvider?())
     session.cancelPrefetches()
-    let destination = cache.destinationURL(for: track)
+    let destination = cache.destinationURL(for: track, host: host)
     session.download(track: track, to: destination, priority: .user, progress: { [weak self] frac in
       guard let self, case .downloading(let t, _) = self.state, t == track else { return }
       self.state = .downloading(track, frac)
@@ -1099,9 +1118,7 @@ final class MoshifyEngine: NSObject, AVAudioPlayerDelegate {
       guard let self else { return }
       switch result {
       case .success(let url):
-        self.cache?.noteDownloaded(track, at: url)
-        self.noteDurationOfLocalFile(at: url, for: track)
-        self.evictAroundWindow()
+        self.noteLanded(track, at: url, host: host)
         self.startPlayback(track: track, url: url)
       case .failure(let e):
         self.endGapTask()
@@ -1126,8 +1143,8 @@ final class MoshifyEngine: NSObject, AVAudioPlayerDelegate {
         state = .paused(track)
       }
       endGapTask()
-      cache?.notePlayed(track)
-      cache?.noteDuration(p.duration, for: track)
+      cache.notePlayed(track)
+      cache.noteDuration(p.duration, for: track)
       rebuildUpcoming()
       updateNowPlaying()
       installRemoteCommandsIfNeeded()
@@ -1136,7 +1153,7 @@ final class MoshifyEngine: NSObject, AVAudioPlayerDelegate {
       // but never loop forever. The OSStatus goes to the log because "which codec" is exactly what
       // one needs to know here.
       MoshLog.log("moshify", "player init failed (\((error as NSError).code)) for .\(url.pathExtension) — skipping")
-      cache?.remove(track)
+      cache.remove(track)
       consecutiveFailures += 1
       if consecutiveFailures >= 3 {
         endGapTask()
@@ -1176,7 +1193,7 @@ final class MoshifyEngine: NSObject, AVAudioPlayerDelegate {
     session.cancelPrefetches()
     upcoming = []
     prefetch = nil
-    guard let cache, tracks.count > 1 else { return }
+    guard tracks.count > 1, let host = Moshify.configuredHost else { return }
     let want = min(Moshify.prefetchWindow, tracks.count - 1)
     if shuffle {
       var taken = Set<String>()
@@ -1211,7 +1228,7 @@ final class MoshifyEngine: NSObject, AVAudioPlayerDelegate {
         break
       }
       planned += track.size
-      let destination = cache.destinationURL(for: track)
+      let destination = cache.destinationURL(for: track, host: host)
       session.download(track: track, to: destination, priority: .prefetch, progress: { [weak self] frac in
         guard let self else { return }
         self.prefetch = (track, frac)
@@ -1220,9 +1237,7 @@ final class MoshifyEngine: NSObject, AVAudioPlayerDelegate {
         guard let self else { return }
         self.prefetch = nil
         if case .success(let url) = result {
-          self.cache?.noteDownloaded(track, at: url)
-          self.noteDurationOfLocalFile(at: url, for: track)
-          self.evictAroundWindow()
+          self.noteLanded(track, at: url, host: host)
           NotificationCenter.default.post(name: .moshifyLibraryDidChange, object: nil)
         }
       })
@@ -1230,23 +1245,30 @@ final class MoshifyEngine: NSObject, AVAudioPlayerDelegate {
     evictAroundWindow()
   }
 
+  /// A track's bytes are here: index it, learn its length, and hold the budget. The same three steps
+  /// whether the user tapped it or the prefetch window brought it in.
+  private func noteLanded(_ track: MoshifyTrack, at url: URL, host: String) {
+    cache.noteDownloaded(track, at: url, host: host)
+    noteDurationOfLocalFile(at: url, for: track)
+    evictAroundWindow()
+  }
+
   /// Read a landed file's length off the disk (no playback needed) and remember it, so the row shows
   /// "0:03 · 11 KB" the moment the track is on the device. Off the main thread — opening a file to
   /// read its length is cheap but not free.
   private func noteDurationOfLocalFile(at url: URL, for track: MoshifyTrack) {
-    guard cache?.duration(of: track) == nil else { return }
+    guard cache.duration(of: track) == nil else { return }
     DispatchQueue.global(qos: .utility).async { [weak self] in
       guard let seconds = MoshifyTranscoder.duration(of: url) else { return }
       DispatchQueue.main.async {
         guard let self else { return }
-        self.cache?.noteDuration(seconds, for: track)
+        self.cache.noteDuration(seconds, for: track)
         NotificationCenter.default.post(name: .moshifyLibraryDidChange, object: nil)
       }
     }
   }
 
   private func evictAroundWindow() {
-    guard let cache else { return }
     var protected = Set(upcoming.map { $0.cacheKey })
     if let c = currentTrack { protected.insert(c.cacheKey) }
     if case .downloading(let t, _) = state { protected.insert(t.cacheKey) }
@@ -1314,7 +1336,7 @@ final class MoshifyEngine: NSObject, AVAudioPlayerDelegate {
     DispatchQueue.main.async { [weak self] in
       guard let self else { return }
       self.audioSessionConfigured = false
-      guard let track = self.currentTrack, let url = self.cache?.localURL(for: track) else { return }
+      guard let track = self.currentTrack, let url = self.cache.localURL(for: track) else { return }
       let position = self.player?.currentTime ?? 0
       self.player = try? AVAudioPlayer(contentsOf: url)
       self.player?.delegate = self
@@ -1627,7 +1649,6 @@ final class MoshifyTabController: UIViewController, MoshroomTabPage,
   private let shuffleButton = moshkeyRoundButton()
   private let playButton = moshkeyRoundButton(diameter: 56)
   private let nextButton = moshkeyRoundButton()
-  private let setupChip = moshkeyRoundButton(diameter: 34)
 
   // Setup chrome (built per step into `setupContainer`).
   private let setupContainer = UIView()
@@ -1764,18 +1785,12 @@ final class MoshifyTabController: UIViewController, MoshroomTabPage,
     spinner.hidesWhenStopped = true
     view.addSubview(spinner)
 
-    // The small chip that re-runs setup (change host / folder), tucked top-right of the page.
-    setupChip.layer.shadowOpacity = 0
-    setupChip.setMoshIcon("folder", pointSize: 14, weight: .semibold)
-    setupChip.addAction(UIAction { [weak self] _ in self?._startSetup() }, for: .touchUpInside)
-    setupChip.translatesAutoresizingMaskIntoConstraints = false
-    view.addSubview(setupChip)
-
+    // No chrome row of its own: choosing another library is the folder key in the top bar (see
+    // Moshkeys.install), which is where every other Moshroom control lives. The list starts right
+    // under that bar instead of below a strip built for one icon.
     NSLayoutConstraint.activate([
-      setupChip.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 6),
-      setupChip.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -16),
-
-      table.topAnchor.constraint(equalTo: setupChip.bottomAnchor, constant: 6),
+      table.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor,
+                                 constant: moshroomTopBarClearance),
       table.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 16),
       table.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -16),
       table.bottomAnchor.constraint(equalTo: bottomBar.topAnchor),
@@ -1829,7 +1844,7 @@ final class MoshifyTabController: UIViewController, MoshroomTabPage,
   private func _show(step: Step) {
     self.step = step
     let player = (step == .player)
-    [table, bottomBar, setupChip].forEach { $0.isHidden = !player }
+    [table, bottomBar].forEach { $0.isHidden = !player }
     setupContainer.isHidden = player
     statusLabel.isHidden = !player
     if !player {
@@ -1841,6 +1856,9 @@ final class MoshifyTabController: UIViewController, MoshroomTabPage,
     }
     _syncControls()
   }
+
+  /// Choose another library from this tab (the folder key in the top bar).
+  func moshroomChooseLibrary() { _startSetup() }
 
   private func _startSetup() {
     setupHost = nil

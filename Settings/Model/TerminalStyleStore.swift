@@ -129,15 +129,6 @@ private struct StoreData: Codable {
 
   // MARK: - Delete
 
-  func deleteStyle(_ id: UUID) {
-    guard id != builtInDefault.id else { return }
-    styles.removeAll { $0.id == id }
-    if selectedStyleID == id {
-      selectedStyleID = nil
-    }
-    save()
-  }
-
   // MARK: - Persistence
 
   private func load() {

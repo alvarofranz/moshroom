@@ -120,7 +120,7 @@ struct SettingsView: View {
       } header: {
         Text("Moshify")
       } footer: {
-        Text("How much downloaded music to keep on this device.")
+        Text("One budget for all your music, whichever server or tab it came from. When it is full, the tracks you played longest ago make room for the ones playing next.")
       }
 
       Section {

@@ -107,6 +107,9 @@ class SpaceController: UIViewController {
   // The music controls in the top bar, left of the launcher key (created in Moshkeys.install):
   // shown while something is playing and you are looking at some other tab.
   var moshroomMiniPlayer: MoshifyMiniPlayer?
+  // "Choose another library", the same size as the launcher key it sits beside: shown only while a
+  // music tab is the one on screen.
+  var moshroomMusicFolderButton: UIButton?
   var stuckKeyCode: KeyCode? = nil
 
   private var _snippetsVC: SnippetsViewController? = nil
@@ -187,7 +190,7 @@ class SpaceController: UIViewController {
     moshroomSyncLiveButton()
     moshroomUpdateTabLabel()
     moshroomSyncQuickKeysVisibility()
-    moshroomSyncMoshifyMini()
+    moshroomSyncMusicChrome()
     moshroomClaimKeyboardIfPageHasNoInput()
   }
 
@@ -569,7 +572,7 @@ class SpaceController: UIViewController {
   }
 
   @objc func _moshifyDidChange() {
-    moshroomSyncMoshifyMini()
+    moshroomSyncMusicChrome()
   }
 
   @objc func _terminalTailingChanged(_ n: Notification) {
@@ -585,16 +588,28 @@ class SpaceController: UIViewController {
 
   /// Show the chip exactly while the visible terminal is scrolled away from its live end. Called on
   /// every tailing change and after any tab switch (the new tab's state is its own).
-  /// The top-bar music controls: visible while the engine has a track and you are looking at any tab
-  /// OTHER than the one playing it — including another music tab, which shows its own picker and has
-  /// no controls of its own. Called from the one place that knows the visible tab changed, plus the
-  /// engine's own notifications.
-  func moshroomSyncMoshifyMini() {
+  /// The music chrome in the top bar: the controls, visible while the engine has a track and you are
+  /// looking at any tab OTHER than the one playing it (including another music tab, which shows its
+  /// own picker and has no controls of its own); and the folder key, visible only while a music tab
+  /// is on screen. Called from the one place that knows the visible tab changed, plus the engine's
+  /// own notifications.
+  func moshroomSyncMusicChrome() {
+    let onMusicTab = _currentKey.map { moshroomTabKind(for: $0) == .moshify } ?? false
+    if let folder = moshroomMusicFolderButton, folder.isHidden == onMusicTab {
+      folder.isHidden = !onMusicTab
+    }
     guard let mini = moshroomMiniPlayer else { return }
     let onPlayingTab = (_currentKey != nil && _currentKey == MoshifyEngine.shared.ownerKey)
     let show = mini.sync() && !onPlayingTab
     if mini.isHidden != !show { mini.isHidden = !show }
     if show { view.bringSubviewToFront(mini.superview ?? mini) }
+  }
+
+  /// The folder key in the top bar: let THIS music tab pick another library.
+  func moshroomChooseMusicLibrary() {
+    guard let key = _currentKey, moshroomTabKind(for: key) == .moshify,
+          let page = _pageControllers[key] as? MoshifyTabController else { return }
+    page.moshroomChooseLibrary()
   }
 
   /// Bring the tab that owns the music on screen (tapping the title in the top bar).
@@ -1590,11 +1605,6 @@ extension SpaceController {
     _installPage(page, direction: .forward, animated: false)
   }
 
-  /// The key of the first open tab of a kind, if any — the launcher uses it to focus a singleton
-  /// tab (Moshify) instead of opening a second one.
-  func moshroomFirstTab(ofKind kind: MoshroomTabKind) -> UUID? {
-    _viewportsKeys.first { moshroomTabKind(for: $0) == kind }
-  }
 }
 
 // MARK: SnippetContext

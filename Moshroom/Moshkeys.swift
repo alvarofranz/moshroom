@@ -72,7 +72,19 @@ enum Moshkeys {
     let mini = MoshifyMiniPlayer()
     mini.isHidden = true
     mini.onOpen = { [weak sc] in sc?.moshroomOpenPlayingMusicTab() }
-    let trailing = UIStackView(arrangedSubviews: [mini, launcher])
+
+    // "Choose another library", shown ONLY on a music tab and sized like the launcher key beside it.
+    // It used to be a small chip on a strip of its own inside the Moshify page — a whole row for one
+    // icon, which is exactly the kind of chrome this app does not do.
+    let musicFolder = moshkeyRoundButton()
+    musicFolder.setMoshIcon("folder")
+    musicFolder.translatesAutoresizingMaskIntoConstraints = false
+    musicFolder.isHidden = true
+    musicFolder.accessibilityLabel = "Choose another library"
+    musicFolder.addAction(UIAction { [weak sc] _ in sc?.moshroomChooseMusicLibrary() }, for: .touchUpInside)
+    sc.moshroomMusicFolderButton = musicFolder
+
+    let trailing = UIStackView(arrangedSubviews: [mini, musicFolder, launcher])
     trailing.axis = .horizontal
     trailing.alignment = .center
     trailing.spacing = 10
@@ -158,6 +170,11 @@ enum Moshkeys {
 /// A UIButton that renders the same on iOS and Mac Catalyst. On Mac, a `.system` button adopts
 /// the native Mac chrome (a bordered capsule + washed-out icons) that clashes with our iOS-style
 /// custom buttons; `.custom` keeps the app looking like its iPhone/iPad self.
+/// How much room the floating top bar takes: its key diameter plus the air above and below it. A
+/// full-screen page that draws its own content under the bar (the Moshify list) measures from here,
+/// so the two can never drift apart.
+let moshroomTopBarClearance: CGFloat = 62
+
 /// A symbol image padded to a FIXED width, centred, so a column of rows lines its titles up no
 /// matter how wide each glyph is (a music note is narrow, a terminal is wide). Template-rendered, so
 /// the caller's tint still applies.
