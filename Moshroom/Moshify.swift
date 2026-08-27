@@ -661,11 +661,19 @@ final class MoshifyEngine: NSObject, AVAudioPlayerDelegate {
     case playing(MoshifyTrack)
     case paused(MoshifyTrack)
     case error(String)                        // tracks retained so the list still renders
+
+    // The state's SHAPE, download fraction ignored: stateDidChange fires on shape changes only,
+    // while fraction ticks ride the throttled progress notification — otherwise every SFTP chunk
+    // of a blocking fetch would reload the whole player UI.
+    var shape: State {
+      if case .downloading(let t, _) = self { return .downloading(t, 0) }
+      return self
+    }
   }
 
   private(set) var state: State = .idle {
     didSet {
-      guard state != oldValue else { return }
+      guard state.shape != oldValue.shape else { return }
       NotificationCenter.default.post(name: .moshifyStateDidChange, object: nil)
     }
   }
