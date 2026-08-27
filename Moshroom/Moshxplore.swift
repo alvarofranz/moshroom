@@ -143,7 +143,8 @@ enum MoshxplorePreview {
   // Certainly-not-text formats — never fetched for a text preview.
   private static let binaryExt: Set<String> = [
     "pdf", "zip", "tar", "gz", "tgz", "bz2", "xz", "zst", "lz4", "br", "7z", "rar", "jar",
-    "mp3", "wav", "flac", "aac", "m4a", "ogg", "mp4", "mov", "mkv", "avi", "webm",
+    "mp3", "wav", "flac", "aac", "m4a", "ogg", "oga", "opus", "aiff", "aif",
+    "mp4", "mov", "mkv", "avi", "webm",
     "ttf", "otf", "woff", "woff2", "eot", "ico", "icns", "psd",
     "exe", "dll", "dylib", "so", "a", "o", "class", "pyc", "wasm",
     "sqlite", "sqlite3", "db", "realm", "pack", "idx",
@@ -1707,7 +1708,7 @@ final class MoshxploreView: UIView {
     case "pdf": return "doc.richtext"
     case "zip", "tar", "gz", "tgz", "bz2", "xz", "7z", "rar": return "archivebox"
     case "mp4", "mov", "mkv", "avi", "webm": return "film"
-    case "mp3", "wav", "flac", "aac", "m4a", "ogg": return "music.note"
+    case "mp3", "wav", "flac", "aac", "m4a", "ogg", "oga", "opus", "aiff", "aif": return "music.note"
     case "json", "yml", "yaml", "xml", "toml", "ini", "conf": return "curlybraces"
     case "md", "txt", "log", "rtf": return "doc.text"
     case "swift", "c", "h", "m", "cpp", "py", "js", "ts", "go", "rs", "rb", "java", "sh": return "chevron.left.forwardslash.chevron.right"

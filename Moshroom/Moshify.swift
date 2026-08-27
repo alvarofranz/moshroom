@@ -54,11 +54,13 @@ struct MoshifyTrack: Equatable {
 enum MoshifyError: LocalizedError {
   case notConfigured
   case timeout
+  case cannotConvert(String)
 
   var errorDescription: String? {
     switch self {
     case .notConfigured: return "Moshify is not set up yet."
     case .timeout: return "Connection timed out."
+    case .cannotConvert(let name): return "Could not convert \(name) into a playable format."
     }
   }
 }
@@ -66,8 +68,23 @@ enum MoshifyError: LocalizedError {
 // MARK: - Constants, defaults, notifications
 
 enum Moshify {
-  // What counts as music. Deliberately audio-only — no video player in Moshroom.
-  static let audioExtensions: Set<String> = ["mp3", "m4a", "aac", "flac", "wav", "aiff"]
+  // What counts as music. Deliberately audio-only — no video player in Moshroom. Every one of these
+  // is decoded by Core Audio itself, which is why the list is short and why it is a LIST: `.opus`
+  // (Opus in an Ogg container) plays, measured on device — but Ogg-Vorbis does not, so `.ogg`/`.oga`
+  // stay out rather than offering tracks that would fail at the first note.
+  static let audioExtensions: Set<String> = ["mp3", "m4a", "aac", "flac", "wav", "aiff", "opus"]
+  /// Extensions Core Audio can OPEN but not PLAY. Measured, not assumed: `AVAudioPlayer` reads an
+  /// Ogg-Opus file's duration and format happily and then returns false from `play()`, while
+  /// ExtAudioFile decodes the very same file to PCM without complaint. So an Opus track is
+  /// transcoded ONCE, when it lands, into the m4a the player can actually play — which keeps the
+  /// whole player (progress, seek, lock-screen controls, gapless advance) on the single code path it
+  /// already had, instead of growing a second playback engine just for one codec.
+  static let transcodeExtensions: Set<String> = ["opus"]
+
+  static func needsTranscode(_ fileName: String) -> Bool {
+    transcodeExtensions.contains((fileName as NSString).pathExtension.lowercased())
+  }
+
   static let scanDepth = 5
   static let prefetchWindow = 10
 
@@ -169,6 +186,55 @@ extension Notification.Name {
   static let moshifyStateDidChange = Notification.Name("MoshroomMoshifyStateDidChange")
   static let moshifyLibraryDidChange = Notification.Name("MoshroomMoshifyLibraryDidChange")
   static let moshifyProgressDidChange = Notification.Name("MoshroomMoshifyProgressDidChange")
+}
+
+// MARK: - Transcode
+
+/// Turns a downloaded file the player cannot play into one it can, in place: an AVAssetExportSession
+/// to m4a (AAC), which is native everywhere, keeps the size in the same ballpark as the Opus source
+/// and leaves seeking and duration working exactly as before. Runs off the SFTP worker so a long
+/// export never holds the connection, and on ANY failure the original is kept and reported — a track
+/// that cannot be converted is skipped honestly rather than silently replaced by nothing.
+enum MoshifyTranscoder {
+
+  /// Convert if needed and hand back the file to store. Calls back on the main queue.
+  static func prepare(_ url: URL, completion: @escaping (Result<URL, Error>) -> Void) {
+    guard Moshify.needsTranscode(url.lastPathComponent) else {
+      DispatchQueue.main.async { completion(.success(url)) }
+      return
+    }
+    let output = url.deletingPathExtension().appendingPathExtension("m4a")
+    let asset = AVURLAsset(url: url)
+    guard let export = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetAppleM4A) else {
+      DispatchQueue.main.async { completion(.failure(MoshifyError.cannotConvert(url.lastPathComponent))) }
+      return
+    }
+    try? FileManager.default.removeItem(at: output)
+    export.outputURL = output
+    export.outputFileType = .m4a
+    export.exportAsynchronously {
+      let fm = FileManager.default
+      guard export.status == .completed, fm.fileExists(atPath: output.path) else {
+        MoshLog.log("moshify", "transcode failed: \(export.error?.localizedDescription ?? "unknown")")
+        try? fm.removeItem(at: output)
+        DispatchQueue.main.async { completion(.failure(MoshifyError.cannotConvert(url.lastPathComponent))) }
+        return
+      }
+      // The Opus original has served its purpose; the cache keeps exactly one file per track.
+      try? fm.removeItem(at: url)
+      try? fm.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
+                            ofItemAtPath: output.path)
+      MoshLog.log("moshify", "transcoded \(url.pathExtension) → m4a")
+      DispatchQueue.main.async { completion(.success(output)) }
+    }
+  }
+
+  /// The exact length of a local file, read without playing it — so a row shows its duration as soon
+  /// as the track is on the device, not only after it has been played once.
+  static func duration(of url: URL) -> TimeInterval? {
+    guard let file = try? AVAudioFile(forReading: url), file.fileFormat.sampleRate > 0 else { return nil }
+    return Double(file.length) / file.fileFormat.sampleRate
+  }
 }
 
 // MARK: - Cache + index
@@ -515,7 +581,16 @@ final class MoshifySession {
                 try? fm.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
                                       ofItemAtPath: destination.path)
                 try? fm.removeItem(at: staging)
-                DispatchQueue.main.async { completion(.success(destination)) }
+                // The file is here; make sure it is one the player can actually play (Opus is not,
+                // see MoshifyTranscoder) before anyone is told it landed.
+                MoshifyTranscoder.prepare(destination) { result in
+                  switch result {
+                  case .success(let playable): completion(.success(playable))
+                  case .failure(let error):
+                    try? FileManager.default.removeItem(at: destination)
+                    completion(.failure(error))
+                  }
+                }
                 done(nil)
               } catch {
                 try? fm.removeItem(at: staging)
@@ -1024,6 +1099,7 @@ final class MoshifyEngine: NSObject, AVAudioPlayerDelegate {
       switch result {
       case .success(let url):
         self.cache?.noteDownloaded(track, at: url)
+        self.noteDurationOfLocalFile(at: url, for: track)
         self.evictAroundWindow()
         self.startPlayback(track: track, url: url)
       case .failure(let e):
@@ -1055,13 +1131,15 @@ final class MoshifyEngine: NSObject, AVAudioPlayerDelegate {
       updateNowPlaying()
       installRemoteCommandsIfNeeded()
     } catch {
-      // A corrupt or purged file: evict it and skip on — but never loop forever.
-      MoshLog.log("moshify", "player init failed, skipping track")
+      // A corrupt file, a purged one, or a format this device cannot decode: evict it and skip on,
+      // but never loop forever. The OSStatus goes to the log because "which codec" is exactly what
+      // one needs to know here.
+      MoshLog.log("moshify", "player init failed (\((error as NSError).code)) for .\(url.pathExtension) — skipping")
       cache?.remove(track)
       consecutiveFailures += 1
       if consecutiveFailures >= 3 {
         endGapTask()
-        state = .error("Several tracks failed to play.")
+        state = .error("Several tracks could not be played. They may be in a format this device cannot decode.")
         return
       }
       advance()
@@ -1142,12 +1220,28 @@ final class MoshifyEngine: NSObject, AVAudioPlayerDelegate {
         self.prefetch = nil
         if case .success(let url) = result {
           self.cache?.noteDownloaded(track, at: url)
+          self.noteDurationOfLocalFile(at: url, for: track)
           self.evictAroundWindow()
           NotificationCenter.default.post(name: .moshifyLibraryDidChange, object: nil)
         }
       })
     }
     evictAroundWindow()
+  }
+
+  /// Read a landed file's length off the disk (no playback needed) and remember it, so the row shows
+  /// "0:03 · 11 KB" the moment the track is on the device. Off the main thread — opening a file to
+  /// read its length is cheap but not free.
+  private func noteDurationOfLocalFile(at url: URL, for track: MoshifyTrack) {
+    guard cache?.duration(of: track) == nil else { return }
+    DispatchQueue.global(qos: .utility).async { [weak self] in
+      guard let seconds = MoshifyTranscoder.duration(of: url) else { return }
+      DispatchQueue.main.async {
+        guard let self else { return }
+        self.cache?.noteDuration(seconds, for: track)
+        NotificationCenter.default.post(name: .moshifyLibraryDidChange, object: nil)
+      }
+    }
   }
 
   private func evictAroundWindow() {

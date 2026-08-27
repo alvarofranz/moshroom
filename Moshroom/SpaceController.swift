@@ -188,6 +188,21 @@ class SpaceController: UIViewController {
     moshroomUpdateTabLabel()
     moshroomSyncQuickKeysVisibility()
     moshroomSyncMoshifyMini()
+    moshroomClaimKeyboardIfPageHasNoInput()
+  }
+
+  /// The hardware keyboard needs an OWNER. A terminal tab hands the responder to its own input path
+  /// (`_attachInputToCurrentTerm`), but a music or explorer page has no input of its own — and with
+  /// nothing first responder, SpaceController falls out of the responder chain and EVERY hardware key
+  /// dies app-wide: ⌘T, ⌘W, Cmd+V, the terminal key routing, the lot. Measured on Catalyst: launching
+  /// straight into a music tab left File ▸ New tab validating as DISABLED and Cmd+V never arriving,
+  /// for the whole run. So whenever the visible page has no input, SpaceController takes the keyboard
+  /// back. Never while something is presented — a composer or a Settings field owns it then.
+  func moshroomClaimKeyboardIfPageHasNoInput() {
+    guard Moshroom.scratchOnly, presentedViewController == nil else { return }
+    let pageHasInput = _currentKey.map { moshroomTabKind(for: $0) == .term } ?? false
+    guard !pageHasInput, !isFirstResponder else { return }
+    becomeFirstResponder()
   }
 
   // The bottom quick-keys cluster only makes sense over a terminal (its keys write into the
