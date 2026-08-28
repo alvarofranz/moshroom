@@ -594,9 +594,15 @@ class SpaceController: UIViewController {
   /// is on screen. Called from the one place that knows the visible tab changed, plus the engine's
   /// own notifications.
   func moshroomSyncMusicChrome() {
-    let onMusicTab = _currentKey.map { moshroomTabKind(for: $0) == .moshify } ?? false
-    if let folder = moshroomMusicFolderButton, folder.isHidden == onMusicTab {
-      folder.isHidden = !onMusicTab
+    // The folder key belongs to a music tab that is SHOWING ITS PLAYER. While its picker is up the
+    // user is already choosing, so a "choose a folder" key there is noise.
+    let musicPage = _currentKey.flatMap { key -> MoshifyTabController? in
+      guard moshroomTabKind(for: key) == .moshify else { return nil }
+      return _pageControllers[key] as? MoshifyTabController
+    }
+    let showFolder = musicPage.map { !$0.moshroomIsChoosingLibrary } ?? false
+    if let folder = moshroomMusicFolderButton, folder.isHidden == showFolder {
+      folder.isHidden = !showFolder
     }
     guard let mini = moshroomMiniPlayer else { return }
     let onPlayingTab = (_currentKey != nil && _currentKey == MoshifyEngine.shared.ownerKey)

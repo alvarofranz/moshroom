@@ -515,6 +515,19 @@ public class SFTPFile : MoshroomFiles.File {
 }
 
 extension SFTPFile: MoshroomFiles.Reader, MoshroomFiles.WriterTo {
+  /// Move the read cursor. Used to read a file's TAIL (an MP4 whose moov trails the audio, an Ogg
+  /// stream whose length is its last page's granule) without pulling the whole file across.
+  public func seek(to offset: UInt64) -> AnyPublisher<Void, Error> {
+    return connection().tryMap { _ in
+      ssh_channel_set_blocking(self.channel, 1)
+      defer { ssh_channel_set_blocking(self.channel, 0) }
+      guard let file = self.file, sftp_seek64(file, offset) == 0 else {
+        throw FileError(title: "Could not seek", in: self.session)
+      }
+      return ()
+    }.eraseToAnyPublisher()
+  }
+
   public func read(max length: Int) -> AnyPublisher<DispatchData, Error> {
     inflightReads = []
     pub = PassthroughSubject<DispatchData, Error>()

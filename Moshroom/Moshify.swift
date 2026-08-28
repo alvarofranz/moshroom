@@ -644,6 +644,56 @@ final class MoshifySession {
     }
   }
 
+  /// How long is this track? Reads the FIRST 32 KB of the remote file (and, for the two layouts
+  /// that keep the answer at the other end, the LAST 64 KB) and parses the container on the device —
+  /// see MoshifyAudioHeader. Nothing is installed on the server and nothing is downloaded whole: a
+  /// listing gives a name, a size and a date, and the length lives inside the bytes.
+  ///
+  /// Runs at PREFETCH priority so a user tap always jumps ahead of it, and answers nil rather than
+  /// guessing when the head (and tail) do not state a length.
+  func probeDuration(track: MoshifyTrack, completion: @escaping (TimeInterval?) -> Void) {
+    start()
+    enqueue(Op(priority: .prefetch, retryOnReconnect: false, remotePath: nil, describe: "probe",
+               make: { root, done in
+      let headBytes = 32 * 1024
+      let tailBytes = 64 * 1024
+      func finish(_ seconds: TimeInterval?) {
+        DispatchQueue.main.async { completion(seconds) }
+        done(nil)
+      }
+      return root.cloneWalkTo(track.remotePath)
+        .flatMap { $0.open(flags: O_RDONLY) }
+        .flatMap { file -> AnyPublisher<(MoshroomFiles.File, Data), Error> in
+          file.read(max: headBytes)
+            .prefix(1)
+            .map { chunk in (file, Data(chunk)) }
+            .eraseToAnyPublisher()
+        }
+        .flatMap { file, head -> AnyPublisher<TimeInterval?, Error> in
+          let fromHead = MoshifyAudioHeader.duration(head: head, fileName: track.fileName,
+                                                     totalSize: track.size)
+          guard MoshifyAudioHeader.wantsTail(fileName: track.fileName, headAnswer: fromHead),
+                let sftpFile = file as? SFTPFile,
+                track.size > UInt64(headBytes)
+          else {
+            return Just(fromHead).setFailureType(to: Error.self).eraseToAnyPublisher()
+          }
+          let offset = track.size > UInt64(tailBytes) ? track.size - UInt64(tailBytes) : 0
+          return sftpFile.seek(to: offset)
+            .flatMap { _ in sftpFile.read(max: tailBytes).prefix(1) }
+            .map { chunk in
+              MoshifyAudioHeader.duration(head: head, tail: Data(chunk),
+                                          fileName: track.fileName, totalSize: track.size)
+            }
+            .eraseToAnyPublisher()
+        }
+        .sink(receiveCompletion: { c in
+          // A probe is a nicety: a file that will not open or parse just keeps no length.
+          if case .failure = c { finish(nil) }
+        }, receiveValue: { seconds in finish(seconds) })
+    }, deliverFailure: { _ in completion(nil) }))
+  }
+
   // Deletes NEVER auto-retry: a half-applied unlink is ambiguous.
   func delete(remotePath: String, completion: @escaping (Result<Void, Error>) -> Void) {
     start()
@@ -932,6 +982,9 @@ final class MoshifyEngine: NSObject, AVAudioPlayerDelegate {
   private var remoteCommandsInstalled = false
   private var audioSessionConfigured = false
   private var lastProgressPost = Date.distantPast
+  /// Tracks whose length is being read off the server right now, so a list that scrolls back and
+  /// forth asks once (see ensureDuration).
+  private var probing = Set<String>()
 
   private override init() {
     super.init()
@@ -1243,6 +1296,22 @@ final class MoshifyEngine: NSObject, AVAudioPlayerDelegate {
       })
     }
     evictAroundWindow()
+  }
+
+  /// Learn how long a track is WITHOUT having it on the device: a small header read over the SFTP
+  /// connection already open (see MoshifySession.probeDuration). Called for the rows the user can
+  /// actually see, so a thousand-track library costs nothing until it is looked at, and the answer is
+  /// remembered in the index for good.
+  func ensureDuration(for track: MoshifyTrack) {
+    guard cache.duration(of: track) == nil, !probing.contains(track.cacheKey) else { return }
+    probing.insert(track.cacheKey)
+    session.probeDuration(track: track) { [weak self] seconds in
+      guard let self else { return }
+      self.probing.remove(track.cacheKey)
+      guard let seconds else { return }
+      self.cache.noteDuration(seconds, for: track)
+      NotificationCenter.default.post(name: .moshifyLibraryDidChange, object: nil)
+    }
   }
 
   /// A track's bytes are here: index it, learn its length, and hold the budget. The same three steps
@@ -1786,11 +1855,12 @@ final class MoshifyTabController: UIViewController, MoshroomTabPage,
     view.addSubview(spinner)
 
     // No chrome row of its own: choosing another library is the folder key in the top bar (see
-    // Moshkeys.install), which is where every other Moshroom control lives. The list starts right
-    // under that bar instead of below a strip built for one icon.
+    // Moshkeys.install), which is where every other Moshroom control lives. And no clearance for
+    // that bar either: this page already lives inside the viewport SpaceController pins BELOW the
+    // floating chrome, so measuring the bar again here stacked two gaps and left a black band at the
+    // top of the list.
     NSLayoutConstraint.activate([
-      table.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor,
-                                 constant: moshroomTopBarClearance),
+      table.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 4),
       table.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 16),
       table.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -16),
       table.bottomAnchor.constraint(equalTo: bottomBar.topAnchor),
@@ -1843,6 +1913,7 @@ final class MoshifyTabController: UIViewController, MoshroomTabPage,
 
   private func _show(step: Step) {
     self.step = step
+    defer { space?.moshroomSyncMusicChrome() }   // the folder key hides while the picker is up
     let player = (step == .player)
     [table, bottomBar].forEach { $0.isHidden = !player }
     setupContainer.isHidden = player
@@ -1856,6 +1927,10 @@ final class MoshifyTabController: UIViewController, MoshroomTabPage,
     }
     _syncControls()
   }
+
+  /// True while this tab shows its player. The top bar's folder key only makes sense then: with the
+  /// picker already up there is nothing to change.
+  var moshroomIsChoosingLibrary: Bool { step != .player }
 
   /// Choose another library from this tab (the folder key in the top bar).
   func moshroomChooseLibrary() { _startSetup() }
@@ -2302,6 +2377,14 @@ final class MoshifyTabController: UIViewController, MoshroomTabPage,
       return String(format: "%d:%02d:%02d", minutes / 60, minutes % 60, secs)
     }
     return String(format: "%d:%02d", minutes, secs)
+  }
+
+  func tableView(_ tableView: UITableView, willDisplay cell: UITableViewCell,
+                 forRowAt indexPath: IndexPath) {
+    // Reading a length costs a small header read, so only the rows on screen ask for one.
+    let engine = MoshifyEngine.shared
+    guard engine.tracks.indices.contains(indexPath.row) else { return }
+    engine.ensureDuration(for: engine.tracks[indexPath.row])
   }
 
   func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {

@@ -170,11 +170,6 @@ enum Moshkeys {
 /// A UIButton that renders the same on iOS and Mac Catalyst. On Mac, a `.system` button adopts
 /// the native Mac chrome (a bordered capsule + washed-out icons) that clashes with our iOS-style
 /// custom buttons; `.custom` keeps the app looking like its iPhone/iPad self.
-/// How much room the floating top bar takes: its key diameter plus the air above and below it. A
-/// full-screen page that draws its own content under the bar (the Moshify list) measures from here,
-/// so the two can never drift apart.
-let moshroomTopBarClearance: CGFloat = 62
-
 /// A symbol image padded to a FIXED width, centred, so a column of rows lines its titles up no
 /// matter how wide each glyph is (a music note is narrow, a terminal is wide). Template-rendered, so
 /// the caller's tint still applies.
