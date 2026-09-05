@@ -65,20 +65,24 @@ struct ImportKeyView: View {
         }
       }
       
-      Section(header: Text("COMMENT (OPTIONAL)")) {
-        FixedTextField(
-          "Comment for your key",
-          text: $state.keyComment,
-          id: "keyComment",
-          returnKeyType: .continue,
-          onReturn: {
-            if state.saveKey() {
-              onSuccess()
-            }
-          },
-          autocorrectionType: .no,
-          autocapitalizationType: .none
-        )
+      if state.incompleteMatch == nil {
+        // A restore writes the private half and nothing else — the public key line, comment included,
+        // is the one the identity already has. Offering to type one here would be offering nothing.
+        Section(header: Text("COMMENT (OPTIONAL)")) {
+          FixedTextField(
+            "Comment for your key",
+            text: $state.keyComment,
+            id: "keyComment",
+            returnKeyType: .continue,
+            onReturn: {
+              if state.saveKey() {
+                onSuccess()
+              }
+            },
+            autocorrectionType: .no,
+            autocapitalizationType: .none
+          )
+        }
       }
       
       Section(
@@ -130,10 +134,9 @@ class ImportKeyObservable: ObservableObject {
     
     let authorized = try? key.authorizedKey(withComment: "")
     self.incompleteMatch = authorized.flatMap { authorized in
-      MoshPubKey.all().first {
-        $0.storageType == MoshPubKeyStorageTypeKeyChain
-          && !$0.hasPrivateKeyMaterial()
-          && MoshPubKey.publicHalvesMatch(authorized, $0.publicKey)
+      // One keychain listing for all of them, not one per identity.
+      MoshPubKey.identitiesMissingPrivateMaterial().first {
+        MoshPubKey.publicHalvesMatch(authorized, $0.publicKey)
       }
     }
   }
