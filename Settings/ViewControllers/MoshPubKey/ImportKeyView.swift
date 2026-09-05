@@ -33,18 +33,36 @@ struct ImportKeyView: View {
   
   var body: some View {
     List {
-      Section(
-        header: Text("NAME"),
-        footer: Text("Default key must be named `id_\(state.keyType.lowercased().replacingOccurrences(of: "-", with: "_"))`")
-      ) {
-        FixedTextField(
-          "Enter a name for the key",
-          text: $state.keyName,
-          id: "keyName",
-          nextId: "keyComment",
-          autocorrectionType: .no,
-          autocapitalizationType: .none
-        )
+      if let match = state.incompleteMatch {
+        // The key being imported IS an identity already here, one that arrived without its private
+        // half. Completing that identity is the honest outcome — not a second record for the same
+        // key, and not the "name already used" dead end that used to end in deleting the key first.
+        Section(
+          header: Text("RESTORE"),
+          footer: Text("This is the private half of an identity you already have. Importing puts it back where it belongs: same name, same record, nothing duplicated and nothing re-synced.")
+        ) {
+          HStack(spacing: 8) {
+            Image(systemName: "checkmark.seal.fill").foregroundColor(.green)
+            VStack(alignment: .leading, spacing: 2) {
+              Text(match.id)
+              Text("waiting for its private half").font(.footnote).foregroundColor(.secondary)
+            }
+          }
+        }
+      } else {
+        Section(
+          header: Text("NAME"),
+          footer: Text("Default key must be named `id_\(state.keyType.lowercased().replacingOccurrences(of: "-", with: "_"))`")
+        ) {
+          FixedTextField(
+            "Enter a name for the key",
+            text: $state.keyName,
+            id: "keyName",
+            nextId: "keyComment",
+            autocorrectionType: .no,
+            autocapitalizationType: .none
+          )
+        }
       }
       
       Section(header: Text("COMMENT (OPTIONAL)")) {
@@ -65,7 +83,7 @@ struct ImportKeyView: View {
       
       Section(
         header: Text("INFORMATION"),
-        footer: Text("Moshroom imports the key and stores it as PKCS#8, with AES 256 bit encryption. Use \"ssh-copy-id [name]\" to copy the public key to the server.")
+        footer: Text("The key is kept in OpenSSH format inside the device keychain — encrypted at rest by the device, and by your iCloud Keychain end-to-end if sync is on. Use \"ssh-copy-id [name]\" to copy the public key to the server.")
       ) { }
     }
     .listStyle(.insetGrouped)
@@ -79,11 +97,11 @@ struct ImportKeyView: View {
           if state.saveKey() {
             onSuccess()
           }
-        }) { MoshNavLabel(title: "Import") }
+        }) { MoshNavLabel(title: state.incompleteMatch == nil ? "Import" : "Restore") }
           .disabled(!state.isValid)
       }
     }
-    .navigationTitle("Import \(state.keyType) Key")
+    .navigationTitle(state.incompleteMatch == nil ? "Import \(state.keyType) Key" : "Restore \(state.keyType) Key")
     .navigationBarTitleDisplayMode(.inline)
     .alert(errorMessage: $state.errorMessage)
   }
@@ -96,8 +114,12 @@ class ImportKeyObservable: ObservableObject {
   @Published var keyComment: String
   @Published var errorMessage = ""
   
+  // The identity this key completes, if any: same public half, and its private half is not on this
+  // device. Resolved once, at init — answering it walks the keychain.
+  let incompleteMatch: MoshPubKey?
+  
   var isValid: Bool {
-    !keyName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    incompleteMatch != nil || !keyName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
   }
   
   init(key: SSHKey, keyName: String, keyComment: String) {
@@ -105,10 +127,30 @@ class ImportKeyObservable: ObservableObject {
     self.keyType = key.sshKeyType.shortName
     self.keyName = keyName
     self.keyComment = keyComment
+    
+    let authorized = try? key.authorizedKey(withComment: "")
+    self.incompleteMatch = authorized.flatMap { authorized in
+      MoshPubKey.all().first {
+        $0.storageType == MoshPubKeyStorageTypeKeyChain
+          && !$0.hasPrivateKeyMaterial()
+          && MoshPubKey.publicHalvesMatch(authorized, $0.publicKey)
+      }
+    }
   }
   
   func saveKey() -> Bool {
     errorMessage = ""
+    
+    if let match = incompleteMatch {
+      do {
+        try MoshPubKey.attachPrivateKey(key, to: match)
+      } catch {
+        errorMessage = error.localizedDescription
+        return false
+      }
+      return true
+    }
+    
     let keyID = keyName.trimmingCharacters(in: .whitespacesAndNewlines)
     let comment = keyComment.trimmingCharacters(in: .whitespacesAndNewlines)
     

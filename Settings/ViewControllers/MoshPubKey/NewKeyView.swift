@@ -51,11 +51,13 @@ struct NewKeyView: View {
         header: Text("KEY TYPE"),
         footer: Text(_state.keyType.keyHint)
       ) {
+        // Best first, and no DSA: OpenSSH 9.8 disabled it by default and 10.0 dropped it entirely,
+        // so offering to GENERATE one would hand out a key no current server will accept. Importing
+        // an old DSA key still works — that is about reading what exists, not making more of it.
         Picker("", selection: $_state.keyType) {
-          Text(SSHKeyType.dsa.shortName).tag(SSHKeyType.dsa)
-          Text(SSHKeyType.rsa.shortName).tag(SSHKeyType.rsa)
-          Text(SSHKeyType.ecdsa.shortName).tag(SSHKeyType.ecdsa)
           Text(SSHKeyType.ed25519.shortName).tag(SSHKeyType.ed25519)
+          Text(SSHKeyType.ecdsa.shortName).tag(SSHKeyType.ecdsa)
+          Text(SSHKeyType.rsa.shortName).tag(SSHKeyType.rsa)
         }
         .pickerStyle(SegmentedPickerStyle())
         if _state.keyType.possibleBitsValues.count > 1 {
@@ -88,7 +90,7 @@ struct NewKeyView: View {
       
       Section(
         header: Text("INFORMATION"),
-        footer: Text("Moshroom creates PKCS#8 public and private keys, with AES 256 bit encryption. Use \"ssh-copy-id [name]\" to copy the public key to the server.")
+        footer: Text("The key is kept in OpenSSH format inside the device keychain — encrypted at rest by the device, and by your iCloud Keychain end-to-end if sync is on. Use \"ssh-copy-id [name]\" to copy the public key to the server.")
       ) { }
     }
     .listStyle(.insetGrouped)
@@ -120,14 +122,27 @@ struct NewKeyView: View {
 
 fileprivate class NewKeyObservable: ObservableObject {
 
-  @Published var keyType: SSHKeyType = .rsa {
+  // ED25519 by default: it is what OpenSSH itself recommends, it is fixed-size so there is no knob to
+  // get wrong, and at a few hundred bytes it moves between devices as a file or a paste — which is
+  // what makes an RSA-4096 key such a chore to carry around.
+  @Published var keyType: SSHKeyType = .ed25519 {
     didSet {
       keyBits = keyType.possibleBitsValues.last ?? 0
+      // The name follows the type only while it is still one WE suggested; the moment it is typed
+      // over, it is the user's and stays put.
+      if Self.suggestedNames.contains(keyName) {
+        keyName = keyType.defaultKeyName
+      }
     }
   }
-  @Published var keyName: String = ""
-  @Published var keyBits: UInt32 = 4096
+  // Pre-filled with the name ssh looks for, because the footer asking for it is not the same as
+  // handing it over.
+  @Published var keyName: String = SSHKeyType.ed25519.defaultKeyName
+  @Published var keyBits: UInt32 = 0
   @Published var keyComment: String = MoshKeyDefaults.comment
+
+  private static let suggestedNames: Set<String> =
+    Set([SSHKeyType.ed25519, .ecdsa, .rsa, .dsa].map { $0.defaultKeyName })
   
   @Published var errorMessage = ""
   
@@ -177,7 +192,7 @@ fileprivate extension SSHKeyType {
     case .dsa: return "DSA keys must be exactly 1024 bits as specified by FIPS 186-2."
     case .rsa: return "Generally, 2048 bits is considered sufficient."
     case .ecdsa: return "For ECDSA keys size determines key length by selecting from one of three elliptic curve sizes: 256, 384 or 521 bits."
-    case .ed25519: return "Ed25519 keys have a fixed length."
+    case .ed25519: return "Fast, short, and the modern default. Fixed length — nothing to choose."
     default: return ""
     }
   }

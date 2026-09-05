@@ -159,18 +159,57 @@ final class MoshSecretStore<T: MoshVaultRecord> {
     return try? Self.decoder.decode(T.self, from: data)
   }
 
+  // What an item holds right now, flavor included — read before a replace so a refused write can be
+  // undone. Attributes AND data, because restoring needs both.
+  private func rawItem(id: String) -> (data: Data, synchronizable: Bool, accessible: CFString)? {
+    var q = baseQuery()
+    q[kSecAttrAccount as String] = id
+    q[kSecReturnData as String] = true
+    q[kSecReturnAttributes as String] = true
+    var result: CFTypeRef?
+    guard SecItemCopyMatching(q as CFDictionary, &result) == errSecSuccess,
+          let item = result as? [String: Any],
+          let data = item[kSecValueData as String] as? Data else { return nil }
+    let sync = (item[kSecAttrSynchronizable as String] as? Bool) ?? false
+    let accessible = (item[kSecAttrAccessible as String] as? String).map { $0 as CFString }
+      ?? kSecAttrAccessibleAfterFirstUnlock
+    return (data, sync, accessible)
+  }
+
+  private func add(id: String, data: Data, synchronizable: Bool, accessible: CFString) -> Bool {
+    var attrs = baseQuery()
+    attrs[kSecAttrSynchronizable as String] = synchronizable   // concrete flavor for the new item
+    attrs[kSecAttrAccount as String] = id
+    attrs[kSecValueData as String] = data
+    attrs[kSecAttrAccessible as String] = accessible
+    return SecItemAdd(attrs as CFDictionary, nil) == errSecSuccess
+  }
+
   // Insert or replace. Like the SSH stores, we delete any existing variant first and add fresh, so
   // the item always takes the CURRENT sync flavor (SecItemUpdate can't change kSecAttrSynchronizable).
+  //
+  // Between that delete and that add the record exists NOWHERE else — there is no index file behind
+  // it, the keychain item IS the record. So the old bytes are kept in hand and put back if the add is
+  // refused (locked before first unlock, keychain busy, quota): a failed save costs you the edit you
+  // just made, never the entry you already had.
   @discardableResult
   func upsert(_ record: T) -> Bool {
     guard let data = try? Self.encoder.encode(record) else { return false }
+
+    let previous = rawItem(id: record.id)
     delete(id: record.id)
-    var attrs = baseQuery()
-    attrs[kSecAttrSynchronizable as String] = MoshKeychainSync.enabled   // concrete flavor for the new item
-    attrs[kSecAttrAccount as String] = record.id
-    attrs[kSecValueData as String] = data
-    attrs[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
-    return SecItemAdd(attrs as CFDictionary, nil) == errSecSuccess
+
+    if add(id: record.id, data: data, synchronizable: MoshKeychainSync.enabled,
+           accessible: kSecAttrAccessibleAfterFirstUnlock) {
+      return true
+    }
+
+    if let previous {
+      _ = add(id: record.id, data: previous.data, synchronizable: previous.synchronizable,
+              accessible: previous.accessible)
+    }
+    MoshLog.log("vault", "keychain refused a write to \(service) — \(previous == nil ? "nothing to restore" : "previous value restored")")
+    return false
   }
 
   func delete(id: String) {

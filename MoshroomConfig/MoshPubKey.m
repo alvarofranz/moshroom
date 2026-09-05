@@ -68,9 +68,28 @@ static UICKeyChainStore *__get_keychain() {
 // Write a keychain string so the item always takes the CURRENT sync flavor. SecItemUpdate cannot
 // change an existing item's kSecAttrSynchronizable, so delete any existing variant first (the lookup
 // matches both flavors via kSecAttrSynchronizableAny) and add fresh.
-static void __kc_set(UICKeyChainStore *keychain, NSString *value, NSString *key) {
+//
+// That delete-then-add opens a window where the only copy of a private key lives nowhere but this
+// stack frame: if the add fails (locked before first unlock, keychain busy, quota) the old value is
+// already gone and the key is destroyed. So the previous value is read first and PUT BACK when the
+// write fails, and the outcome is returned instead of dropped — nothing can quietly leave an
+// identity holding a public half and no private one.
+static BOOL __kc_set(UICKeyChainStore *keychain, NSString *value, NSString *key) {
+  NSString *previous = [keychain stringForKey:key];
   [keychain removeItemForKey:key];
-  [keychain setString:value forKey:key];
+
+  NSError *error = nil;
+  if ([keychain setString:value forKey:key error:&error]) {
+    return YES;
+  }
+
+  if (previous) {
+    // Best effort: the value survives, even if it lands in the current flavor rather than its own.
+    [keychain setString:previous forKey:key];
+  }
+  NSLog(@"[MoshPubKey] Keychain write failed for %@: %@%@", key, error,
+        previous ? @" (previous value restored)" : @"");
+  return NO;
 }
 
 @implementation MoshPubKey {
@@ -300,16 +319,59 @@ static void __kc_set(UICKeyChainStore *keychain, NSString *value, NSString *key)
   return [keychain stringForKey:[self _certificateKeychainRef]];
 }
 
-- (void)storePrivateKeyInKeychain:(NSString *) privateKey {
-  __kc_set(__get_keychain(), privateKey, [self _privateKeyKeychainRef]);
+- (BOOL)storePrivateKeyInKeychain:(NSString *) privateKey {
+  return __kc_set(__get_keychain(), privateKey, [self _privateKeyKeychainRef]);
 }
 
-- (void)storeCertificateInKeychain:(nullable NSString *) certificate {
+// Is this identity's private half actually ON this device? Answered WITHOUT reading the secret out
+// of the keychain (an account listing, not a value fetch), because it is asked for every row of the
+// keys list and for the sync health readout. Non-Keychain identities (Secure Enclave, passkeys)
+// carry their material elsewhere by design and are always complete.
+- (BOOL)hasPrivateKeyMaterial {
+  if (_storageType != MoshPubKeyStorageTypeKeyChain) {
+    return YES;
+  }
+  UICKeyChainStore *keychain = __get_keychain();
+  NSString *ref = [self _privateKeyRefName];
+  if ([[keychain allKeys] containsObject:ref]) {
+    return YES;
+  }
+  // A listing can come back empty on a keychain that isn't readable yet; the authoritative read is
+  // the fallback so a transient listing failure can never mark a working key as broken.
+  return [keychain stringForKey:ref] != nil;
+}
+
+// The same question for every identity at once, from ONE listing instead of one per row — this is
+// asked while building the keys list and while drawing the sync status. The per-card value read is
+// only reached for a card the listing did not mention, which is exactly the case worth being sure
+// about. Main thread, like every other +all-based call: it touches the shared identities array.
++ (NSArray<MoshPubKey *> *)identitiesMissingPrivateMaterial {
+  NSArray *accounts = [__get_keychain() allKeys];
+  NSSet *present = accounts.count ? [NSSet setWithArray:accounts] : [NSSet set];
+
+  NSMutableArray<MoshPubKey *> *missing = [NSMutableArray array];
+  for (MoshPubKey *card in [MoshPubKey all]) {
+    if (card.storageType != MoshPubKeyStorageTypeKeyChain) {
+      continue;
+    }
+    if ([present containsObject:[card _privateKeyRefName]]) {
+      continue;
+    }
+    if ([card hasPrivateKeyMaterial]) {
+      continue;
+    }
+    [missing addObject:card];
+  }
+  return missing;
+}
+
+- (BOOL)storeCertificateInKeychain:(nullable NSString *) certificate {
   UICKeyChainStore *keychain = __get_keychain();
   NSString *certRef = [self _certificateKeychainRef];
+  BOOL ok = YES;
   if (certificate) {
     _certType = [MoshPubKey _shortKeyTypeNameFromSshKeyTypeName:[[certificate componentsSeparatedByString:@" "] firstObject]];
-    __kc_set(keychain, certificate, certRef);
+    ok = __kc_set(keychain, certificate, certRef);
   } else {
     [keychain removeItemForKey:certRef];
     _certType = nil;
@@ -318,6 +380,7 @@ static void __kc_set(UICKeyChainStore *keychain, NSString *value, NSString *key)
   // and persist (certType + lastModified live in the keys blob).
   _lastModified = [NSDate date];
   [MoshPubKey saveIDS];
+  return ok;
 }
 
 - (nullable NSString *)privateKey {
@@ -354,6 +417,12 @@ static void __kc_set(UICKeyChainStore *keychain, NSString *value, NSString *key)
 
 - (NSString *)_privateKeyKeychainRef {
   return [NSString stringWithFormat: @"%@.pem", _tag];
+}
+
+// Where this identity's private half is filed. Old records carry an explicit ref; everything since
+// derives it from the tag.
+- (NSString *)_privateKeyRefName {
+  return _privateKeyRef ?: [self _privateKeyKeychainRef];
 }
 
 - (BOOL)isEncrypted

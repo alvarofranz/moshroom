@@ -33,12 +33,22 @@ fileprivate struct KeyCard {
   let certType: String?
   let isAccessible: Bool
 
-  init(key: MoshPubKey) {
+  init(key: MoshPubKey, isAccessible: Bool) {
     self.key = key
     self.name = key.id
     self.keyType = key.keyType
     self.certType = key.certType
-    self.isAccessible = MoshPubKey.all().signerWithID(name) != nil ? true : false
+    self.isAccessible = isAccessible
+  }
+
+  /// Every identity, each already knowing whether it can sign.
+  ///
+  /// "Can it sign?" is "is its private half on this device", and it is answered for the whole list
+  /// from ONE keychain listing. Building this list used to load AND parse the private key of every
+  /// row just to find out.
+  static func all() -> [KeyCard] {
+    let incomplete = Set(MoshPubKey.identitiesMissingPrivateMaterial().map(\.tag))
+    return MoshPubKey.all().map { KeyCard(key: $0, isAccessible: !incomplete.contains($0.tag)) }
   }
 }
 
@@ -160,7 +170,7 @@ private extension NewKeyMenuContentView {
 
         VStack(alignment: .leading) {
           baseCellTitle("Plain-text Key")
-          baseCellSubtitle("Create RSA, ECDSA and ED25519 keys, stored in your iCloud Keychain — end-to-end encrypted, they survive reinstalls and follow your devices.")
+          baseCellSubtitle("Create ED25519, ECDSA or RSA keys, stored in your iCloud Keychain — end-to-end encrypted, they survive reinstalls and follow your devices.")
 
           actionsDivider()
           actionButtonTitle(title: "Generate New", tintColor: .moshroomTint)
@@ -300,6 +310,7 @@ struct KeyListView: View {
   @Environment(\.presentationMode) var presentationMode
   @State private var isMenuPresented = false
   @State private var showAlert = false
+  @State private var _pendingDelete: MoshDeletePrompt? = nil
 
   var body: some View {
     Group {
@@ -316,19 +327,39 @@ struct KeyListView: View {
           footer: "Secure Enclave keys never leave this device. Keychain keys live in your iCloud Keychain — end-to-end encrypted, they survive reinstalls and follow your devices.",
           header: {
             if _state.list.contains(where: { !$0.isAccessible }) {
-              HStack {
-                Image(systemName: "exclamationmark.triangle.fill").foregroundColor(.orange)
-                Text("The Private Key component of some identities is missing. The Public Key is still available so keys can be recycled at the server.")
+              VStack(alignment: .leading, spacing: 4) {
+                HStack(alignment: .top, spacing: 6) {
+                  Image(systemName: "exclamationmark.triangle.fill").foregroundColor(.orange)
+                  Text("Some identities are missing their private half, so they can't sign in anywhere.")
+                }
+                Text("Open one to add it from the device that has it — the identity is kept, so nothing is deleted anywhere. " + Moshsync.incompleteKeysHint)
+                  .font(.footnote)
+                  .foregroundColor(.secondary)
+                  .fixedSize(horizontal: false, vertical: true)
               }
             }
           },
           rows: {
             ForEach(_state.list, id: \.name) {
               KeyRow(card: $0, reloadCards: _state.reloadCards)
-            }.onDelete(perform: _state.deleteKeys)
+            }
+            .onDelete { indexSet in
+              // A swipe used to be the whole gesture: Face ID, gone, and gone from the other devices
+              // too (the record carries a tombstone that wins everywhere). Now it asks, in words.
+              guard let index = indexSet.first, index < _state.list.count else { return }
+              let card = _state.list[index]
+              _pendingDelete = MoshDeletePrompt(
+                name: card.name,
+                what: "this identity",
+                extra: "Anything using it to connect will stop working."
+              ) {
+                _state.removeKey(card: card.key)
+              }
+            }
           })
       }
     }
+    .moshDeleteConfirmation($_pendingDelete)
     .alert(isPresented: $showAlert) {
       Alert(
         title: Text("Error"),
@@ -455,7 +486,7 @@ fileprivate class KeysObservable: ObservableObject {
     }
   }
 
-  @Published var list: [KeyCard] = MoshPubKey.all().map(KeyCard.init(key:)).sorted(by: KeySortType.nameAsc.sortFn)
+  @Published var list: [KeyCard] = KeyCard.all().sorted(by: KeySortType.nameAsc.sortFn)
   @Published var actionSheetIsPresented: Bool = false
   @Published var filePickerIsPresented: Bool = false
   @Published var modal: KeyModals? = nil
@@ -466,30 +497,18 @@ fileprivate class KeysObservable: ObservableObject {
   init() { }
 
   func reloadCards() {
-    self.list = MoshPubKey.all().map(KeyCard.init(key:)).sorted(by: sortType.sortFn)
+    self.list = KeyCard.all().sorted(by: sortType.sortFn)
   }
 
+  // The single delete path: confirmed by the caller, then Face ID, then gone. The list is rebuilt
+  // from what actually remains rather than optimistically emptied, so a cancelled or failed delete
+  // can never leave the screen showing a key that is still there (or hiding one that is).
   func removeKey(card: MoshPubKey) {
-    MoshPubKey.removeCard(card: card)
-    list.removeAll { k in
-      k.key.tag == card.tag
-    }
-  }
-
-  func deleteKeys(indexSet: IndexSet) {
-    guard let index = indexSet.first else {
-      return
-    }
-
-    let card = list[index]
-    self.list.remove(atOffsets: indexSet)
-
     LocalAuth.shared.authenticate(callback: { success in
       if success {
-        MoshPubKey.removeCard(card: card.key)
-      } else {
-        self.reloadCards()
+        MoshPubKey.removeCard(card: card)
       }
+      self.reloadCards()
     }, reason: "to delete key.")
   }
 

@@ -50,10 +50,19 @@ typedef enum: NSUInteger {
 
 - (nullable NSString *)loadPrivateKey;
 - (nullable NSString *)loadCertificate;
+// Is the private half present on THIS device? Answered from an account listing, so asking does not
+// pull the secret out of the keychain. Always YES for Secure Enclave / passkey identities, whose
+// material lives in hardware by design.
+- (BOOL)hasPrivateKeyMaterial;
+// Every identity whose private half is missing, resolved from a single keychain listing. Main thread
+// (it reads the shared identities array), like +all.
++ (nonnull NSArray<MoshPubKey *> *)identitiesMissingPrivateMaterial;
 // Called from Swift as storePrivateKey(inKeychain:) / storeCertificate(inKeychain:) — the bridged
-// spelling, which is why a grep for the ObjC name finds no callers.
-- (void)storePrivateKeyInKeychain:(nonnull NSString *) privateKey;
-- (void)storeCertificateInKeychain:(nullable NSString *) certificate;
+// spelling, which is why a grep for the ObjC name finds no callers. Both return NO when the keychain
+// refused the write (the previous value is restored); a caller that ignores the result is a bug —
+// that is how an identity ends up with a public half and no private one.
+- (BOOL)storePrivateKeyInKeychain:(nonnull NSString *) privateKey;
+- (BOOL)storeCertificateInKeychain:(nullable NSString *) certificate;
 
 + (void)initialize;
 + (nullable instancetype)withID:(nullable NSString *)ID;

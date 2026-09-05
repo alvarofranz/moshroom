@@ -169,12 +169,19 @@ import MoshroomConfig
 
     reconcile()      // launch pass
     _startWatcher()  // in case we're already active
+    // The secrets half: anything written while sync was off is still device-local and no amount of
+    // Drive reconciling will move it. Runs once per launch, and waits for the first unlock if the app
+    // came up before it (see Moshsync).
+    Moshsync.migrateWhenPossible()
   }
 
   @objc static func syncNow() {
     if let snips = MoshroomPaths.iCloudSnippetsLocationURL() {
       try? FileManager.default.startDownloadingUbiquitousItem(at: snips)
     }
+    // Pressing Sync Now (or turning the switch on) is the user asking for a FULL pass, secrets
+    // included — so this one is forced rather than once-per-launch.
+    Moshsync.migrateWhenPossible(force: true)
     reconcile()
   }
 

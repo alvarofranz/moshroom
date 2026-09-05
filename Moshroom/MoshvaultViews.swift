@@ -86,8 +86,9 @@ struct MoshvaultRootView: View {
     .fullScreenCover(isPresented: $showingScan, onDismiss: bumpReload) {
       MoshTOTPScanSheet { uri in
         guard let acc = MoshTOTP.parse(uri: uri) else { return false }
-        MoshTOTPStore.shared.save(acc)
-        return true
+        // Only a stored account counts as scanned — otherwise the sheet closes on a code that went
+        // nowhere, and the QR is usually gone by the time anyone notices.
+        return MoshTOTPStore.shared.save(acc)
       }
     }
     .fullScreenCover(isPresented: $showingMigrate, onDismiss: bumpReload) {
@@ -398,6 +399,7 @@ struct MoshvaultPasswordsView: View {
   let onEdit: (MoshVaultEntry) -> Void
   @State private var entries: [MoshVaultEntry] = []
   @State private var query = ""
+  @State private var pendingDelete: MoshDeletePrompt?
 
   private var filtered: [MoshVaultEntry] {
     guard !query.isEmpty else { return entries }
@@ -442,18 +444,32 @@ struct MoshvaultPasswordsView: View {
             // Right-click (Mac) / long-press (iOS) — the Mac has no swipe, so edit & delete live here too.
             .contextMenu {
               Button { onEdit(entry) } label: { Label("Edit", systemImage: "pencil") }
-              Button(role: .destructive) { deleteEntries([entry]) } label: { Label("Delete", systemImage: "trash") }
+              Button(role: .destructive) { confirmDelete([entry]) } label: { Label("Delete", systemImage: "trash") }
             }
           }
-          .onDelete { deleteEntries($0.map { filtered[$0] }) }
+          .onDelete { confirmDelete($0.map { filtered[$0] }) }
         }
       }
     }
     .onAppear(perform: reload)
     .onChange(of: reloadTick) { _ in reload() }
+    .moshDeleteConfirmation($pendingDelete)
   }
 
   private func reload() { entries = MoshVaultStore.shared.all() }
+
+  // A vault entry IS its keychain item — there is no copy of it anywhere else, and with sync on the
+  // deletion travels to every device the moment it happens. A swipe alone was never enough for that.
+  private func confirmDelete(_ targets: [MoshVaultEntry]) {
+    guard !targets.isEmpty else { return }
+    let name = targets.count == 1 ? (targets[0].service.isEmpty ? "Untitled" : targets[0].service) : ""
+    pendingDelete = MoshDeletePrompt(
+      name: name,
+      what: targets.count == 1 ? "this password" : "\(targets.count) passwords"
+    ) {
+      deleteEntries(targets)
+    }
+  }
 
   private func deleteEntries(_ targets: [MoshVaultEntry]) {
     LocalAuth.shared.authenticate(callback: { ok in
@@ -467,6 +483,13 @@ private struct MoshvaultPasswordEditor: View {
   @Environment(\.dismiss) private var dismiss
   @State var entry: MoshVaultEntry
   @State private var revealPassword = false
+  @State private var saveError = ""
+
+  // A vault entry has no home outside the keychain, so a refused write is the whole edit — or, for a
+  // new entry, the whole entry. The editor stays open and says so rather than closing on a save that
+  // did not happen.
+  private static let writeRefused =
+    "The keychain refused to save this. Nothing was changed — unlock the device and try again." 
 
   // Derive "new vs edit" from the store, not a passed-in flag — the flag raced with the sheet
   // presentation and showed "Edit Password" on a brand-new entry.
@@ -475,7 +498,9 @@ private struct MoshvaultPasswordEditor: View {
   var body: some View {
     VStack(spacing: 0) {
       MoshSheetHeader(title: isNew ? "New Password" : "Edit Password", onClose: { dismiss() }) {
-        Button { MoshVaultStore.shared.save(entry); dismiss() } label: { MoshNavLabel(title: "Save") }
+        Button {
+          if MoshVaultStore.shared.save(entry) { dismiss() } else { saveError = Self.writeRefused }
+        } label: { MoshNavLabel(title: "Save") }
           .buttonStyle(.plain)
           .disabled(entry.isEmpty)
       }
@@ -513,6 +538,7 @@ private struct MoshvaultPasswordEditor: View {
     }
     .background(Color(.systemGroupedBackground).ignoresSafeArea())
     .tint(.moshTint)
+    .alert(errorMessage: $saveError)
   }
 
   // A labeled row: the field name on the left, the editable value, and a copy chip on the right
@@ -540,6 +566,7 @@ struct MoshvaultTOTPView: View {
   @State private var accounts: [MoshTOTPAccount] = []
   @State private var query = ""
   @State private var copiedID: String?
+  @State private var pendingDelete: MoshDeletePrompt?
   private let tick = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
   @State private var now = Date()
 
@@ -569,14 +596,14 @@ struct MoshvaultTOTPView: View {
               .contentShape(Rectangle())
               .onTapGesture { copyCode(account) }
               .swipeActions(edge: .trailing) {
-                Button(role: .destructive) { delete(account) } label: { Label("Delete", systemImage: "trash") }
+                Button(role: .destructive) { confirmDelete(account) } label: { Label("Delete", systemImage: "trash") }
                 Button { onEdit(account) } label: { Label("Edit", systemImage: "pencil") }.tint(.gray)
               }
               // Mac has no swipe — right-click gives the same edit & delete.
               .contextMenu {
                 Button { onEdit(account) } label: { Label("Edit", systemImage: "pencil") }
                 Button { copyCode(account) } label: { Label("Copy code", systemImage: "doc.on.doc") }
-                Button(role: .destructive) { delete(account) } label: { Label("Delete", systemImage: "trash") }
+                Button(role: .destructive) { confirmDelete(account) } label: { Label("Delete", systemImage: "trash") }
               }
           }
         }
@@ -585,6 +612,7 @@ struct MoshvaultTOTPView: View {
     .onReceive(tick) { now = $0 }
     .onAppear(perform: reload)
     .onChange(of: reloadTick) { _ in reload() }
+    .moshDeleteConfirmation($pendingDelete)
   }
 
   private func reload() { accounts = MoshTOTPStore.shared.all() }
@@ -597,6 +625,18 @@ struct MoshvaultTOTPView: View {
     let id = account.id
     DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
       if copiedID == id { withAnimation { copiedID = nil } }
+    }
+  }
+
+  // Losing a 2FA account can lock someone out of the service behind it, and the shared secret only
+  // exists here. Ask, name it, and say that the delete travels.
+  private func confirmDelete(_ account: MoshTOTPAccount) {
+    pendingDelete = MoshDeletePrompt(
+      name: account.title,
+      what: "this 2FA account",
+      extra: "You'd need to set it up again from the service to get codes back."
+    ) {
+      delete(account)
     }
   }
 
@@ -671,6 +711,7 @@ private struct MoshTOTPRow: View {
 private struct MoshTOTPManualEntry: View {
   @Environment(\.dismiss) private var dismiss
   @State private var account: MoshTOTPAccount
+  @State private var saveError = ""
   private let isNew: Bool
 
   init(existing: MoshTOTPAccount? = nil) {
@@ -681,7 +722,13 @@ private struct MoshTOTPManualEntry: View {
   var body: some View {
     VStack(spacing: 0) {
       MoshSheetHeader(title: isNew ? "New 2FA Account" : "Edit 2FA Account", onClose: { dismiss() }) {
-        Button { MoshTOTPStore.shared.save(account); dismiss() } label: { MoshNavLabel(title: "Save") }
+        Button {
+          if MoshTOTPStore.shared.save(account) {
+            dismiss()
+          } else {
+            saveError = "The keychain refused to save this account. Nothing was changed — unlock the device and try again."
+          }
+        } label: { MoshNavLabel(title: "Save") }
           .buttonStyle(.plain)
           .disabled(!MoshTOTP.isValidSecret(account.secret))
       }
@@ -710,6 +757,7 @@ private struct MoshTOTPManualEntry: View {
     }
     .background(Color(.systemGroupedBackground).ignoresSafeArea())
     .tint(.moshTint)
+    .alert(errorMessage: $saveError)
   }
 
   private func field(_ title: String, text: Binding<String>) -> some View {

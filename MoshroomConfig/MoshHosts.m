@@ -56,9 +56,26 @@ static UICKeyChainStore *__get_keychain() {
 // lookup matches both flavors via kSecAttrSynchronizableAny) and add fresh. Net effect: each item's
 // sync state equals the toggle value at its last write; items you never touch keep the flavor they
 // already had ("lo que hay es lo que hay").
-static void __kc_set(UICKeyChainStore *keychain, NSString *value, NSString *key) {
+//
+// The delete-then-add is also the only moment a stored password exists nowhere but this stack frame,
+// so the previous value is read first and PUT BACK if the write is refused (locked before first
+// unlock, keychain busy, quota). A failed write must cost you a re-entry, never the password you
+// already had. Same contract as MoshPubKey's copy.
+static BOOL __kc_set(UICKeyChainStore *keychain, NSString *value, NSString *key) {
+  NSString *previous = [keychain stringForKey:key];
   [keychain removeItemForKey:key];
-  [keychain setString:value forKey:key];
+
+  NSError *error = nil;
+  if ([keychain setString:value forKey:key error:&error]) {
+    return YES;
+  }
+
+  if (previous) {
+    [keychain setString:previous forKey:key];
+  }
+  NSLog(@"[MoshHosts] Keychain write failed for %@: %@%@", key, error,
+        previous ? @" (previous value restored)" : @"");
+  return NO;
 }
 
 @implementation MoshHosts

@@ -91,6 +91,7 @@ struct SortButton<T>: View where T: Equatable {
 struct HostListView: View {
   @StateObject private var _state = HostsObservable()
   @EnvironmentObject private var _nav: Nav
+  @State private var _pendingDelete: MoshDeletePrompt? = nil
 
   var body: some View {
     Group {
@@ -120,10 +121,10 @@ struct HostListView: View {
                   }, label: { Label("Duplicate", systemImage: "plus.square.on.square")})
                   Divider()
                   Button(role: .destructive, action: {
-                    _state.deleteHosts(indexSet: IndexSet([index]))
+                    _confirmDeleteHosts(indexSet: IndexSet([index]))
                   }, label: { Label("Delete", systemImage: "trash") })
                 })
-            }.onDelete(perform: _state.deleteHosts)
+            }.onDelete(perform: _confirmDeleteHosts)
           })
       }
     }
@@ -152,6 +153,21 @@ struct HostListView: View {
     // An iCloud pull can land while this screen is open — refresh so synced hosts appear live.
     .onReceive(NotificationCenter.default.publisher(for: HostsCloudMirror.didChangeNotification)) { _ in
       _state.reloadHosts()
+    }
+    .moshDeleteConfirmation($_pendingDelete)
+  }
+  
+  // A deleted host is tombstoned, and the tombstone beats every other device's copy — this is the
+  // gesture that can empty a server list you spent a year building, so it says so first.
+  private func _confirmDeleteHosts(indexSet: IndexSet) {
+    let targets = indexSet.compactMap { $0 < _state.filteredList.count ? _state.filteredList[$0] : nil }
+    guard !targets.isEmpty else { return }
+    _pendingDelete = MoshDeletePrompt(
+      name: targets.count == 1 ? targets[0].alias : "",
+      what: targets.count == 1 ? "this host" : "\(targets.count) hosts",
+      extra: "Its address, user and connect settings go with it."
+    ) {
+      _state.deleteHosts(indexSet: indexSet)
     }
   }
   

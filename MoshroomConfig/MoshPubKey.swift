@@ -25,7 +25,60 @@
 import Foundation
 import SSH
 
+/// What can go wrong around an identity's private half. Separate from `SSHKeyError` because none of
+/// these are the SSH library's failures — they are ours, and the messages are shown to the user.
+public enum MoshPubKeyError: Error, LocalizedError {
+  case keychainWriteFailed
+  case publicHalfMismatch
+  case notRepairable
+
+  public var errorDescription: String? {
+    switch self {
+    case .keychainWriteFailed:
+      return "The keychain refused to store the private key, so nothing was saved. Unlock the device and try again."
+    case .publicHalfMismatch:
+      return "That private key belongs to a different identity — its public half doesn't match this one."
+    case .notRepairable:
+      return "This identity's private key lives in hardware and can't be replaced."
+    }
+  }
+}
+
 public extension MoshPubKey {
+
+  /// Do two authorized-key lines name the same identity? Type + base64 blob decide it; the trailing
+  /// comment is free text (a device name, an email) and must never count.
+  static func publicHalvesMatch(_ a: String, _ b: String) -> Bool {
+    func head(_ s: String) -> [Substring] {
+      Array(s.split(whereSeparator: { $0 == " " || $0 == "\t" || $0 == "\n" }).prefix(2))
+    }
+    let ha = head(a)
+    return ha.count == 2 && ha == head(b)
+  }
+
+  /// Give an EXISTING identity its private half back.
+  ///
+  /// This is the repair for the state where a key record arrived from another device (the record
+  /// travels over iCloud Drive) while its material did not (it rides the iCloud Keychain). Before
+  /// this existed the only way out was to delete the identity and import it again — which tombstones
+  /// the record and takes it off the other device too, i.e. the "fix" destroyed data. Here the record
+  /// is untouched: same id, same tag, nothing tombstoned, nothing re-synced.
+  ///
+  /// The key offered is verified to BE this identity before anything is written.
+  static func attachPrivateKey(_ key: SSHKey, to card: MoshPubKey) throws {
+    guard card.storageType == MoshPubKeyStorageTypeKeyChain else {
+      throw MoshPubKeyError.notRepairable
+    }
+    guard MoshPubKey.publicHalvesMatch(try key.authorizedKey(withComment: ""), card.publicKey) else {
+      throw MoshPubKeyError.publicHalfMismatch
+    }
+    guard let privateKey = String(data: try key.privateKeyFileBlob(), encoding: .utf8) else {
+      throw MoshPubKeyError.keychainWriteFailed
+    }
+    guard card.storePrivateKey(inKeychain: privateKey) else {
+      throw MoshPubKeyError.keychainWriteFailed
+    }
+  }
   
   static func addKeychainKey(id: String, key: SSHKey, comment: String) throws {
     let tag = ProcessInfo().globallyUniqueString
@@ -46,8 +99,13 @@ public extension MoshPubKey {
       return
     }
     
-    card.storePrivateKey(inKeychain: privateKey)
-    
+    // The record is added only AFTER the material is safely in the keychain. A card whose private
+    // half never landed is exactly the unusable "public half only" identity the app now refuses to
+    // create — better a failed creation the user can retry than a key that looks fine and can't sign.
+    guard card.storePrivateKey(inKeychain: privateKey) else {
+      throw MoshPubKeyError.keychainWriteFailed
+    }
+
     MoshPubKey.addCard(card);
   }
   

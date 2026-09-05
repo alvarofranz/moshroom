@@ -45,6 +45,21 @@ struct KeyDetailsView: View {
   @State private var _publicKeyCopied = false
   @State private var _certificateCopied = false
   @State private var _privateKeyCopied = false
+
+  // Is the private half actually on THIS device? A key record travels over iCloud Drive while its
+  // material rides the iCloud Keychain, so a device can hold a perfectly good record it cannot sign
+  // with. That state is repairable in place (below) — it used to mean deleting the key and importing
+  // it again, which tombstones the record and takes it off the other device too.
+  @State private var _hasPrivateKey = true
+  @State private var _privateKeyRestored = false
+  // One file importer serves both jobs; this says which one opened it.
+  @State private var _fileImportMode: FileImportMode = .certificate
+  @State private var _passphrasePromptIsPresented = false
+  @State private var _passphrase = ""
+  @State private var _pendingPrivateKeyBlob: Data? = nil
+  @State private var _pendingDelete: MoshDeletePrompt? = nil
+
+  private enum FileImportMode { case certificate, privateKey }
   
   private func _copyPublicKey() {
     _publicKeyCopied = false
@@ -101,7 +116,7 @@ struct KeyDetailsView: View {
     }
   }
   
-  private func _importCertificateFromFile(result: Result<URL, Error>) {
+  private func _importFromFile(result: Result<URL, Error>) {
     do {
       let url = try result.get()
       guard
@@ -115,7 +130,10 @@ struct KeyDetailsView: View {
       
       let blob = try Data(contentsOf: url, options: .alwaysMapped)
       
-      try _importCertificateFromBlob(blob)
+      switch _fileImportMode {
+      case .certificate: try _importCertificateFromBlob(blob)
+      case .privateKey:  _restorePrivateKey(from: blob)
+      }
     } catch {
       _showError(message: error.localizedDescription)
     }
@@ -171,10 +189,106 @@ struct KeyDetailsView: View {
     }, reason: "to copy private key to clipboard.")
   }
   
+  // MARK: - Giving an identity its private half back
+  //
+  // Everything here writes into the EXISTING record: same id, same tag, no delete, nothing
+  // tombstoned. The key offered has to prove it is this identity (its public half must match) before
+  // a byte is stored — MoshPubKey.attachPrivateKey owns that check.
+
+  private func _restorePrivateKeyFromClipboard() {
+    guard
+      let str = UIPasteboard.general.string,
+      !str.isEmpty
+    else {
+      return _showError(message: "Pasteboard is empty")
+    }
+    guard let blob = SSHKey.sanitize(key: str).data(using: .utf8) else {
+      return _showError(message: "Can't convert to string with UTF8 encoding")
+    }
+    _restorePrivateKey(from: blob)
+  }
+
+  private func _restorePrivateKey(from blob: Data, passphrase: String = "") {
+    do {
+      let key = try SSHKey(fromFileBlob: SSHKey.sanitize(key: blob), passphrase: passphrase)
+      try MoshPubKey.attachPrivateKey(key, to: card)
+
+      _pendingPrivateKeyBlob = nil
+      _passphrase = ""
+      _hasPrivateKey = true
+      withAnimation { _privateKeyRestored = true }
+      reloadCards()
+      DispatchQueue.main.asyncAfter(deadline: .now() + 4) {
+        withAnimation { _privateKeyRestored = false }
+      }
+    } catch SSHKeyError.wrongPassphrase {
+      // Keep the blob: the passphrase prompt feeds it straight back in.
+      let isRetry = _pendingPrivateKeyBlob != nil
+      _pendingPrivateKeyBlob = blob
+      _passphrase = ""
+      if isRetry {
+        // Re-arming an alert in the same runloop as the dismissal that just happened drops the
+        // presentation, and a second wrong passphrase would look like a dead button. One hop out.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+          _passphrasePromptIsPresented = true
+        }
+      } else {
+        _passphrasePromptIsPresented = true
+      }
+    } catch {
+      _showError(message: error.localizedDescription)
+    }
+  }
+
+  // AirDrop / Files / Messages — the transfer that does not go through the clipboard, and the reason
+  // an ED25519 key is worth defaulting to: it is a few hundred bytes, so it moves anywhere.
+  private func _exportPrivateKey(frame: CGRect) {
+    LocalAuth.shared.authenticate(callback: { success in
+      guard success, let privateKey = card.loadPrivateKey() else {
+        return
+      }
+      let name = card.id.trimmingCharacters(in: .whitespacesAndNewlines)
+      let url = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent(name.isEmpty ? "id_key" : name)
+      do {
+        try privateKey.write(to: url, atomically: true, encoding: .utf8)
+        // Same permissions ssh itself insists on, in case it lands somewhere that keeps them.
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+      } catch {
+        return _showError(message: error.localizedDescription)
+      }
+
+      let activityController = UIActivityViewController(activityItems: [url], applicationActivities: nil)
+      activityController.excludedActivityTypes = [
+        .postToTwitter, .postToFacebook, .assignToContact, .saveToCameraRoll,
+        .addToReadingList, .postToFlickr, .postToVimeo, .postToWeibo
+      ]
+      activityController.popoverPresentationController?.sourceView = _nav.navController.view
+      activityController.popoverPresentationController?.sourceRect = frame
+      activityController.completionWithItemsHandler = { _, _, _, _ in
+        try? FileManager.default.removeItem(at: url)
+      }
+      _nav.navController.present(activityController, animated: true, completion: nil)
+    }, reason: "to export the private key.")
+  }
+
   private func _removeCertificate() {
     _certificate = nil
   }
   
+  // Deleting a key is not a local act when sync is on: the record carries a tombstone that wins
+  // against every device, and the material goes with the iCloud Keychain. So it asks first, in
+  // those words, and only then for Face ID.
+  private func _confirmDelete() {
+    _pendingDelete = MoshDeletePrompt(
+      name: card.id,
+      what: "this identity",
+      extra: "Anything using it to connect will stop working."
+    ) {
+      _deleteCard()
+    }
+  }
+
   private func _deleteCard() {
     LocalAuth.shared.authenticate(callback: { success in
       if success {
@@ -199,7 +313,11 @@ struct KeyDetailsView: View {
       }
       
       _card.wrappedValue.id = keyID
-      _card.wrappedValue.storeCertificate(inKeychain: _certificate)
+      guard _card.wrappedValue.storeCertificate(inKeychain: _certificate) else {
+        // The keychain refused the write and put back what was there; say so instead of popping back
+        // as if the certificate had been saved.
+        return _showError(message: MoshPubKeyError.keychainWriteFailed.localizedDescription)
+      }
       
       MoshPubKey.saveIDS()
       _nav.navController.popViewController(animated: true)
@@ -266,7 +384,7 @@ struct KeyDetailsView: View {
               Label("Remove", systemImage: "minus.circle")
             }).tint(.moshTint)
           }
-        } else {
+        } else if _hasPrivateKey {
           Section() {
             Button(
               action: { _actionSheetIsPresented = true },
@@ -279,7 +397,10 @@ struct KeyDetailsView: View {
                   title: Text("Add Certificate"),
                   buttons: [
                     .default(Text("Import from clipboard")) { _importCertificateFromClipboard() },
-                    .default(Text("Import from a file")) { _filePickerIsPresented = true },
+                    .default(Text("Import from a file")) {
+                      _fileImportMode = .certificate
+                      _filePickerIsPresented = true
+                    },
                     .cancel()
                   ]
                 )
@@ -287,20 +408,55 @@ struct KeyDetailsView: View {
           }
         }
         
-        Section() {
-          Button(action: _copyPrivateKey, label: {
-            HStack {
-              Label("Copy private key", systemImage: "doc.on.doc")
-              Spacer()
-              Text("Copied").opacity(_privateKeyCopied ? 1.0 : 0.0)
+        if _hasPrivateKey {
+          Section {
+            Button(action: _copyPrivateKey, label: {
+              HStack {
+                Label("Copy private key", systemImage: "doc.on.doc")
+                Spacer()
+                Text("Copied").opacity(_privateKeyCopied ? 1.0 : 0.0)
+              }
+            })
+            GeometryReader(content: { geometry in
+              let frame = geometry.frame(in: .global)
+              Button(action: { _exportPrivateKey(frame: frame) }, label: {
+                Label("Export private key", systemImage: "square.and.arrow.up")
+              }).frame(width: frame.width, height: frame.height, alignment: .leading)
+            })
+          } header: {
+            Text("Private Key")
+          } footer: {
+            Text(_privateKeyRestored
+                 ? "Private key restored on this device."
+                 : "Both ask for Face ID first. Export writes an OpenSSH key file you can AirDrop or save — it is the private key itself, so treat it like one.")
+              .foregroundColor(_privateKeyRestored ? Color.green : nil)
+          }
+        } else {
+          Section {
+            HStack(alignment: .top, spacing: 8) {
+              Image(systemName: "exclamationmark.triangle.fill").foregroundColor(.orange)
+              Text("The private half of this identity isn't on this device, so it can't sign in anywhere yet.")
             }
-          })
+            Button(action: _restorePrivateKeyFromClipboard, label: {
+              Label("Paste private key", systemImage: "doc.on.clipboard")
+            })
+            Button(action: {
+              _fileImportMode = .privateKey
+              _filePickerIsPresented = true
+            }, label: {
+              Label("Add from a file", systemImage: "folder")
+            })
+          } header: {
+            Text("Private Key")
+          } footer: {
+            Text("Copy or export it from the device that has it. Moshroom checks the key really is this identity before storing it, and the identity itself is left alone — nothing is deleted and nothing is re-synced.\n\n" + Moshsync.incompleteKeysHint)
+          }
         }
       }
       
       Section() {
         Button(
-          action: _deleteCard,
+          action: _confirmDelete,
           label: { Label("Delete", systemImage: "trash").foregroundColor(.moshTint)}
         )
           .tint(.moshTint)
@@ -315,13 +471,29 @@ struct KeyDetailsView: View {
     .fileImporter(
       isPresented: $_filePickerIsPresented,
       allowedContentTypes: [.text, .data, .item],
-      onCompletion: _importCertificateFromFile
+      onCompletion: _importFromFile
     )
     .onAppear(perform: {
       _keyName = card.id
       _certificate = card.loadCertificate()
       _originalCertificate = _certificate
+      _hasPrivateKey = card.hasPrivateKeyMaterial()
     })
+    .alert("Passphrase", isPresented: $_passphrasePromptIsPresented) {
+      SecureField("Passphrase", text: $_passphrase)
+      Button("Unlock") {
+        if let blob = _pendingPrivateKeyBlob {
+          _restorePrivateKey(from: blob, passphrase: _passphrase)
+        }
+      }
+      Button("Cancel", role: .cancel) {
+        _pendingPrivateKeyBlob = nil
+        _passphrase = ""
+      }
+    } message: {
+      Text("This private key is protected with a passphrase.")
+    }
+    .moshDeleteConfirmation($_pendingDelete)
     .alert(errorMessage: $_errorMessage)
   }
 }

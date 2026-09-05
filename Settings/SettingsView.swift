@@ -42,6 +42,9 @@ struct SettingsView: View {
   @State private var _lastSync = HostsCloudMirror.lastSyncDate
   @State private var _syncSummary = HostsCloudMirror.lastSyncSummary
   @State private var _syncStatus = HostsCloudMirror.lastSyncStatus
+  // The secrets half of sync — how much rides the iCloud Keychain, how much is still device-only, and
+  // whether any identity is stuck holding a public half with no private one. Counts only (Moshsync).
+  @State private var _health: Moshsync.Health? = nil
   @State private var _now = Date()
   private let _clock = Timer.publish(every: 30, on: .main, in: .common).autoconnect()
 
@@ -145,7 +148,10 @@ struct SettingsView: View {
         .onChange(of: _iCloudSyncOn) { on in
           MoshroomDefaults.setICloudSyncEnabled(on)
           MoshroomDefaults.save()
+          // Turning it on is a full pass, secrets included: everything already on this device gets
+          // re-written into the iCloud Keychain, not just what gets saved from now on.
           if on { HostsCloudMirror.syncNow() }
+          _refreshHealth()
         }
 
         if _iCloudSyncOn && _iCloudAvailable {
@@ -179,6 +185,33 @@ struct SettingsView: View {
             Text(summary).font(.subheadline).foregroundColor(.secondary)
           }
 
+          if let health = _health, !health.isEmpty {
+            HStack {
+              Text("Secrets").foregroundColor(.secondary)
+              Spacer()
+              Text(health.label).monospacedDigit()
+            }
+            .font(.subheadline)
+          }
+
+          if let health = _health, health.incompleteKeys > 0 {
+            // The one state a user cannot diagnose alone: the record travelled, the private half did
+            // not. Named here, in the sync section, because that is where they come looking.
+            VStack(alignment: .leading, spacing: 4) {
+              HStack(spacing: 6) {
+                Image(systemName: "exclamationmark.triangle.fill").foregroundColor(.orange)
+                Text(health.incompleteKeys == 1
+                     ? "1 key is waiting for its private half"
+                     : "\(health.incompleteKeys) keys are waiting for their private half")
+              }
+              Text(Moshsync.incompleteKeysHint)
+                .font(.footnote)
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+            .font(.subheadline)
+          }
+
           // Sync Now closes the section: the status above is what you read, this is what you press.
           Button {
             HostsCloudMirror.syncNow()
@@ -196,7 +229,7 @@ struct SettingsView: View {
         Text("Sync with iCloud")
       } footer: {
         Text(_iCloudAvailable
-             ? "One switch for everything: hosts, keys, snippets, passwords and 2FA codes follow your devices — secrets end-to-end encrypted through your iCloud Keychain. Secure Enclave keys never leave this device."
+             ? "One switch for everything: hosts, keys, snippets, passwords and 2FA codes follow your devices — secrets end-to-end encrypted through your iCloud Keychain. Turning it on brings across what you already had, not just what you save next. Turning it off stops new secrets from syncing and leaves the ones already in your iCloud Keychain alone, so no other device loses anything. Secure Enclave keys never leave this device."
              : "Sign in to iCloud to sync your hosts, keys, snippets, passwords and 2FA codes across your devices.")
       }
 
@@ -233,6 +266,7 @@ struct SettingsView: View {
       _syncSummary = HostsCloudMirror.lastSyncSummary
       _syncStatus = HostsCloudMirror.lastSyncStatus
       _now = Date()
+      _refreshHealth()
     }
     .onReceive(NotificationCenter.default.publisher(for: HostsCloudMirror.syncStateNotification)) { _ in
       _isSyncing = HostsCloudMirror.isSyncing
@@ -240,6 +274,7 @@ struct SettingsView: View {
       _syncSummary = HostsCloudMirror.lastSyncSummary
       _syncStatus = HostsCloudMirror.lastSyncStatus
       _now = Date()
+      _refreshHealth()
     }
     .onReceive(_clock) { now in
       _now = now   // keeps the "2m ago" label honest while the screen sits open
@@ -256,6 +291,12 @@ struct SettingsView: View {
     })
     .tint(.moshTint)
 
+  }
+
+  // A handful of keychain attribute queries — no values read, nothing decrypted — and it has to run
+  // where MoshPubKey lives, which is the main thread.
+  private func _refreshHealth() {
+    _health = MoshroomDefaults.isICloudSyncEnabled() ? Moshsync.health() : nil
   }
 
   // Best-fitting single unit — "just now", "5m ago", "3h ago", "2d ago". Simple and clean.

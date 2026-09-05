@@ -67,6 +67,7 @@
 		97F77FEB281D11D60CB853C4 /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = D421482C8A58AD010325DE62 /* Foundation.framework */; };
 		9AA7BB1E9A955A0F1E664363 /* MoshvaultViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = E4FD3D95B858D8D01DEEE573 /* MoshvaultViews.swift */; };
 		AAAAA1110001000000000001 /* HostsCloudMirror.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAAA1110001000000000002 /* HostsCloudMirror.swift */; };
+		AAAAA1110002000000000001 /* Moshsync.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAAA1110002000000000002 /* Moshsync.swift */; };
 		B102C0DE000000000000B17D /* Moshkitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = B102C0DE000000000000F11E /* Moshkitor.swift */; };
 		B10C0000000000000000B17D /* MoshLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10C0000000000000000F11E /* MoshLog.swift */; };
 		B1D90000000000000000B17D /* Moshdrop.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1D90000000000000000F11E /* Moshdrop.swift */; };
@@ -426,6 +427,7 @@
 		909B03E2E8C5A9D15A54CDDE /* MoshroomShare.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = MoshroomShare.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		91424650D3949AA7FB312F37 /* MoshQRScanner.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MoshQRScanner.swift; sourceTree = "<group>"; };
 		AAAAA1110001000000000002 /* HostsCloudMirror.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostsCloudMirror.swift; sourceTree = "<group>"; };
+		AAAAA1110002000000000002 /* Moshsync.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Moshsync.swift; sourceTree = "<group>"; };
 		B102C0DE000000000000F11E /* Moshkitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Moshkitor.swift; sourceTree = "<group>"; };
 		B10C0000000000000000F11E /* MoshLog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoshLog.swift; sourceTree = "<group>"; };
 		B1D90000000000000000F11E /* Moshdrop.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Moshdrop.swift; sourceTree = "<group>"; };
@@ -769,6 +771,7 @@
 				B1EE0000000000000000C0E1 /* Moshxplore.swift */,
 				FACEB00C0000000000000101 /* Moshlight.swift */,
 				AAAAA1110001000000000002 /* HostsCloudMirror.swift */,
+				AAAAA1110002000000000002 /* Moshsync.swift */,
 				B102C0DE000000000000F11E /* Moshkitor.swift */,
 				B1D90000000000000000F11E /* Moshdrop.swift */,
 				B1F10000000000000000F11E /* Moshify.swift */,
@@ -1897,6 +1900,7 @@
 				B1EE0000000000000000C0E0 /* Moshxplore.swift in Sources */,
 				FACEB00C0000000000000102 /* Moshlight.swift in Sources */,
 				AAAAA1110001000000000001 /* HostsCloudMirror.swift in Sources */,
+				AAAAA1110002000000000001 /* Moshsync.swift in Sources */,
 				B102C0DE000000000000B17D /* Moshkitor.swift in Sources */,
 				B1D90000000000000000B17D /* Moshdrop.swift in Sources */,
 				B1F10000000000000000B17D /* Moshify.swift in Sources */,
