@@ -437,16 +437,18 @@ function term_write(data) {
   t.interpret(data);
 }
 
-// Moshroom: native shows a loader while a terminal is not drawing yet (coming back to the app, a
-// session waking, a page rebuilt) and takes it down on this. Two animation frames: the first runs
-// before the next paint, the second once it is on screen. A page that is not being drawn runs
-// neither, which is exactly the point.
-function term_notifyPainted(token) {
-  requestAnimationFrame(function() {
-    requestAnimationFrame(function() {
-      _postMessage('painted', {token: token});
-    });
-  });
+// Moshroom: whether any row on screen shows text. Native asks this to decide whether a terminal it
+// is bringing back is still blank (it shows a loader only then, and only until this turns true).
+function term_screenHasContent() {
+  try {
+    // The rows in view, through hterm's own text reader (rows are records here, not plain nodes).
+    var top = t.scrollPort_.getTopRowIndex();
+    var end = Math.min(top + t.screenSize.height, t.getRowCount());
+    return /\S/.test(t.getRowsText(top, end));
+  } catch (e) {
+    // Cannot tell: say "has content", so a loader can never sit over a terminal it failed to read.
+    return true;
+  }
 }
 
 function term_paste(str) {

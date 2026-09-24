@@ -286,7 +286,7 @@ class TermController: UIViewController {
     // A tab brought back from its archive (a relaunch): its page loads, then its session, before
     // there is anything to see.
     if meta.isSuspended {
-      moshroomBeginCatchUp(expectOutput: true)
+      moshroomBeginCatchUp()
     }
   }
 
@@ -604,13 +604,6 @@ extension TermController: SuspendableSession {
     }
     // Whatever the page held while it was gone reaches it only now: a bell in there is from then.
     _termDevice.moshroomQuietReplay()
-    // The page is back and the redraw is on its way: the loader has no business outlasting it by
-    // more than a moment, whatever becomes of the reports it is waiting for.
-    let token = _catchUp.token
-    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
-      guard let self, self._catchUp.active, self._catchUp.token == token else { return }
-      self._endCatchUp()
-    }
     if (_session as? MCPSession)?.moshroomRepaintMoshSession() == true {
       return
     }
@@ -657,7 +650,7 @@ extension TermController: SuspendableSession {
     if let params = (payload.session as? MCPSession)?.sessionParams,
        params.childSessionType == "mosh", params.hasEncodedState() {
       MoshLog.log("session", "waking a parked mosh session")
-      moshroomBeginCatchUp(expectOutput: true)
+      moshroomBeginCatchUp()
     }
     payload.resumeFromSuspended()
     _moshroomSessionDidGoLive()
@@ -704,82 +697,74 @@ extension TermController: SuspendableSession {
 // MARK: - Catch-up loader
 
 extension TermController {
-  /// The terminal may not be drawing for a moment: the app is coming back, a parked session is
-  /// waking, a relaunched tab is restoring, or WebKit is rebuilding a page it threw away. A loader
-  /// covers the wait, but only if it lasts (a quick return shows nothing at all), and it goes the
-  /// moment the page reports it has drawn: right away, or, when `expectOutput`, once the session's
-  /// next output is on screen. A newer call supersedes an older one.
-  func moshroomBeginCatchUp(expectOutput: Bool) {
-    // A wait for the session's own output is the stronger one: a "drawn now" request (coming back,
-    // a window becoming key) must not cut it short, or the loader lifts before the session draws.
-    if !expectOutput, _catchUp.active, _catchUp.expectOutput {
-      return
-    }
-    let wasShown = _catchUp.active && _catchUp.shown
+  /// The terminal may come back blank for a moment: the app returning, a parked session waking, a
+  /// relaunched tab restoring, or WebKit rebuilding a page it threw away. The rule is deliberately
+  /// plain: one second after that, the terminal is asked whether it shows any text at all. If it
+  /// does, nothing happens. If it does not, a loader shows, and the question is asked again every
+  /// half second until there is text, then it goes. It looks at the screen itself, so it can never
+  /// sit over content. Only for a tab with a session to come back (a fresh local shell is blank by
+  /// design), never for more than 15 s, and only while the tab is on screen.
+  func moshroomBeginCatchUp() {
+    guard !_catchUp.active else { return }
     _catchUp.token += 1
     let token = _catchUp.token
     _catchUp.active = true
-    _catchUp.expectOutput = expectOutput
+    _catchUp.shown = false
     _catchUp.startedAt = Date()
-    // A loader already up stays up (and keeps turning) across a wait that supersedes it.
-    _catchUp.shown = wasShown
-    if expectOutput {
-      _termView.moshroomNotifyPainted(afterNextOutput: token)
-    } else {
-      _termView.moshroomNotifyPaintedNow(token)
+    DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+      self?._checkCatchUp(token)
     }
-    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
-      guard let self, self._catchUp.active, self._catchUp.token == token else { return }
-      self._showCatchUpLoader()
+  }
+
+  private func _checkCatchUp(_ token: Int) {
+    guard _catchUp.active, _catchUp.token == token else { return }
+    let hasSessionToShow = moshroomHasLiveChildSession || meta.isSuspended
+    let onScreen = _termView.window != nil && !_termView.isHidden
+    guard hasSessionToShow, onScreen else {
+      _endCatchUp()
+      return
     }
-    // Never for ever: whatever it was waiting for, the terminal is back in charge after this.
-    DispatchQueue.main.asyncAfter(deadline: .now() + 15) { [weak self] in
-      guard let self, self._catchUp.active, self._catchUp.token == token else { return }
+    if Date().timeIntervalSince(_catchUp.startedAt) > 15 {
       MoshLog.log("session", "loader timed out")
-      self._endCatchUp()
+      _endCatchUp()
+      return
+    }
+    _termView.moshroomScreenHasContent { [weak self] hasContent in
+      guard let self, self._catchUp.active, self._catchUp.token == token else { return }
+      if hasContent {
+        self._endCatchUp()
+        return
+      }
+      if !self._catchUp.shown {
+        self._showCatchUpLoader()
+      }
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+        self?._checkCatchUp(token)
+      }
     }
   }
 
-  /// The terminal was just put on screen: if a catch-up is still waiting, ask the page again (a page
-  /// that was hidden never ran the frames that would have answered).
-  func moshroomRecheckCatchUp() {
-    guard _catchUp.active else { return }
-    if _catchUp.expectOutput {
-      _termView.moshroomRecheckPainted(afterOutput: _catchUp.token)
-    } else {
-      _termView.moshroomNotifyPaintedNow(_catchUp.token)
-    }
-  }
-
-  /// The session reached its local prompt, which draws nothing by design: that IS the screen. (Posted
-  /// from the command queue with the session as its object; hopped to main here.)
+  /// The session reached its local prompt, which draws nothing by design: nothing to wait for.
+  /// (Posted from the command queue with the session as its object; hopped to main here.)
   @objc func _moshroomSessionPromptReady(_ n: Notification) {
     DispatchQueue.main.async { [weak self] in
       guard let self, self._catchUp.active, let session = self._session,
             (n.object as AnyObject?) === session else { return }
-      self._termView.moshroomNotifyPaintedNow(self._catchUp.token)
+      self._endCatchUp()
     }
-  }
-
-  @objc func moshroomTermViewDidPaint(_ token: NSNumber) {
-    guard _catchUp.active, token.intValue == _catchUp.token else { return }
-    _endCatchUp()
   }
 
   /// TermView is reloading its page after WebKit killed the renderer.
   @objc func moshroomTermViewWillRebuild() {
-    moshroomBeginCatchUp(expectOutput: true)
+    moshroomBeginCatchUp()
   }
 
   private func _showCatchUpLoader() {
     let loader = _catchUpLoader()
-    let alreadyUp = _catchUp.shown
     _catchUp.shown = true
     _termView.bringSubviewToFront(loader)
     loader.show(caption: _catchUpCaption, onLight: _termView.backgroundColor?.isLight ?? false)
-    if !alreadyUp {
-      MoshLog.log("session", "loader shown")
-    }
+    MoshLog.log("session", "loader shown")
   }
 
   private func _endCatchUp() {
@@ -824,7 +809,6 @@ extension TermController {
 final class MoshroomCatchUp {
   var token = 0
   var active = false
-  var expectOutput = false
   var shown = false
   var startedAt = Date()
   var loader: MoshroomCatchUpView?

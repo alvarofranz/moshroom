@@ -78,10 +78,6 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
   // Composer sends that arrived while the page was not ready: each is [text, submit], delivered in
   // order once it is (see -pasteString:submit:).
   NSMutableArray<NSArray *> *_pendingPastes;
-  // Drawn-again reports the controller asked for (see moshroomNotifyPainted*): one riding the next
-  // output (output queue only), one waiting for the page to be ready (main thread only).
-  NSInteger _outputPaintToken;
-  NSInteger _readyPaintToken;
 
 #if DEBUG
   // Dev-only JS console poller (see _startDebugJSProbe).
@@ -501,87 +497,21 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
     _jsIsBusy = YES;
     _jsBuffer = [[NSMutableString alloc] init];
     
-    NSInteger token = 0;
-    NSString *jsScript = [self _withPaintReport:term_write(buffer) draws:[TermView _moshroomDraws:buffer] token:&token];
-    [self _evalJSScript:jsScript paintToken:token];
+    NSString *jsScript = term_write(buffer);
+    [self _evalJSScript:jsScript];
   });
 }
 
-// Output queue only: the next output that DRAWS carries the drawn-again report the controller is
-// waiting for. Control-only chunks (the terminal's own mode switches, a prompt marker: pure OSC
-// sequences) do not count, or the loader would lift before anything is on screen. The report goes
-// first in the script so a write that throws cannot lose it; its animation frames still only run
-// once the whole script, the write included, is done.
-- (NSString *)_withPaintReport:(NSString *)jsScript draws:(BOOL)draws token:(NSInteger *)token
-{
-  if (_outputPaintToken == 0 || !draws) {
-    return jsScript;
-  }
-  NSString *withReport = [NSString stringWithFormat:@"term_notifyPainted(%ld);%@", (long)_outputPaintToken, jsScript];
-  *token = _outputPaintToken;
-  _outputPaintToken = 0;
-  return withReport;
-}
-
-// The page's own report (two animation frames, then a message) can go missing: measured on a page
-// rebuilt after WebKit dropped it, where it never arrived and the loader sat over a live terminal for
-// its whole 15 s cap. So the app reports too, a beat after the evaluation that carried the output
-// has run, whether it succeeded or not. Whichever arrives first ends the wait; the other is ignored.
-- (void)_reportPaintedSoon:(NSInteger)token
-{
-  if (token == 0) {
-    return;
-  }
-  __weak typeof(self) weakSelf = self;
-  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-    id tc = weakSelf.termController;
-    if ([tc respondsToSelector:@selector(moshroomTermViewDidPaint:)]) {
-      [tc performSelector:@selector(moshroomTermViewDidPaint:) withObject:@(token)];
-    }
-  });
-}
-
-// Whether a chunk of output does anything but operating-system commands (ESC ] ... BEL / ST).
-+ (BOOL)_moshroomDraws:(NSString *)chunk
-{
-  static NSRegularExpression *osc;
-  static dispatch_once_t once;
-  dispatch_once(&once, ^{
-    osc = [NSRegularExpression regularExpressionWithPattern:@"\x1b\][^\x07\x1b]*(\x07|\x1b\\)" options:0 error:nil];
-  });
-  NSString *rest = [osc stringByReplacingMatchesInString:chunk options:0 range:NSMakeRange(0, chunk.length) withTemplate:@""];
-  return rest.length > 0;
-}
-
-// The output a pending report was waiting for has already been written (the report went out with
-// it, or it is on its way): answer as soon as the page draws. Still waiting: leave it to the output.
-- (void)moshroomRecheckPaintedAfterOutput:(NSInteger)token
-{
-  dispatch_async(_jsQueue, ^{
-    if (_outputPaintToken == token) {
-      return;
-    }
-    dispatch_async(dispatch_get_main_queue(), ^{
-      [self moshroomNotifyPaintedNow:token];
-    });
-  });
-}
-
-- (void)moshroomNotifyPaintedAfterNextOutput:(NSInteger)token
-{
-  dispatch_async(_jsQueue, ^{
-    _outputPaintToken = token;
-  });
-}
-
-- (void)moshroomNotifyPaintedNow:(NSInteger)token
+// Whether the terminal shows any text right now (see TermController's catch-up loader). A page that
+// is not there, or not ready, answers no.
+- (void)moshroomScreenHasContent:(void (^)(BOOL hasContent))completion
 {
   if (!_isReady) {
-    _readyPaintToken = token;
+    completion(NO);
     return;
   }
-  [_webView evaluateJavaScript:[NSString stringWithFormat:@"term_notifyPainted(%ld);", (long)token] completionHandler:^(id result, NSError *error) {
-    [self _reportPaintedSoon:token];
+  [_webView evaluateJavaScript:@"term_screenHasContent();" completionHandler:^(id result, NSError *error) {
+    completion(!error && [result respondsToSelector:@selector(boolValue)] && [result boolValue]);
   }];
 }
 
@@ -661,22 +591,14 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
     if (buffer.length > 0) {
       jsScript = [term_write(buffer) stringByAppendingString:jsScript];
     }
-    NSInteger token = 0;
-    jsScript = [self _withPaintReport:jsScript draws:YES token:&token];
-    [self _evalJSScript:jsScript paintToken:token];
+    [self _evalJSScript:jsScript];
   });
 }
 
 - (void)_evalJSScript:(NSString *)jsScript
 {
-  [self _evalJSScript:jsScript paintToken:0];
-}
-
-- (void)_evalJSScript:(NSString *)jsScript paintToken:(NSInteger)paintToken
-{
   dispatch_async(dispatch_get_main_queue(), ^{
     [_webView evaluateJavaScript: jsScript completionHandler:^(id result, NSError *error) {
-      [self _reportPaintedSoon:paintToken];
       dispatch_async(_jsQueue, ^{
         _jsIsBusy = NO;
         if (_jsBuffer.length > 0) {
@@ -734,11 +656,6 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
     }
   } else if ([operation isEqualToString:@"openLink"]) {
     [self _openLink:data[@"url"]];
-  } else if ([operation isEqualToString:@"painted"]) {
-    id tc = self.termController;
-    if ([tc respondsToSelector:@selector(moshroomTermViewDidPaint:)]) {
-      [tc performSelector:@selector(moshroomTermViewDidPaint:) withObject:data[@"token"]];
-    }
   }
 }
 
@@ -800,11 +717,6 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
     if (self.moshroomOverlay) {
       [self bringSubviewToFront:self.moshroomOverlay];
     }
-  }
-  if (_readyPaintToken != 0) {
-    NSInteger token = _readyPaintToken;
-    _readyPaintToken = 0;
-    [self moshroomNotifyPaintedNow:token];
   }
 
   if (recovered) {

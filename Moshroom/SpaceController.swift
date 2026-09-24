@@ -186,7 +186,6 @@ class SpaceController: UIViewController {
       _ = ctrl.removeFromContainer()
     }
     current?.placeToContainer()
-    current?.moshroomRecheckCatchUp()
     // All of these are per tab, so they are re-read for the tab that just became visible.
     moshroomSyncLiveButton()
     moshroomUpdateTabLabel()
@@ -687,10 +686,8 @@ class SpaceController: UIViewController {
     // then disagreed: measured live, the page VC reported tab A, input went to tab A, and the user
     // was looking at tab B's session. Symmetric with the background handler, which already excludes
     // the current terminal.
-    // Coming back: the page may not be drawing for a moment (WebKit may have thrown it away, a parked
-    // session may be waking). A loader covers the wait if it lasts; the resume below supersedes this
-    // with a wait for the session's own output when a session is waking.
-    currentTerm()?.moshroomBeginCatchUp(expectOutput: false)
+    // Coming back: the terminal may be blank for a moment (see moshroomBeginCatchUp).
+    currentTerm()?.moshroomBeginCatchUp()
 
     _showOnlyCurrentTerminal()
 
@@ -713,8 +710,8 @@ class SpaceController: UIViewController {
 
     _focusOnShell()
     // On the Mac a window that was only behind others never goes to the background, so this is the
-    // only "coming back" there: the page may still need a moment to draw (see moshroomBeginCatchUp).
-    currentTerm()?.moshroomBeginCatchUp(expectOutput: false)
+    // only "coming back" there (see moshroomBeginCatchUp).
+    currentTerm()?.moshroomBeginCatchUp()
     // Coming back to the app (Cmd+Tab, window switch) must re-evaluate the quick-connect card:
     // it is one more idempotent reveal trigger, same contract as viewDidAppear and prompt-ready.
     if Moshroom.scratchOnly { showMoshnectorIfIdle() }
