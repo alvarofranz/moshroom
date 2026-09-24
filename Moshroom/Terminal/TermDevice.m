@@ -153,6 +153,9 @@ static int __sizeOfIncompleteSequenceAtTheEnd(const char *buffer, size_t len) {
   
   dispatch_semaphore_t _readlineSema;
   NSString *_readlineResult;
+
+  // Until when a replayed bell or clipboard copy is let through silently (see moshroomQuietReplay).
+  _Atomic(CFAbsoluteTime) _quietReplayUntil;
 }
 
 // Make win accesible on Swift
@@ -248,9 +251,24 @@ static int __sizeOfIncompleteSequenceAtTheEnd(const char *buffer, size_t len) {
 
 - (void)sendBracketedPaste:(NSString *)input
 {
+  [self sendBracketedPaste:input submit:NO];
+}
+
+- (void)sendBracketedPaste:(NSString *)input submit:(BOOL)submit
+{
   // A paste is user input too — same reason as -write:.
   [self.view moshroomScrollToBottom];
-  [self.view pasteString:input];
+  [self.view pasteString:input submit:submit];
+}
+
+- (void)moshroomQuietReplay
+{
+  _quietReplayUntil = CFAbsoluteTimeGetCurrent() + 2.0;
+}
+
+- (BOOL)_isQuietReplay
+{
+  return CFAbsoluteTimeGetCurrent() < _quietReplayUntil;
 }
 
 - (void)close
@@ -304,7 +322,10 @@ static int __sizeOfIncompleteSequenceAtTheEnd(const char *buffer, size_t len) {
 - (void)prompt:(NSString *)prompt secure:(BOOL)secure shell:(BOOL)shell {
   [self closeReadline];
 
-  _rawMode = NO;
+  // Through the setter, so the page's carriage-return translation comes back with cooked mode. A
+  // child that left without restoring raw mode (a parked mosh client leaves its thread before its
+  // own cleanup runs) used to leave the page translating nothing, and local messages stair-stepped.
+  self.rawMode = NO;
   
   
   NSDictionary *dict = @{
@@ -425,6 +446,9 @@ static int __sizeOfIncompleteSequenceAtTheEnd(const char *buffer, size_t len) {
 }
 
 - (void)viewDidReceiveBellRing {
+  if ([self _isQuietReplay]) {
+    return;
+  }
   [_delegate viewDidReceiveBellRing];
 }
 
@@ -476,6 +500,11 @@ static int __sizeOfIncompleteSequenceAtTheEnd(const char *buffer, size_t len) {
 
 - (void)viewCopyString:(NSString *)text
 {
+  // A restored client's first frame replays the remote's LAST copy: it must not overwrite whatever
+  // the user copied since.
+  if ([self _isQuietReplay]) {
+    return;
+  }
   [[UIPasteboard generalPasteboard] setString:text];
 }
 

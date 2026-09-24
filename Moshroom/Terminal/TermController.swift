@@ -337,6 +337,10 @@ extension TermController: SessionDelegate {
   public func sessionFinished() {
     self.delegate?.terminalHangup(control: self)
   }
+
+  public func sessionCheckpointDidChange() {
+    SessionRegistry.shared.persist(session: self)
+  }
 }
 
 let _apiRoutes:[String: (MCPSession, String) -> AnyPublisher<String, Never>] = [
@@ -429,9 +433,10 @@ extension TermController: TermDeviceDelegate {
   public func deviceIsReady() {
     if _sessionPayload != nil {
       _startSession()
-    } else {
-      resumeIfNeeded()
     }
+    // Idempotent (only a suspended tab resumes), and the one retry for a resume that was asked for
+    // before the page was ready.
+    resumeIfNeeded()
 
     guard _sessionPayload != nil else {
       print("Session Payload is nil")
@@ -555,21 +560,43 @@ extension TermController: SuspendableSession {
   }
 
   func resumeIfNeeded() {
-    guard _termDevice.isReady else { return }
     // A hidden tab whose web content process was jettisoned waits for this moment (becoming the
-    // shown tab / app foregrounding) to reload its terminal page — see TermView.
+    // shown tab / app foregrounding) to reload its terminal page (see TermView). Before the ready
+    // check: a page that died before it EVER became ready would otherwise never be reloaded, never
+    // report ready, and the tab would stay blank for good.
     _termView.moshroomReloadIfNeeded()
+    guard _termDevice.isReady else { return }
     SessionRegistry.shared.resumeIfNeeded(session: self)
   }
 
   // The terminal's web view came back from a WebKit content-process jettison: hterm is rebuilt
-  // but BLANK, while the session still believes the old screen is displayed. Nudge everything
-  // into repainting with a real size wiggle — cols-1 now, the true size ~250ms later. The spacing
+  // but BLANK, while the session still believes the old screen is displayed.
+  //
+  // mosh holds the whole screen on this side, so it repaints it from its own copy, locally and
+  // exactly. A resize does NOT do that reliably: the client only redraws everything when the
+  // server's reply carries a new size, and on a network that is still waking up (or slower than
+  // the 250ms below) both resizes reach the server together and the size never appears to change,
+  // which left a blank screen with scattered characters.
+  //
+  // Anything else gets a real size wiggle: cols-1 now, the true size ~250ms later. The spacing
   // matters: back-to-back resizes coalesce at the remote pty and apps see "no change". Two
-  // genuinely distinct SIGWINCHes make mosh resend its frame, TUIs (vim/tmux/opencode) redraw,
-  // and remote shell prompts re-render via readline. A fresh idle local shell has nothing to
-  // repaint — its prompt is reprinted instead (which also re-reveals the quick-connect card).
+  // genuinely distinct SIGWINCHes make TUIs (vim/tmux/opencode) redraw and remote shell prompts
+  // re-render via readline. A fresh idle local shell has nothing to repaint: its prompt is
+  // reprinted instead (which also re-reveals the quick-connect card).
   @objc func moshroomTermViewDidRecover() {
+    // The rebuilt page starts in its defaults: carriage-return translation on, whatever the session
+    // running here had set. Say it again (the device remembers what it last asked for).
+    _termDevice.autoCR = _termDevice.autoCR
+    // ...and with program clipboard writes OFF (term.js): let them back in once the session has
+    // redrawn, so a replayed copy from the old screen never lands on the iOS clipboard.
+    DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+      self?._termView.setClipboardWrite(true)
+    }
+    // Whatever the page held while it was gone reaches it only now: a bell in there is from then.
+    _termDevice.moshroomQuietReplay()
+    if (_session as? MCPSession)?.moshroomRepaintMoshSession() == true {
+      return
+    }
     let state = _termView.termUIState
     if state.cols > 1 {
       let rows = UInt16(clamping: state.rows)
@@ -583,17 +610,49 @@ extension TermController: SuspendableSession {
     (_session as? MCPSession)?.moshroomReprintPromptIfIdle()
   }
 
-  func resume(with unarchiver: NSKeyedUnarchiver) {
+  /// Asked by the rebuilt terminal view before it flushes what it held (see TermView): true when the
+  /// session running here will redraw the whole screen itself, so the held output can be dropped.
+  @objc func moshroomRecoveryRepaintsWholeScreen() -> Bool {
+    (_session as? MCPSession)?.moshroomMoshCanRepaint() ?? false
+  }
+
+  /// A mosh session to a saved host is running or parked in this tab, so it can be reconnected in
+  /// place (see moshroomReconnect).
+  var moshroomReconnectHost: String? {
+    guard let mcp = _session as? MCPSession, mcp.sessionParams?.childSessionType == "mosh" else { return nil }
+    let host = (meta.connectedHost ?? moshroomConnectedHost ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !host.isEmpty, MoshHosts.withHost(host) != nil else { return nil }
+    return host
+  }
+
+  /// Reconnect this tab's mosh session in place: what closing the tab and connecting again from Quick
+  /// Connect does, without losing the tab. For a session whose server no longer answers (it rebooted,
+  /// or the network in between blocks it): mosh itself never gives up on a server it has heard from.
+  func moshroomReconnect() {
+    guard let host = moshroomReconnectHost, let mcp = _session as? MCPSession else { return }
+    moshroomConnectedHost = host
+    mcp.moshroomReconnect(with: "mosh \(host)")
+  }
+
+  func resumeInPlace() -> Bool {
+    guard let payload = _sessionPayload, payload.session != nil else { return false }
+    payload.resumeFromSuspended()
+    _moshroomSessionDidGoLive()
+    return true
+  }
+
+  func resume(with unarchiver: NSKeyedUnarchiver?) {
     // Restore the saved terminal UI state if present — a stale/empty archive (e.g. suspended before a
     // payload existed) must NOT abort the resume, or the terminal would come back with no live session.
-    if let termUIState: TermUIState = unarchiver.bk_decode(of: [TermUIState.self], for: ArchiveKey.termUIState) {
+    if let unarchiver,
+       let termUIState: TermUIState = unarchiver.bk_decode(of: [TermUIState.self], for: ArchiveKey.termUIState) {
       _termView.applyTermUIState(termUIState)
     }
 
     if _sessionPayload == nil {
-      // Restore the saved session, or — if the archive carries none — start a brand-new shell so the
-      // terminal is always live (never a dead, sessionless prompt).
-      _sessionPayload = decodePayload(from: unarchiver) ?? MCPSessionPayload(params: MCPParams())
+      // Restore the saved session, or, if there is no archive or it carries none, start a
+      // brand-new shell so the terminal is always live (never a dead, sessionless prompt).
+      _sessionPayload = unarchiver.flatMap { decodePayload(from: $0) } ?? MCPSessionPayload(params: MCPParams())
       _sessionPayload!.start(in: _termDevice, sessionKey: _meta.key.uuidString)
       _session?.delegate = self
     } else {
@@ -608,9 +667,14 @@ extension TermController: SuspendableSession {
     _termView.setClipboardWrite(false)
 
     sessionPayload.suspend()
+    archiveSession(with: archiver)
+  }
 
+  @discardableResult func archiveSession(with archiver: NSKeyedArchiver) -> Bool {
+    guard let sessionPayload = _sessionPayload else { return false }
     archiver.bk_encode(_termView.termUIState, for: ArchiveKey.termUIState)
     sessionPayload.encode(with: archiver)
+    return true
   }
 }
 

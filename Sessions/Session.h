@@ -30,10 +30,12 @@
 /// Minimal snapshot contract used by Session.
 /// - hasEncodedState: quick guard
 /// - takeEncodedState: returns bytes and CLEARS them (consume-on-read)
+/// - peekEncodedState: returns bytes and keeps them (for archiving)
 /// - putEncodedState: overwrites bytes
 @protocol MoshSessionParamsSnapshotting <NSObject>
 - (BOOL)hasEncodedState;
 - (nullable NSData *)takeEncodedState;
+- (nullable NSData *)peekEncodedState;
 - (void)putEncodedState:(NSData *)data;
 @end
 
@@ -43,6 +45,10 @@ typedef id<MoshSessionParamsSnapshotting, NSSecureCoding> MoshSessionParams;
 @protocol SessionDelegate
 
 - (void)sessionFinished;
+// The session's resumable state changed: a mosh checkpoint landed, or a client consumed one. The
+// tab's archive must follow, so a relaunch can never start from a checkpoint that was already used.
+// Always called on the main queue.
+- (void)sessionCheckpointDidChange;
 
 @end
 

@@ -38,8 +38,16 @@ class SessionMeta: Codable {
 protocol SuspendableSession: AnyObject {
   var meta: SessionMeta { get }
   init(meta: SessionMeta?)
-  func resume(with unarchiver: NSKeyedUnarchiver)
+  /// Wake a session that is still alive in this process. False when there is none to wake (a tab
+  /// rebuilt after a relaunch), and the archive has to be read instead.
+  func resumeInPlace() -> Bool
+  /// Rebuild the session from its archive, or start a fresh one when there is no usable archive.
+  func resume(with unarchiver: NSKeyedUnarchiver?)
+  /// Put the session to sleep and archive it.
   func suspendSession(with archiver: NSKeyedArchiver)
+  /// Archive the session as it is right now, without touching it. False when there was nothing to
+  /// archive (no session yet), in which case the archiver holds nothing worth writing.
+  @discardableResult func archiveSession(with archiver: NSKeyedArchiver) -> Bool
 }
 
 @objc class SessionRegistry: NSObject {
@@ -51,7 +59,10 @@ protocol SuspendableSession: AnyObject {
   override init() {
     super.init()
     _fsReadMetaIndex()
-    
+    NotificationCenter.default.addObserver(self, selector: #selector(_protectedDataDidBecomeAvailable),
+                                           name: UIApplication.protectedDataDidBecomeAvailableNotification,
+                                           object: nil)
+
     DispatchQueue.main.asyncAfter(wallDeadline: DispatchWallTime.now() + TimeInterval(10)) {
       self._cleanLostSessions()
     }
@@ -157,22 +168,52 @@ protocol SuspendableSession: AnyObject {
       return
     }
 
-    _resume(forKey: session.meta.key)
-    session.meta.isSuspended = false
-  }
-  
-  
-  private func _resume(forKey key: UUID) {
-    guard
-      let session = _sessionsIndex[key],
-      let data = _fsRead(forKey: key),
-      let unarchiver = try? NSKeyedUnarchiver(forReadingFrom: data)
-    else {
+    // Still alive in this process: it wakes from memory. The archive has nothing it lacks, and
+    // reading it back is exactly what used to fail silently (a file that could not be read left the
+    // tab marked as resumed with nothing running in it: a terminal that swallowed every key).
+    if session.resumeInPlace() {
+      session.meta.isSuspended = false
       return
     }
-
-    session.resume(with: unarchiver)
+    // A tab rebuilt after a relaunch reads its archive, which stays sealed until the device has been
+    // unlocked. Read too early it looks missing, and the tab would start over as a fresh shell and
+    // lose its session. So it stays suspended and wakes the moment the data is there.
+    guard UIApplication.shared.isProtectedDataAvailable else {
+      _awaitingProtectedData.insert(session.meta.key)
+      return
+    }
     session.meta.isSuspended = false
+    // From its archive, or as a fresh session when there is none: a missing or unreadable archive
+    // must never leave a tab with no session at all.
+    let unarchiver = _fsRead(forKey: session.meta.key).flatMap { try? NSKeyedUnarchiver(forReadingFrom: $0) }
+    session.resume(with: unarchiver)
+  }
+
+  private var _awaitingProtectedData = Set<UUID>()
+
+  @objc private func _protectedDataDidBecomeAvailable() {
+    // Only for a tab the user is looking at: an unlock to the home screen or to another app must not
+    // start sessions in the background (a restored mosh client would run there with nothing to park
+    // it). The foreground triggers resume the rest, and find the data available by then.
+    guard UIApplication.shared.applicationState == .active else { return }
+    let keys = _awaitingProtectedData
+    _awaitingProtectedData.removeAll()
+    for key in keys {
+      if let session = _sessionsIndex[key] {
+        resumeIfNeeded(session: session)
+      }
+    }
+  }
+
+  /// Rewrite a tab's archive from its live state, without suspending it: called whenever what the tab
+  /// could resume from changes (a mosh checkpoint landed, or a client consumed one). Keeps the file
+  /// telling the truth at every step, so a relaunch after the app died never starts from stale state.
+  func persist(session: SuspendableSession) {
+    // A closed tab's archive is gone for good: a late notification must not bring it back.
+    guard _sessionsIndex[session.meta.key] === session else { return }
+    let archiver = NSKeyedArchiver(requiringSecureCoding: true)
+    guard session.archiveSession(with: archiver) else { return }
+    _fsWrite(archiver.encodedData, forKey: session.meta.key)
   }
   
   private var _fsSessionsFolderURL: URL? = nil
@@ -220,12 +261,21 @@ protocol SuspendableSession: AnyObject {
     }
   }
   
+  // Archives are written at the worst possible moment: as the app goes to sleep, often seconds after
+  // the phone locked. Complete protection refuses to create a file then, and the write used to fail
+  // in silence. "Unless open" still encrypts the file at rest and keeps it unreadable while locked
+  // (the archive holds the mosh session key), but lets it be CREATED while locked.
+  //
+  // A failed write removes the old file rather than leave it: an archive that no longer matches the
+  // session could seed a client from a checkpoint already used, and a tab that starts over as a fresh
+  // shell is the safe failure (a stale checkpoint is a frozen one).
   private func _fsWrite(_ data: Data, forKey key: UUID) {
+    guard let sessionURL = try? _fsSessionURL(key) else { return }
     do {
-      let sessionURL = try _fsSessionURL(key)
-      try data.write(to: sessionURL, options: [.atomic, .completeFileProtection])
+      try data.write(to: sessionURL, options: [.atomic, .completeFileProtectionUnlessOpen])
     } catch let e {
-      debugPrint(e)
+      MoshLog.log("sessions", "could not archive a tab: \(e.localizedDescription)")
+      try? FileManager.default.removeItem(at: sessionURL)
     }
   }
   
@@ -254,9 +304,9 @@ protocol SuspendableSession: AnyObject {
       let data = try jsonEncoder.encode(_metaIndex)
       let sessionsFolder = try _fsSessionsFolder()
       let indexURL = sessionsFolder.appendingPathComponent("index.json")
-      try data.write(to: indexURL, options: [.atomic])
+      try data.write(to: indexURL, options: [.atomic, .completeFileProtectionUnlessOpen])
     } catch let e {
-      debugPrint(e)
+      MoshLog.log("sessions", "could not write the tab index: \(e.localizedDescription)")
     }
   }
   

@@ -23,13 +23,6 @@
 		<string>c</string>
 		<string>no</string>
 	</array>
-	<key>mosh1</key>
-	<array>
-		<string>MAIN</string>
-		<string>mosh_main</string>
-		<string></string>
-		<string>no</string>
-	</array>
 	<key>scp</key>
 	<array>
 		<string>MAIN</string>

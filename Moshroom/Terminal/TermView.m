@@ -75,6 +75,9 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
   // The process died while this tab was hidden/backgrounded — reload deferred to the moment the
   // tab is next shown (reloading a hidden tab under memory pressure would just get killed again).
   BOOL _needsReloadOnReveal;
+  // Composer sends that arrived while the page was not ready: each is [text, submit], delivered in
+  // order once it is (see -pasteString:submit:).
+  NSMutableArray<NSArray *> *_pendingPastes;
 
 #if DEBUG
   // Dev-only JS console poller (see _startDebugJSProbe).
@@ -458,8 +461,20 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
 {
   dispatch_async(_jsQueue, ^{
     [_jsBuffer appendString:data];
-    
+
     if (_jsIsBusy) {
+      return;
+    }
+    // No terminal page to write into: it is being rebuilt after WebKit killed its renderer. Hold the
+    // output for the ready (which flushes it); evaluated now it would land in a page with no terminal
+    // yet and vanish, which is how a session resumed at that moment lost its first full screen and
+    // left only later differences on a blank page. Bounded: a session that streams while its renderer
+    // is gone would otherwise grow this without end; what gets dropped, mosh repaints and anything
+    // else redraws on the recovery resize (see TermController.moshroomTermViewDidRecover).
+    if (!_isReady) {
+      if (_jsBuffer.length > 1024 * 1024) {
+        [_jsBuffer setString:@""];
+      }
       return;
     }
 
@@ -520,7 +535,7 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
     if (!sself) {
       return;
     }
-    if (sself->_jsIsBusy || sself->_jsBuffer.length > 0) {
+    if (sself->_jsIsBusy || sself->_jsBuffer.length > 0 || !sself->_isReady) {
       if (attemptsLeft <= 0) {
         return;
       }
@@ -537,6 +552,11 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
 - (void)writeB64:(NSData *)data
 {
   dispatch_async(_jsQueue, ^{
+    // Same as -write: while the page is being rebuilt. These are the rare chunks that are not valid
+    // UTF-8, so they cannot join the text buffer; the recovery repaint redraws what they carried.
+    if (!_isReady) {
+      return;
+    }
     _jsIsBusy = YES;
 
     NSString * buffer = _jsBuffer;
@@ -676,13 +696,29 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
     // one (font size / theme may have changed since), then let the controller nudge the session
     // into repainting the fresh, blank hterm.
     [self applyTermUIState:self.termUIState];
-    // Anything the session wrote while the renderer was dead is still queued — flush it into the
-    // rebuilt hterm now (a no-op when the buffer is empty).
-    [self write:@""];
     id tc = self.termController;
+    // What the session wrote while the renderer was dead is still held. A session that is about to
+    // redraw the whole screen itself (a running mosh client) only wrote differences against the
+    // screen that was lost, plus replays of its last bell and clipboard copy: drop it, the redraw
+    // brings everything back. Anything else gets its output flushed into the rebuilt hterm.
+    // (Dropped on the output queue BEFORE the redraw below is asked for, which queues behind it.)
+    BOOL repaintsItself = [tc respondsToSelector:@selector(moshroomRecoveryRepaintsWholeScreen)]
+      && [tc moshroomRecoveryRepaintsWholeScreen];
+    if (repaintsItself) {
+      dispatch_async(_jsQueue, ^{
+        [_jsBuffer setString:@""];
+      });
+    } else {
+      [self write:@""];
+    }
     if ([tc respondsToSelector:@selector(moshroomTermViewDidRecover)]) {
       [tc performSelector:@selector(moshroomTermViewDidRecover)];
     }
+    [self _deliverPendingPastesAfter:0.5];
+  } else {
+    // Output held because the page was not ready yet (see -write:): deliver it. A no-op when empty.
+    [self write:@""];
+    [self _deliverPendingPastesAfter:0];
   }
 }
 
@@ -821,8 +857,46 @@ static NSString * _sanitizeTextForClipboard(NSString *text) {
 }
 
 - (void)pasteString:(NSString *)str {
-  if (str) {
-    [_webView evaluateJavaScript:term_paste(str) completionHandler:nil];
+  [self pasteString:str submit:NO];
+}
+
+// The paste goes through the page (hterm frames it as a bracketed paste when the program asked for
+// that), the Enter natively a beat later so it lands outside the paste's end marker and the program
+// does not read it as part of the same burst. Both leave from HERE, in that order: evaluated into a
+// page that is being rebuilt, the text used to vanish while its Enter still reached the program.
+// Main thread (the composer).
+- (void)pasteString:(NSString *)str submit:(BOOL)submit {
+  if (!str) {
+    return;
+  }
+  if (!_isReady) {
+    if (!_pendingPastes) {
+      _pendingPastes = [[NSMutableArray alloc] init];
+    }
+    [_pendingPastes addObject:@[str, @(submit)]];
+    return;
+  }
+  [_webView evaluateJavaScript:term_paste(str) completionHandler:nil];
+  if (submit) {
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+      [weakSelf.device viewSendString:@"\r"];
+    });
+  }
+}
+
+// Deliver the held composer sends, one after another. After a rebuild the page only knows the
+// program's paste mode once the session has redrawn, hence the delay before the first.
+- (void)_deliverPendingPastesAfter:(NSTimeInterval)delay {
+  NSArray<NSArray *> *pending = _pendingPastes;
+  _pendingPastes = nil;
+  NSTimeInterval at = delay;
+  for (NSArray *paste in pending) {
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(at * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+      [weakSelf pasteString:paste[0] submit:[paste[1] boolValue]];
+    });
+    at += 0.25;
   }
 }
 

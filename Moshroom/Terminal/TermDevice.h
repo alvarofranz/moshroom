@@ -94,6 +94,13 @@
 // the remote program enabled bracketed-paste mode) rather than as raw keystrokes. Wraps the view's
 // `pasteString:`. Named to avoid Swift's `paste`-family import collision with UIResponder.
 - (void)sendBracketedPaste:(NSString *)input;
+// The same, followed by an Enter once the paste has gone out (the composer's send). Text and Enter
+// travel together, so they reach the program in order even while the terminal page is being rebuilt.
+- (void)sendBracketedPaste:(NSString *)input submit:(BOOL)submit;
+// A client restored from a checkpoint is about to draw its first frame against a blank screen, which
+// replays the remote's last bell and last clipboard copy. For a couple of seconds, both pass silently.
+// Callable from any thread.
+- (void)moshroomQuietReplay;
 - (void)close;
 
 

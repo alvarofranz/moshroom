@@ -83,7 +83,6 @@ struct Complete {
       result.append(contentsOf: commands)
     }
     result.append(contentsOf: ["mosh", "exit", "ssh-copy-id"])
-    result.removeAll { $0 == "mosh1" }
     
     let set = Set<String>(result)
     result = Array(set)
@@ -180,7 +179,7 @@ struct Complete {
   private static func _completionKind(_ cmd: String, query: String = "") -> Kind {
     switch cmd {
     case "": return .command
-    case "ssh", "ssh2", "mosh", "mosh1": return .moshroomHost
+    case "ssh", "ssh2", "mosh": return .moshroomHost
     case "ping": return .host
     case "sftp", "scp": return _scpCompletionKind(query)
     case "ls": return .directory

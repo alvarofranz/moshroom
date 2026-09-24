@@ -28,7 +28,6 @@
 #include <dispatch/dispatch.h>
 
 #import "MCPSession.h"
-#import "MoshSession.h"
 #import "MoshPubKey.h"
 #import "SSHCopyIDSession.h"
 #import "SSHSession.h"
@@ -51,6 +50,10 @@
   dispatch_queue_t _sshQueue;
   TermStream *_cmdStream;
   NSString *_currentCmdLine;
+  // The tab is closing (see -kill): nothing may start a client for it any more.
+  BOOL _moshroomKilled;
+  // A reconnect the user asked for (see -moshroomReconnectWith:), taken once by the command queue.
+  NSString *_moshroomReconnectCommand;
 }
 
 @dynamic sessionParams;
@@ -77,30 +80,9 @@
     ios_setMiniRoot(homePath);
     [self updateAllowedPaths];
 
-    // A suspended mosh session is restored before anything else — `mosh` is the current client,
-    // `mosh1` the legacy one. Both resume the same way, so they share one path (a fix to how a
-    // resumed session ends must never land on only one of them).
-    if (self.sessionParams.hasEncodedState) {
-      Session *restored = nil;
-      if ([@"mosh" isEqualToString:self.sessionParams.childSessionType]) {
-        MoshParams *moshParams = (MoshParams *)self.sessionParams.childSessionParams;
-        restored = [[MoshroomMosh alloc] initWithMcpSession:self device:_device andParams:moshParams];
-      } else if ([@"mosh1" isEqualToString:self.sessionParams.childSessionType]) {
-        MoshSession *mosh = [[MoshSession alloc] initWithDevice:_device andParams:self.sessionParams.childSessionParams];
-        mosh.mcpSession = self;
-        restored = mosh;
-      }
-      if (restored) {
-        _childSession = restored;
-        [_childSession executeAttachedWithArgs:@""];
-        _childSession = nil;
-        // Re-suspended before it ever settled, or still holding state: keep everything for the resume.
-        if (self.sessionParams.hasEncodedState || self.moshroomAppSuspending) {
-          return;
-        }
-        // The resumed session ended for real — back to a plain local shell (see _runCommand).
-        [self _clearChildSession];
-      }
+    // A tab relaunched with a parked mosh session picks it back up before anything else.
+    if ([self _moshroomRunParkedSession] || [self _moshroomRunReconnectIfAsked]) {
+      return;
     }
     NSString *initialCommand = self.sessionParams.initialCommand;
     if (initialCommand.length > 0) {
@@ -110,21 +92,184 @@
     // A resumed child that ended for real falls through to here: sanitize the display modes the
     // dead session may have latched, exactly like the post-command path in _runCommand does.
     // No-op on a plain fresh boot.
-    [_device.view moshroomSanitizeModes];
     #if TARGET_OS_MACCATALYST
       MoshHosts *localhost = [MoshHosts withHost:@"localhost"];
       if (localhost) {
+        [_device.view moshroomSanitizeModes];
         NSString *sshcmd = [NSString stringWithFormat: @"ssh -A %@", localhost.host];
         [self enqueueCommand:sshcmd];
       } else {
-        [_device prompt:@"" secure:NO shell:YES]; [self _postPromptReady];
+        [self _moshroomBackAtPrompt];
       }
     #else
-    if (_device) {
-      [_device prompt:@"" secure:NO shell:YES]; [self _postPromptReady];
-    }
+    [self _moshroomBackAtPrompt];
     #endif
   });
+}
+
+// A mosh session PARKS whenever the app goes to sleep: its client checkpoints its state and steps
+// off the network, and a new client continues from that checkpoint when the tab is back. This is
+// the one place that runs a parked session, for a relaunched tab and an in-process resume alike.
+//
+// It decides by the one signal that cannot lie: whether the client that just returned produced a
+// checkpoint, which is always a client's last act (MoshroomMosh.moshroomParked). Nothing is read
+// from timing, from flags raised by other code, or from state left lying around. A client that
+// parks while the app is awake (it was still answering a suspend when the app came back, or the
+// user typed the client's own suspend keys) is simply woken again from its fresh checkpoint.
+//
+// Returns YES while the session stays parked because the app is asleep (moshroomResume continues it),
+// NO once nothing is parked: there never was anything, or the session ended for real. Either way the
+// child marker is then cleared, so the tab reads as the plain local shell it now is.
+// Command queue only.
+- (BOOL)_moshroomRunParkedSession
+{
+  NSUInteger wakes = 0;
+  while ([@"mosh" isEqualToString:self.sessionParams.childSessionType] && self.sessionParams.hasEncodedState) {
+    // A reconnect replaces this session, a closed tab has nothing to show it in: let it go.
+    if ([self _moshroomHasReconnect]) {
+      break;
+    }
+    if (self.moshroomSuspended) {
+      return YES;
+    }
+    // Only a client that parks the instant it starts, again and again, gets here: stop rather than spin.
+    if (++wakes > 8) {
+      break;
+    }
+    MoshParams *moshParams = (MoshParams *)self.sessionParams.childSessionParams;
+    MoshroomMosh *mosh = nil;
+    // Published under the same lock -kill takes, so a closing tab either sees this client (and
+    // stops it) or stops it from being created at all.
+    @synchronized (self) {
+      if (_moshroomKilled || !_device) {
+        return YES;
+      }
+      mosh = [[MoshroomMosh alloc] initWithMcpSession:self device:_device andParams:moshParams];
+      _childSession = mosh;
+    }
+    [mosh executeAttachedWithArgs:@""];
+    @synchronized (self) {
+      _childSession = nil;
+    }
+    if (!mosh.moshroomParked) {
+      break;
+    }
+  }
+  [self _clearChildSession];
+  return NO;
+}
+
+- (BOOL)_moshroomHasReconnect
+{
+  @synchronized (self) {
+    return _moshroomReconnectCommand != nil;
+  }
+}
+
+// After a session let go for a reconnect: run the connect as if typed at the prompt, with no prompt
+// in between (it would flash Quick Connect over a tab that is already connecting). Command queue only.
+- (BOOL)_moshroomRunReconnectIfAsked
+{
+  NSString *command;
+  @synchronized (self) {
+    command = _moshroomReconnectCommand;
+    _moshroomReconnectCommand = nil;
+  }
+  if (command.length == 0 || !_device) {
+    return NO;
+  }
+  // The session that let go never said goodbye to the screen: leave its modes behind, like a fresh
+  // connect from the prompt would find them.
+  [_device.view moshroomSanitizeModes];
+  [self enqueueCommand:command skipHistoryRecord:YES];
+  return YES;
+}
+
+// The user asked to reconnect this tab (TermController.moshroomReconnect): whatever its mosh session is
+// doing (waiting for a server that no longer answers, parked, still connecting), let it go and connect
+// again, here. The client lets go of the server through its park, which never needs the server; the
+// checkpoint is then dropped and `command` runs. The queue block covers a session with no client
+// running; with one, the command loop picks the reconnect up as the client leaves.
+- (void)moshroomReconnectWith:(NSString *)command
+{
+  @synchronized (self) {
+    if (_moshroomKilled) {
+      return;
+    }
+    _moshroomReconnectCommand = [command copy];
+  }
+  Session *child = _childSession;
+  if ([child isKindOfClass:[MoshroomMosh class]]) {
+    [(MoshroomMosh *)child moshroomLetGo];
+  }
+  dispatch_async(_cmdQueue, ^{
+    if (![self _moshroomHasReconnect]) {
+      return;
+    }
+    [self setActiveSession];
+    [self _clearChildSession];
+    [self _moshroomRunReconnectIfAsked];
+  });
+}
+
+// The app woke this tab (it is being shown again): continue a parked session. Serial with every
+// command on the queue, so by the time it runs nothing else is: a parked session is the only thing
+// it can find, and a client that never parked (still connecting when the app slept) has carried on
+// or finished by itself.
+- (void)moshroomResume
+{
+  self.moshroomSuspended = NO;
+  dispatch_async(_cmdQueue, ^{
+    if (![@"mosh" isEqualToString:self.sessionParams.childSessionType]) {
+      return;
+    }
+    [self setActiveSession];
+    if ([self _moshroomRunParkedSession] || [self _moshroomRunReconnectIfAsked]) {
+      return;
+    }
+    [self _moshroomBackAtPrompt];
+  });
+}
+
+// A mosh checkpoint landed or was consumed: the tab's archive must follow (see SessionDelegate).
+- (void)moshroomCheckpointDidChange
+{
+  dispatch_async(dispatch_get_main_queue(), ^{
+    [self.delegate sessionCheckpointDidChange];
+  });
+}
+
+// The terminal view was rebuilt and shows nothing. A mosh session holds the whole screen itself, so it
+// owns the repaint: a running client redraws locally, a parked one paints everything when it wakes.
+// Answers YES when that has it covered; NO sends the caller to its resize nudge instead.
+- (BOOL)moshroomMoshCanRepaint
+{
+  Session *child = _childSession;
+  return [child isKindOfClass:[MoshroomMosh class]] && ((MoshroomMosh *)child).moshroomCanRepaint;
+}
+
+- (BOOL)moshroomRepaintMoshSession
+{
+  if (![@"mosh" isEqualToString:self.sessionParams.childSessionType]) {
+    return NO;
+  }
+  Session *child = _childSession;
+  if (![child isKindOfClass:[MoshroomMosh class]]) {
+    return YES;
+  }
+  return [(MoshroomMosh *)child moshroomRepaintRebuiltView];
+}
+
+// Back at the local prompt with nothing running: never hand the user a prompt still trapped in a dead
+// session's modes (alternate screen, mouse reporting armed, hidden cursor), then arm the prompt.
+- (void)_moshroomBackAtPrompt
+{
+  if (!_device) {
+    return;
+  }
+  [_device.view moshroomSanitizeModes];
+  [_device prompt:@"" secure:NO shell:YES];
+  [self _postPromptReady];
 }
 
 // Moshroom: reprint the idle prompt after the terminal web view recovered from a jettison (its
@@ -133,7 +278,9 @@
 // NOTE the shell prompt renders NO text by design (the OSC handler only arms the line editor,
 // see the MoshroomPrompt shell branch): the prompt string is empty everywhere on purpose.
 - (void)moshroomReprintPromptIfIdle {
-  if ([self isRunningCmd]) {
+  // A parked session owns this screen too: it repaints when it wakes, and arming the local line
+  // editor under it would catch the first keys meant for the remote.
+  if ([self isRunningCmd] || self.sessionParams.childSessionType.length > 0) {
     return;
   }
   [_device prompt:@"" secure:NO shell:YES];
@@ -201,19 +348,11 @@
   setlocale(LC_ALL, "UTF-8");
   setlocale(LC_CTYPE, "UTF-8");
   
-  // Only an app-driven background suspend keeps the child alive across the return (see the
-  // chokepoint below + the payload's suspend). Any other return — clean exit, dropped link, or a
-  // leftover PERIODIC state checkpoint mosh writes during normal operation — is a real end: fall
-  // through to the chokepoint, which clears the marker. Gating the return on hasEncodedState (as
-  // an earlier fix did) mistook a periodic checkpoint for a suspend and re-stranded the tab.
   if ([cmd isEqualToString:@"mosh"]) {
-    [self _runMoshWithArgs:cmdline];
-    if (self.moshroomAppSuspending) {
-      return NO;
-    }
-  } else if ([cmd isEqualToString:@"mosh1"]) {
-    [self _runMosh1WithArgs:cmdline];
-    if (self.moshroomAppSuspending) {
+    MoshroomMosh *mosh = [self _runMoshWithArgs:cmdline];
+    // A client that checkpointed PARKED, it did not end: it carries on from that checkpoint, right
+    // away if the app is awake, at the resume otherwise (see _moshroomRunParkedSession).
+    if (mosh.moshroomParked && [self _moshroomRunParkedSession]) {
       return NO;
     }
   } else if ([cmd isEqualToString:@"ssh2"]) {
@@ -258,31 +397,16 @@
     setlocale(LC_CTYPE, "UTF-8");
   }
   
-  // The app is putting this session to sleep (background checkpoint), not a real end: the child
-  // (mosh) terminated its runloop as part of the suspend, but its marker + params MUST survive so
-  // the resume can relaunch it. Bail without clearing or re-arming the local prompt. The one
-  // reliable "this is a suspend, not an exit" signal is this flag, set by the payload's suspend
-  // BEFORE the child dies — not how the child returned (an app suspend kills mosh abruptly, so its
-  // own return path never runs).
-  if (self.moshroomAppSuspending) {
+  // Reaching this point means the command, and any child session it ran, ENDED for real: this tab is
+  // a plain local shell again, whatever the app is doing (a command that finishes while the app is
+  // asleep still owes the user a prompt). Without the clear, the child marker outlived the session,
+  // the tab never read as a fresh shell again, and neither the fresh-start reset nor the
+  // quick-connect card ever came back after an exit. No-op when no child ran.
+  [self _clearChildSession];
+  if ([self _moshroomRunReconnectIfAsked]) {
     return NO;
   }
-  // Reaching this point means any child session ENDED for real: this tab is a plain local shell
-  // again. Without the clear, the child marker outlived the session, the tab never read as a fresh
-  // shell again, and neither the fresh-start reset nor the quick-connect card ever came back after
-  // an exit (the tab sat "hung" on the stale "Connecting to…" transcript). No-op when no child ran.
-  [self _clearChildSession];
-
-  if (_device) {
-    // A child (ssh/mosh/TUI) may have died without restoring the screen: never hand the user a
-    // prompt still trapped in the dead session's modes (alternate screen, mouse reporting armed,
-    // hidden cursor). Runs after the child's last output has been interpreted; no-op on a clean exit.
-    [_device.view moshroomSanitizeModes];
-    // TODO At the moment this is just a prompt instead of a readline. This needs to be fixed.
-    // And bc of that, we need to check that there is a device. The MCP may be killed, but the loop here may still
-    // try to write to the device.
-    [_device prompt:@"" secure:NO shell:YES]; [self _postPromptReady];
-  }
+  [self _moshroomBackAtPrompt];
 
   return YES;
 }
@@ -339,8 +463,16 @@
 // local shell again. The marker's only purpose is resuming a LIVE (suspended) session.
 - (void)_clearChildSession
 {
+  if (self.sessionParams.childSessionType == nil && self.sessionParams.childSessionParams == nil) {
+    return;
+  }
+  BOOL wasMosh = [@"mosh" isEqualToString:self.sessionParams.childSessionType];
   self.sessionParams.childSessionType = nil;
   self.sessionParams.childSessionParams = nil;
+  // A mosh session's archive described something resumable: it must not outlive the session.
+  if (wasMosh) {
+    [self moshroomCheckpointDidChange];
+  }
 }
 
 - (void)_runSSHCopyIDWithArgs:(NSString *)args
@@ -356,36 +488,23 @@
   _childSession = nil;
 }
 
-- (void)_runMoshWithArgs:(NSString *)args
+- (MoshroomMosh *)_runMoshWithArgs:(NSString *)args
 {
   self.sessionParams.childSessionParams = [[MoshParams alloc] init];
   self.sessionParams.childSessionType = @"mosh";
   MoshroomMosh *mosh = [[MoshroomMosh alloc] initWithMcpSession: self device:_device andParams:self.sessionParams.childSessionParams];
-  //MoshSession *mosh = [[MoshSession alloc] initWithDevice:_device andParams:self.sessionParams.childSessionParams];
-  //mosh.mcpSession = self;
-  _childSession = mosh;
-  
+  @synchronized (self) {
+    _childSession = mosh;
+  }
+
   // duplicate args
   NSString *str = [NSString stringWithFormat:@"%@", args];
-  [_childSession executeAttachedWithArgs:str];
+  [mosh executeAttachedWithArgs:str];
 
-  _childSession = nil;
-}
-
-- (void)_runMosh1WithArgs:(NSString *)args
-{
-  self.sessionParams.childSessionParams = [[MoshParams alloc] init];
-  self.sessionParams.childSessionType = @"mosh1";
-  //MoshroomMosh *mosh = [[MoshroomMosh alloc] initWithMcpSession: self device:_device andParams:self.sessionParams.childSessionParams];
-  MoshSession *mosh = [[MoshSession alloc] initWithDevice:_device andParams:self.sessionParams.childSessionParams];
-  mosh.mcpSession = self;
-  _childSession = mosh;
-  
-  // duplicate args
-  NSString *str = [NSString stringWithFormat:@"%@", args];
-  [_childSession executeAttachedWithArgs:str];
-  
-  _childSession = nil;
+  @synchronized (self) {
+    _childSession = nil;
+  }
+  return mosh;
 }
 
 - (void)_runSSHWithArgs:(NSString *)args
@@ -413,6 +532,14 @@
 // TODO It would be nice if this could be re-used (interrupt children, interrupt yourself).
 - (void)kill
 {
+  // Latch first: a wake in flight (a hidden parked tab is woken by the switch that precedes its close)
+  // must find the tab closed instead of building a client on a device that is going away.
+  Session *child;
+  @synchronized (self) {
+    _moshroomKilled = YES;
+    _moshroomReconnectCommand = nil;
+    child = _childSession;
+  }
   if (_sshClients.count > 0) {
     dispatch_sync(_sshQueue, ^{
       for (id client in _sshClients) {
@@ -421,8 +548,8 @@
     });
     
     return;
-  } else if (_childSession) {
-    [_childSession kill];
+  } else if (child) {
+    [child kill];
   } else if (_cmdStream) {
     [self setActiveSession];
     ios_kill();
@@ -435,6 +562,9 @@
 
 - (void)suspend
 {
+  // Raised BEFORE the child is asked to park, so the command queue keeps a client that parks now
+  // parked, instead of waking it straight back up (see _moshroomRunParkedSession).
+  self.moshroomSuspended = YES;
   [self setActiveSession];
   [_childSession suspend];
 }

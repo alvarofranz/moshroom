@@ -114,6 +114,9 @@ enum Moshkeys {
     ])
     sc.view.bringSubviewToFront(tabLabel)
     sc.moshroomTabLabel = tabLabel
+    // Tapping the pill of a mosh tab offers to reconnect it in place (see moshroomTabPillTapped).
+    tabLabel.isUserInteractionEnabled = true
+    tabLabel.addGestureRecognizer(UITapGestureRecognizer(target: sc, action: #selector(SpaceController.moshroomTabPillTapped)))
 
     // "Back to live" chip — the terminal is a transcript you can read back through, and a viewport
     // parked up in the scrollback while the session prints below it reads exactly like a frozen

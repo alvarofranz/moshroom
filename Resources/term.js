@@ -269,7 +269,10 @@ function term_setup(accessibilityEnabled) {
   t.onTerminalReady = function() {
     window.installKB(t, t.scrollPort_.screen_);
     term_setAutoCarriageReturn(true);
-    term_setClipboardWrite(true);   // let apps/agents copy to the iOS clipboard via OSC 52
+    // Apps/agents can copy to the iOS clipboard via OSC 52, but NOT from the first frames of a page:
+    // a session restored or repainted into it replays the remote's last copy, which would overwrite
+    // what the user copied since. Native turns it on once the session has settled (TermController).
+    term_setClipboardWrite(false);
 
     t.setCursorVisible(true);
     // No terminal cursor block at the prompt — you type in Moshkitor, not here. Make hterm's

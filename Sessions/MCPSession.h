@@ -34,12 +34,11 @@
 
 @property (strong) MCPParams *sessionParams;
 @property (readonly) dispatch_queue_t cmdQueue;
-// Set by the session payload's suspend BEFORE the child is asked to checkpoint, cleared on
-// resume. YES means "the app is backgrounding this session" — its child (mosh) will terminate as
-// part of the suspend, but the child marker + params MUST survive for the resume. The command
-// loop reads this to tell an app suspend (keep everything) from a user exit (clear the marker).
-// atomic: set on the suspend thread, read on the command queue thread.
-@property (atomic) BOOL moshroomAppSuspending;
+// The app put this session to sleep (suspend) and has not woken it yet (moshroomResume). Its ONLY use
+// is deciding, when a mosh client parks, whether to keep it parked or wake it straight away: it never
+// decides whether something ended (only the client's own checkpoint says it parked).
+// atomic: set on the main thread, read on the command queue.
+@property (atomic) BOOL moshroomSuspended;
 
 - (void)registerSSHClient:(id __weak)sshClient;
 - (void)unregisterSSHClient:(id __weak)sshClient;
@@ -52,6 +51,17 @@
 // the rendered transcript (and with it the prompt line) is gone. If the shell is sitting idle at
 // its prompt, print it again so the recovered tab reads as a live shell, not an empty void.
 - (void)moshroomReprintPromptIfIdle;
+
+// Wake the session after a suspend: a parked mosh session continues from its checkpoint.
+- (void)moshroomResume;
+// A mosh checkpoint landed or was consumed; tells the delegate on the main queue.
+- (void)moshroomCheckpointDidChange;
+// The terminal view was rebuilt: a mosh session repaints it itself (answers YES when it has it covered).
+- (BOOL)moshroomRepaintMoshSession;
+// A running mosh client would redraw a rebuilt view on its own (moshroomRepaintMoshSession).
+- (BOOL)moshroomMoshCanRepaint;
+// Reconnect in place: let the tab's mosh session go and run `command` (e.g. `mosh <host>`).
+- (void)moshroomReconnectWith:(NSString *)command;
 
 - (void)updateAllowedPaths;
 - (void)setActiveSession;

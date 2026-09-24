@@ -60,6 +60,8 @@ func decodePayload(from coder: NSCoder) -> (any TermSessionPayload)? {
 private enum TermSessionPayloadKey: CodingKey {
   case sessionType
   case snapshot
+  // Present in every archive written since checkpoints became single-use (see decode).
+  case snapshotIsSingleUse
 }
 
 // MARK: - MCPSessionPayload
@@ -86,29 +88,14 @@ class MCPSessionPayload : TermSessionPayload {
     _session!.execute(withArgs: "")
   }
 
+  // The live session keeps its own checkpoint (in its params) from the moment it parks until a client
+  // consumes it, so waking it needs nothing from here: MCPSession owns the whole park/wake cycle.
   func resumeFromSuspended() {
-    guard let session = self._session else { return }
-    // The suspend is over — the command loop may clear the marker again on the next real exit.
-    session.moshroomAppSuspending = false
-    // Inject snapshot back into the live session's params, then clear.
-    if let snapshot = _snapshot {
-      session.sessionParams.putEncodedState(snapshot)
-      _snapshot = nil
-    }
-    if session.sessionParams.hasEncodedState() {
-      session.execute(withArgs: "")
-    }
+    _session?.moshroomResume()
   }
 
   func suspend() {
-    guard let session = self._session else { return }
-    // Mark the suspend BEFORE the child is checkpointed: the child (mosh) terminates as part of
-    // the suspend and the command loop, seeing it end, would otherwise clear the child marker and
-    // strand the resume at Quick Connect. Set here (suspend thread), cleared on resume.
-    session.moshroomAppSuspending = true
-    session.suspend()
-    // Extract snapshot from params. After this, params are clean config.
-    _snapshot = session.sessionParams.takeEncodedState()
+    _session?.suspend()
   }
 
   private enum Key: CodingKey { case sessionParams }
@@ -116,9 +103,14 @@ class MCPSessionPayload : TermSessionPayload {
   func encode(with coder: NSCoder) {
     // Type tag — so decode dispatch knows which payload to reconstruct.
     coder.bk_encode(Self.sessionType.rawValue, for: TermSessionPayloadKey.sessionType)
-    // Snapshot — stored as a sibling, never inside the params.
-    coder.bk_encode(_snapshot, for: TermSessionPayloadKey.snapshot)
-    // Config params — always clean (snapshot was extracted in suspend).
+    // Snapshot: stored as a sibling, never inside the params. COPIED from a live session, never
+    // taken: the checkpoint stays for the client that wakes from it, and once that client has
+    // consumed it this is nil, so an archive can never seed a second client.
+    let snapshot = _session.map { $0.sessionParams.peekEncodedState() } ?? _snapshot
+    coder.bk_encode(snapshot, for: TermSessionPayloadKey.snapshot)
+    coder.bk_encode(true, for: TermSessionPayloadKey.snapshotIsSingleUse)
+    // Config params: always clean, the checkpoint never travels inside them (MoshParams does not
+    // encode it), only as the sibling above.
     if let session = _session {
       coder.bk_encode(session.sessionParams, for: Key.sessionParams)
     } else {
@@ -131,7 +123,14 @@ class MCPSessionPayload : TermSessionPayload {
       return nil
     }
     let payload = MCPSessionPayload(params: params)
-    payload._snapshot = coder.bk_decode(for: TermSessionPayloadKey.snapshot)
+    // Archives from before checkpoints became single-use kept a checkpoint on disk after a client had
+    // already started from it, so theirs may be spent, and a spent one starts a client the server
+    // never answers again (a frozen tab). There is no telling a spent one from a fresh one, so none
+    // of them is used: such a tab starts as a fresh shell with Quick Connect, one tap from its host.
+    let singleUse: Bool = coder.bk_decode(for: TermSessionPayloadKey.snapshotIsSingleUse)
+    if singleUse {
+      payload._snapshot = coder.bk_decode(for: TermSessionPayloadKey.snapshot)
+    }
     return payload
   }
 }

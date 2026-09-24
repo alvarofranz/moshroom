@@ -454,10 +454,10 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
     // found", the well-known unframed-paste failure), so we must frame every send, not just
     // multi-line ones. hterm only adds the markers when the program actually turned bracketed paste
     // on, so the local `moshroom>` prompt and plain shells still receive it raw (unchanged).
-    device?.sendBracketedPaste(text)
-    // Trail the Enter so it lands after the paste (outside the bracketed-paste end marker) and the
-    // agent doesn't read it as part of the same burst.
-    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { device?.write("\r") }
+    // The Enter trails the paste (outside the bracketed-paste end marker, so the agent doesn't read it
+    // as part of the same burst) and leaves from the same place: a page being rebuilt holds both, so
+    // the Enter can never reach the agent without its text.
+    device?.sendBracketedPaste(text, submit: true)
     dismiss(animated: false)   // instant, no slide (see SpaceController.dismiss)
   }
 
@@ -1224,7 +1224,10 @@ enum MoshroomKeyboard {
   private static func _controlBytes(for key: UIKey) -> String? {
     guard let scalar = key.charactersIgnoringModifiers.uppercased().unicodeScalars.first else { return nil }
     let v = scalar.value
-    guard v >= 0x41, v <= 0x5A else { return nil }   // Ctrl+A ... Ctrl+Z
+    // Ctrl+6 is Ctrl-^ on every terminal (the key the caret shares): mosh's own escape, so a session
+    // that lost its server can be quit the way mosh's banner says ("Ctrl-^ .").
+    if v == 0x36 { return "\u{1E}" }
+    guard v >= 0x40, v <= 0x5F else { return nil }   // Ctrl+@ A ... Z [ \ ] ^ _
     return String(UnicodeScalar(v & 0x1F)!)
   }
 }

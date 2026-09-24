@@ -65,10 +65,24 @@ enum MoshError: Error, LocalizedError {
   var isVerbose: Bool = false
   private var initialMoshParams: MoshParams? = nil
   private let mcpSession: MCPSession
-  private var suspendSemaphore: DispatchSemaphore? = nil
+  // Signalled by onStateEncoded. One per client: a client parks at most once.
+  private let parkAnswered = DispatchSemaphore(value: 0)
   private let escapeKey: String
   private var logger: MoshLogger! = nil
   var isRunloopRunning = false
+  // True while this client is inside mosh_main: the only time it can checkpoint, repaint, or be
+  // signalled (before, it is still bootstrapping over SSH; after, its thread is gone).
+  private var isClientRunning = false
+  /// This client checkpointed its state: it PARKED (stepped off the network so a later client can
+  /// continue from that checkpoint), it did not end. A checkpoint is always a client's last act, so
+  /// this is exact. MCPSession reads it once the client's thread has been joined.
+  @objc private(set) var moshroomParked = false
+  // The tab was closed before this client got going: it must never start.
+  private var killRequested = false
+  // Guards "the client is alive, so act on it" against the client leaving at that same moment: its
+  // thread (and the pthread_t that names it) is only guaranteed to exist while isClientRunning is
+  // true and it has not parked, and both only change under this lock.
+  private let clientLock = NSLock()
   // The host's "Command on connect", captured on a fresh connect (never on a restore).
   private var pendingCommandOnConnect: String? = nil
   let stateCallback: mosh_state_callback = { (context, buffer, size) in
@@ -81,9 +95,14 @@ enum MoshError: Error, LocalizedError {
   }
 
   @objc init!(mcpSession: MCPSession, device: TermDevice!, andParams params: MoshParams!) {
-    if let escapeKey = ProcessInfo.processInfo.environment["MOSH_ESCAPE_KEY"],
-       escapeKey.count == 1 {
-      self.escapeKey = escapeKey
+    // The escape the client itself will listen for (it reads the same variable): a single
+    // character it accepts, "" when the user switched the escape off, else its default Ctrl-^.
+    let env = ProcessInfo.processInfo.environment["MOSH_ESCAPE_KEY"]
+    if let env, env.count == 1, let v = env.unicodeScalars.first?.value,
+       v > 0, v < 128, ![0x03, 0x04, 0x0a, 0x0c, 0x0d].contains(v) {
+      self.escapeKey = env
+    } else if env == "" {
+      self.escapeKey = ""
     } else {
       self.escapeKey = "\u{1e}"
     }
@@ -236,7 +255,19 @@ enum MoshError: Error, LocalizedError {
     }
 
     let _selfRef = UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque())
-    let encodedState = [UInt8](moshParams.takeEncodedState() ?? Data())
+    // A checkpoint seeds exactly ONE client, and this is the one: take it, and tell the tab's archive
+    // right away. A second client started from the same bytes would rewind the session behind the
+    // server (states it already discarded, nonces it already saw) and the server would never answer
+    // it again, a frozen screen that no reconnect inside the tab can fix.
+    let checkpoint = moshParams.takeEncodedState()
+    let encodedState = [UInt8](checkpoint ?? Data())
+    if checkpoint != nil {
+      mcpSession.moshroomCheckpointDidChange()
+      // The first frame of a client restored from a checkpoint is drawn against a blank screen, so it
+      // replays whatever the remote last left in its state: its last bell and its last clipboard
+      // copy. Neither is news; the device lets them pass silently for a moment.
+      device.moshroomQuietReplay()
+    }
 
     if let localesPath = Bundle.main.path(forResource: "locales", ofType: "bundle"),
        let ccharLocalesPath = localesPath.cString(using: .utf8) {
@@ -255,6 +286,22 @@ enum MoshError: Error, LocalizedError {
       }
     }
 
+    clientLock.lock()
+    let closed = killRequested
+    if !closed {
+      isClientRunning = true
+    }
+    clientLock.unlock()
+    if closed {
+      return 0
+    }
+    // The app put this tab to sleep while the client was still on its way up (an SSH bootstrap that
+    // outlasted the trip to the background, or a wake that crossed a new suspend): park it straight
+    // away. The escape waits in stdin and is the first thing the client reads, before it sends a
+    // single packet, so the checkpoint is exactly the state it started from.
+    if mcpSession.moshroomSuspended, let escape = controlEscape {
+      device.write(inDirectly: "\(escape)\u{1a}")
+    }
     mosh_main(
       self.stdin.file,
       self.stdout.file,
@@ -269,12 +316,16 @@ enum MoshError: Error, LocalizedError {
       encodedState.count,
       moshParams.predictOverwrite
     )
+    clientLock.lock()
+    isClientRunning = false
+    clientLock.unlock()
 
-    // Whatever the reason mosh_main returned (clean exit, dropped link, or an app-driven suspend
-    // tearing it down), MCPSession decides what happens next: an app suspend keeps the child
-    // marker + encoded state alive for the resume (MCPSession.moshroomAppSuspending, set by the
-    // session payload before the suspend), every other return falls through to the command loop's
-    // chokepoint which clears the marker. Nothing to do here.
+    // Parked or ended, MCPSession decides what comes next from `moshroomParked` (it is also the only
+    // signal when the client left through the keyboard escape, which exits its thread and never gets
+    // here). A client that ended for real leaves no checkpoint behind.
+    if !moshroomParked {
+      _ = moshParams.takeEncodedState()
+    }
     return 0
   }
 
@@ -495,28 +546,91 @@ enum MoshError: Error, LocalizedError {
       proxyStream = nil
       proxyCancellable = nil
       sshCancellable = nil
+      return
+    }
+    clientLock.lock()
+    defer { clientLock.unlock() }
+    guard isClientRunning else {
+      // Not up yet (or already gone): make sure it never starts.
+      killRequested = true
+      return
+    }
+    guard !moshroomParked, let tid = self.tid else { return }
+    // MOSH-ESC . (only when the client honours an escape), and SIGINT, which it always does.
+    if let escape = controlEscape {
+      device.write(inDirectly: "\(escape)\u{2e}")
+    }
+    pthread_kill(tid, SIGINT)
+  }
+
+  /// Park the client: it checkpoints its state and steps off the network, and a later client carries
+  /// the session on from that checkpoint (MCPSession). Through the client's own keyboard escape
+  /// (escape, then Ctrl-Z), which it reads from stdin and needs nothing from the server for.
+  ///
+  /// Not SIGINFO, although the client also checkpoints on it and would leave more cleanly: a client
+  /// that is already shutting itself down (a connect that timed out, a quit on a dead network) trips
+  /// an assert in its SIGINFO path and aborts the whole app, while it simply ignores keyboard input
+  /// then. Blocks for at most two seconds.
+  @objc public override func suspend() {
+    guard let escape = controlEscape else { return }
+    clientLock.lock()
+    // Not up yet: moshMain parks it as it starts (the tab is asleep by then). Parked already: done.
+    guard isClientRunning, !moshroomParked else {
+      clientLock.unlock()
+      return
+    }
+    device.write(inDirectly: "\(escape)\u{1a}")
+    clientLock.unlock()
+    _ = parkAnswered.wait(timeout: .now() + 2)
+  }
+
+  /// Let go of the server right now, whatever the client is doing: a bootstrap in progress is
+  /// cancelled, a running client parks (which never needs the server). For a reconnect.
+  @objc func moshroomLetGo() {
+    if isRunloopRunning {
+      kill()
     } else {
-      // MOSH-ESC .
-      self.device.write(String("\(self.escapeKey)\u{2e}"))
-      pthread_kill(self.tid, SIGINT)
+      suspend()
     }
   }
 
-  @objc public override func suspend() {
-    if sshCancellable == nil {
-      suspendSemaphore = DispatchSemaphore(value: 0)
-      // MOSH-ESC C-z
-      self.device.write(String("\(self.escapeKey)\u{1a}"))
-      print("Session suspend called")
-      let _ = suspendSemaphore!.wait(timeout: (DispatchTime.now() + 2.0))
-      print("Session suspended")
-    }
+  /// The terminal view was rebuilt (its web renderer was replaced) and shows nothing, while the client
+  /// still believes its screen is displayed and would send only differences. Redraw the whole screen
+  /// from the client's own copy of it, with no server round trip: the escape followed by Ctrl-L.
+  /// False when the client cannot be asked (not running, or its escape is not a control key).
+  @objc func moshroomRepaintRebuiltView() -> Bool {
+    guard let escape = controlEscape else { return false }
+    clientLock.lock()
+    defer { clientLock.unlock() }
+    guard isClientRunning, !moshroomParked else { return false }
+    // The rebuilt page is on its main screen with normal cursor keys. The client switched to the
+    // alternate screen and application cursor keys once, when it started, and never says so again;
+    // its repaint re-sends everything else (colours, cursor, mouse and paste modes) but not those.
+    device.view?.write("\u{1b}[?1049h\u{1b}[?1h")
+    device.write(inDirectly: "\(escape)\u{0c}")
+    return true
+  }
+
+  /// Whether a rebuilt view would be repainted by this client (see moshroomRepaintRebuiltView).
+  @objc var moshroomCanRepaint: Bool {
+    guard controlEscape != nil else { return false }
+    clientLock.lock()
+    defer { clientLock.unlock() }
+    return isClientRunning && !moshroomParked
+  }
+
+  // The escape as something a program can type: the client only acts on a control-character escape
+  // straight away (a printable one needs a newline first) and ignores a disabled one.
+  private var controlEscape: String? {
+    guard let scalar = escapeKey.unicodeScalars.first, scalar.value < 32 else { return nil }
+    return escapeKey
   }
 
   @objc public override func sigwinch() {
-    if let tid = self.tid {
-      pthread_kill(tid, SIGWINCH);
-    }
+    clientLock.lock()
+    defer { clientLock.unlock() }
+    guard isClientRunning, !moshroomParked, let tid = self.tid else { return }
+    pthread_kill(tid, SIGWINCH)
   }
 
   @objc public override func handleControl(_ control: String!) {
@@ -525,12 +639,15 @@ enum MoshError: Error, LocalizedError {
     }
   }
 
+  // The client's LAST act before it leaves its thread: whatever asked for it (our suspend, or the
+  // user typing the client's own suspend keys), the client is parked from here on.
   func onStateEncoded(_ encodedState: Data) {
     self.sessionParams.putEncodedState(encodedState)
-    print("Encoding session")
-    if let sema = suspendSemaphore {
-      sema.signal()
-    }
+    clientLock.lock()
+    moshroomParked = true
+    clientLock.unlock()
+    parkAnswered.signal()
+    mcpSession.moshroomCheckpointDidChange()
   }
 
   func die(message: String) -> Int32 {

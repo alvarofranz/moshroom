@@ -28,30 +28,7 @@ import UIKit
 /// Typealias for session parameter objects that can be snapshotted and securely coded
 public typealias MoshSessionParams = (any NSSecureCoding & MoshSessionParamsSnapshotting)
 
-/// Opt-in storage hook for params that want a built-in Data backing.
-@objc public protocol EncodedStateBacked {
-  @objc dynamic var encodedStateStorage: Data? { get set }
-}
-
-/// Default behavior for snapshot methods when the type provides storage.
-public extension EncodedStateBacked {
-  @inlinable func _hasEncodedStateDefault() -> Bool {
-    return encodedStateStorage != nil
-  }
-
-  @inlinable @discardableResult
-  func _takeEncodedStateDefault() -> Data? {
-    let data = encodedStateStorage
-    encodedStateStorage = nil
-    return data
-  }
-
-  @inlinable func _putEncodedStateDefault(_ data: Data) {
-    encodedStateStorage = data
-  }
-}
-
-@objc class MoshParams: NSObject, NSSecureCoding, MoshSessionParamsSnapshotting, EncodedStateBacked {
+@objc class MoshParams: NSObject, NSSecureCoding, MoshSessionParamsSnapshotting {
   @objc var ip: String? = nil
   @objc var port: String? = nil
   @objc var key: String? = nil
@@ -60,21 +37,43 @@ public extension EncodedStateBacked {
   @objc var startupCmd: String? = nil
   @objc var serverPath: String? = nil
   @objc var experimentalRemoteIp: String? = nil
-  
-  // Snapshot storage (backing for the default behavior)
-  @objc dynamic public var encodedStateStorage: Data? = nil
-  
+
+  // The mosh client's state checkpoint: written by the client's own thread, consumed by the next
+  // client that starts from it, and copied into the tab's archive from the main thread. Three
+  // threads, so every access goes through the lock. A checkpoint can seed exactly ONE client: a
+  // second client started from the same bytes rewinds the session behind the server, and the
+  // server never talks to it again (see MCPSession).
+  private var _encodedState: Data? = nil
+  private let _encodedStateLock = NSLock()
+
   override init() { super.init() }
-  
+
   private enum Key: String, CodingKey {
     case ip, port, key, predictionMode, predictOverwrite, startupCmd, serverPath, experimentalRemoteIp
   }
-  
-  // Satisfy @objc protocol by forwarding to helpers:
-  @objc func hasEncodedState() -> Bool { _hasEncodedStateDefault() }
-  @objc func takeEncodedState() -> Data? { _takeEncodedStateDefault() }
-  @objc func putEncodedState(_ data: Data) { _putEncodedStateDefault(data) }
-  
+
+  @objc func hasEncodedState() -> Bool {
+    _encodedStateLock.lock(); defer { _encodedStateLock.unlock() }
+    return _encodedState != nil
+  }
+
+  @objc func takeEncodedState() -> Data? {
+    _encodedStateLock.lock(); defer { _encodedStateLock.unlock() }
+    let data = _encodedState
+    _encodedState = nil
+    return data
+  }
+
+  @objc func peekEncodedState() -> Data? {
+    _encodedStateLock.lock(); defer { _encodedStateLock.unlock() }
+    return _encodedState
+  }
+
+  @objc func putEncodedState(_ data: Data) {
+    _encodedStateLock.lock(); defer { _encodedStateLock.unlock() }
+    _encodedState = data
+  }
+
   func encode(with coder: NSCoder) {
     coder.bk_encode(ip, for: Key.ip)
     coder.bk_encode(port, for: Key.port)
@@ -114,8 +113,20 @@ public extension EncodedStateBacked {
 }
 
 @objc class MCPParams: NSObject, NSSecureCoding, MoshSessionParamsSnapshotting {
-  @objc var childSessionType: String? = nil
-  @objc var childSessionParams: MoshSessionParams?
+  // The child marker is rewritten by the command queue while the main thread archives it (the tab's
+  // archive follows every checkpoint change), so both go through a lock.
+  private var _childSessionType: String? = nil
+  private var _childSessionParams: MoshSessionParams? = nil
+  private let _childLock = NSLock()
+
+  @objc var childSessionType: String? {
+    get { _childLock.lock(); defer { _childLock.unlock() }; return _childSessionType }
+    set { _childLock.lock(); defer { _childLock.unlock() }; _childSessionType = newValue }
+  }
+  @objc var childSessionParams: MoshSessionParams? {
+    get { _childLock.lock(); defer { _childLock.unlock() }; return _childSessionParams }
+    set { _childLock.lock(); defer { _childLock.unlock() }; _childSessionParams = newValue }
+  }
 
   /// Command to run when the session bootstraps. Ephemeral — not encoded.
   /// Consumed once inside `MCPSession.executeWithArgs:`.
@@ -143,5 +154,6 @@ public extension EncodedStateBacked {
   // MARK: - MoshSessionParamsSnapshotting (forward)
   @objc func hasEncodedState() -> Bool { childSessionParams?.hasEncodedState() ?? false }
   @objc func takeEncodedState() -> Data? { childSessionParams?.takeEncodedState() }
+  @objc func peekEncodedState() -> Data? { childSessionParams?.peekEncodedState() }
   @objc func putEncodedState(_ data: Data) { childSessionParams?.putEncodedState(data) }
 }

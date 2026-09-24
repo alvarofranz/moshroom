@@ -219,7 +219,11 @@ void __setupProcessEnv(void) {
   _suspendTaskId = [application beginBackgroundTaskWithName:@"Suspend" expirationHandler:^{
     [self _suspendApplicationWithExpirationHandler];
   }];
-  
+
+  // Park the sessions (mosh checkpoints and steps off the network) just before iOS would freeze the
+  // app: this task is also the time anything else in flight (an upload, a download, a command's
+  // output) gets to finish, so ending it early would cut that work short, and a quick trip to
+  // another app then changes nothing at all. The Mac never freezes the app: its cap is 5 minutes.
   NSTimeInterval time = MIN(application.backgroundTimeRemaining * 0.9, 5 * 60);
   [_suspendTimer invalidate];
   _suspendTimer = [NSTimer scheduledTimerWithTimeInterval:time
@@ -239,14 +243,13 @@ void __setupProcessEnv(void) {
 
 - (void)_cancelApplicationSuspend {
   [self _cancelApplicationSuspendTask];
- 
-  // We can't resume if we don't have access to protected data
-  if (UIApplication.sharedApplication.isProtectedDataAvailable) {
-    if (_suspendedMode) {
-    }
 
-    _suspendedMode = NO;
-  }
+  // Back in front: the next trip to the background must park the sessions again. Unconditional on
+  // purpose. This used to wait for protected data, and a foreground without it left the flag set
+  // for the rest of the run, so every later background skipped the park and left live, unsaved
+  // sessions to be frozen. Sessions that still need their archive to wake wait for the data
+  // themselves (SessionRegistry).
+  _suspendedMode = NO;
 }
 
 // Simple wrappers to get the reason of failure from call stack

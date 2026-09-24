@@ -119,6 +119,8 @@ extern NSString * TermViewTitleDidChangeNotificationKey;
 - (void)modifySelectionInDirection:(NSString *)direction granularity:(NSString *)granularity;
 
 - (void)pasteString:(NSString *)str;
+// A paste followed by an Enter once it has gone out; held with its Enter while the page is not ready.
+- (void)pasteString:(NSString *)str submit:(BOOL)submit;
 
 // Layout state
 - (MoshLayoutMode)currentLayoutMode;

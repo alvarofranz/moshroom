@@ -883,6 +883,7 @@ extension SpaceController: UIStateRestorable {
   // The one entry point the scene uses to rebuild its tabs: the system's scene state when there is
   // some, our own snapshot when there is not (see moshroomPersistUIState).
   func moshroomRestore(from session: UISceneSession) {
+    defer { Self._restoredKeysBySession[session.persistentIdentifier] = Set(_viewportsKeys) }
     if let activity = session.stateRestorationActivity, UIState(userActivity: activity) != nil {
       MoshLog.log("tabs", "restore via scene activity")
       restoreWith(stateRestorationActivity: activity)
@@ -909,9 +910,20 @@ extension SpaceController: UIStateRestorable {
   // tab and the persisted index ended up empty: three tabs open, `sessions/index.json` down to one
   // entry, and `[]` after a clean quit. Keys that this run does NOT hold are still genuinely orphaned
   // and are still removed, so nothing leaks.
+  //
+  // "Holds" means restored, not just built: only the visible tab gets a controller at launch, the rest
+  // are built when first shown, so a check on built controllers alone still deleted the archive of
+  // every restored tab not yet looked at, and each came back without its session. What a window
+  // restored stays protected only while that window is not the one being discarded: a window the
+  // user closes during the run gives its tabs up.
   @objc static func onDidDiscardSceneSessions(_ sessions: Set<UISceneSession>) {
     let registry = SessionRegistry.shared
-    let live = registry.liveSessionKeys
+    let discarded = Set(sessions.map(\.persistentIdentifier))
+    var live = registry.liveSessionKeys
+    for (id, keys) in _restoredKeysBySession where !discarded.contains(id) {
+      live.formUnion(keys)
+    }
+    discarded.forEach { _restoredKeysBySession[$0] = nil }
     sessions.forEach { session in
       guard
         let uiState = UIState(userActivity: session.stateRestorationActivity)
@@ -924,6 +936,9 @@ extension SpaceController: UIStateRestorable {
         .forEach { registry.remove(forKey: $0) }
     }
   }
+
+  // The tab keys each scene session restored in this run (see onDidDiscardSceneSessions).
+  private static var _restoredKeysBySession = [String: Set<UUID>]()
 }
 
 // MARK: UIPageViewControllerDelegate
@@ -1759,6 +1774,29 @@ extension SpaceController {
     } else {
       label.isHidden = true
     }
+  }
+
+  /// The tab pill of a mosh tab: reconnect it in place. mosh never gives up on a server it has heard
+  /// from, so when that server stops answering (it rebooted, or the network in between blocks it) the
+  /// tab would wait for ever, and closing it was the only way out.
+  @objc func moshroomTabPillTapped() {
+    guard presentedViewController == nil,
+          let term = currentTerm(),
+          let host = term.moshroomReconnectHost,
+          let pill = moshroomTabLabel
+    else {
+      return
+    }
+    let sheet = UIAlertController(title: "Reconnect to \(host)?",
+                                  message: "Starts a new mosh session in this tab. For a connection that stopped answering.",
+                                  preferredStyle: .actionSheet)
+    sheet.addAction(UIAlertAction(title: "Reconnect", style: .default) { [weak term] _ in
+      term?.moshroomReconnect()
+    })
+    sheet.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+    sheet.popoverPresentationController?.sourceView = pill
+    sheet.popoverPresentationController?.sourceRect = pill.bounds
+    present(sheet, animated: true)
   }
 
   func moshroomSwitch(toTab key: UUID) {
