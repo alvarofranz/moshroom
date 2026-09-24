@@ -78,6 +78,10 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
   // Composer sends that arrived while the page was not ready: each is [text, submit], delivered in
   // order once it is (see -pasteString:submit:).
   NSMutableArray<NSArray *> *_pendingPastes;
+  // Drawn-again reports the controller asked for (see moshroomNotifyPainted*): one riding the next
+  // output (output queue only), one waiting for the page to be ready (main thread only).
+  NSInteger _outputPaintToken;
+  NSInteger _readyPaintToken;
 
 #if DEBUG
   // Dev-only JS console poller (see _startDebugJSProbe).
@@ -128,6 +132,11 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
 
   _coverView.frame = self.bounds;
   [self bringSubviewToFront:_coverView];
+  // The loader rides above the cover too: it is transparent, so during a first load it turns over
+  // the plain cover instead of waiting under it and blinking when the cover goes.
+  if (self.moshroomOverlay) {
+    [self bringSubviewToFront:self.moshroomOverlay];
+  }
 }
 
 
@@ -319,6 +328,7 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
   [self _resetJSPipelineLatch];
   BOOL visible = self.window != nil && !self.isHidden
     && self.window.windowScene.activationState == UISceneActivationStateForegroundActive;
+  [MoshLogBridge log:@"session" message:[NSString stringWithFormat:@"renderer gone (visible=%@)", visible ? @"yes" : @"no"]];
   if (visible) {
     [self _reloadAfterJettison];
   } else {
@@ -345,6 +355,11 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
 - (void)_reloadAfterJettison
 {
   _recoveringFromJettison = YES;
+  [MoshLogBridge log:@"session" message:@"rebuilding the terminal page"];
+  id tc = self.termController;
+  if ([tc respondsToSelector:@selector(moshroomTermViewWillRebuild)]) {
+    [tc performSelector:@selector(moshroomTermViewWillRebuild)];
+  }
   // Re-issue the original file load rather than -reload — after a process crash a file URL's
   // sandbox extension can be stale. The init user script is NOT re-added: it is still registered.
   NSString *path = [[NSBundle mainBundle] pathForResource:@"term" ofType:@"html"];
@@ -486,9 +501,66 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
     _jsIsBusy = YES;
     _jsBuffer = [[NSMutableString alloc] init];
     
-    NSString *jsScript = term_write(buffer);
+    NSString *jsScript = [self _withPaintReport:term_write(buffer) draws:[TermView _moshroomDraws:buffer]];
     [self _evalJSScript:jsScript];
   });
+}
+
+// Output queue only: the next output that DRAWS carries the drawn-again report the controller is
+// waiting for. Control-only chunks (the terminal's own mode switches, a prompt marker: pure OSC
+// sequences) do not count, or the loader would lift before anything is on screen. The report goes
+// first in the script so a write that throws cannot lose it; its animation frames still only run
+// once the whole script, the write included, is done.
+- (NSString *)_withPaintReport:(NSString *)jsScript draws:(BOOL)draws
+{
+  if (_outputPaintToken == 0 || !draws) {
+    return jsScript;
+  }
+  NSString *withReport = [NSString stringWithFormat:@"term_notifyPainted(%ld);%@", (long)_outputPaintToken, jsScript];
+  _outputPaintToken = 0;
+  return withReport;
+}
+
+// Whether a chunk of output does anything but operating-system commands (ESC ] ... BEL / ST).
++ (BOOL)_moshroomDraws:(NSString *)chunk
+{
+  static NSRegularExpression *osc;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    osc = [NSRegularExpression regularExpressionWithPattern:@"\x1b\][^\x07\x1b]*(\x07|\x1b\\)" options:0 error:nil];
+  });
+  NSString *rest = [osc stringByReplacingMatchesInString:chunk options:0 range:NSMakeRange(0, chunk.length) withTemplate:@""];
+  return rest.length > 0;
+}
+
+// The output a pending report was waiting for has already been written (the report went out with
+// it, or it is on its way): answer as soon as the page draws. Still waiting: leave it to the output.
+- (void)moshroomRecheckPaintedAfterOutput:(NSInteger)token
+{
+  dispatch_async(_jsQueue, ^{
+    if (_outputPaintToken == token) {
+      return;
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+      [self moshroomNotifyPaintedNow:token];
+    });
+  });
+}
+
+- (void)moshroomNotifyPaintedAfterNextOutput:(NSInteger)token
+{
+  dispatch_async(_jsQueue, ^{
+    _outputPaintToken = token;
+  });
+}
+
+- (void)moshroomNotifyPaintedNow:(NSInteger)token
+{
+  if (!_isReady) {
+    _readyPaintToken = token;
+    return;
+  }
+  [_webView evaluateJavaScript:[NSString stringWithFormat:@"term_notifyPainted(%ld);", (long)token] completionHandler:nil];
 }
 
 // Moshroom: the user just sent input to the session — bring the viewport back to the live end (see
@@ -567,7 +639,7 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
     if (buffer.length > 0) {
       jsScript = [term_write(buffer) stringByAppendingString:jsScript];
     }
-    [self _evalJSScript:jsScript];
+    [self _evalJSScript:[self _withPaintReport:jsScript draws:YES]];
   });
 }
 
@@ -632,6 +704,11 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
     }
   } else if ([operation isEqualToString:@"openLink"]) {
     [self _openLink:data[@"url"]];
+  } else if ([operation isEqualToString:@"painted"]) {
+    id tc = self.termController;
+    if ([tc respondsToSelector:@selector(moshroomTermViewDidPaint:)]) {
+      [tc performSelector:@selector(moshroomTermViewDidPaint:) withObject:data[@"token"]];
+    }
   }
 }
 
@@ -689,6 +766,15 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
       [_coverView removeFromSuperview];
       _coverView = nil;
     }];
+    // The transition re-adds the web view on top of everything: the loader belongs above it.
+    if (self.moshroomOverlay) {
+      [self bringSubviewToFront:self.moshroomOverlay];
+    }
+  }
+  if (_readyPaintToken != 0) {
+    NSInteger token = _readyPaintToken;
+    _readyPaintToken = 0;
+    [self moshroomNotifyPaintedNow:token];
   }
 
   if (recovered) {

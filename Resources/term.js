@@ -437,6 +437,18 @@ function term_write(data) {
   t.interpret(data);
 }
 
+// Moshroom: native shows a loader while a terminal is not drawing yet (coming back to the app, a
+// session waking, a page rebuilt) and takes it down on this. Two animation frames: the first runs
+// before the next paint, the second once it is on screen. A page that is not being drawn runs
+// neither, which is exactly the point.
+function term_notifyPainted(token) {
+  requestAnimationFrame(function() {
+    requestAnimationFrame(function() {
+      _postMessage('painted', {token: token});
+    });
+  });
+}
+
 function term_paste(str) {
   t.onPaste_({text: str || ''});
 }

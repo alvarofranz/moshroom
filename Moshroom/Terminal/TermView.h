@@ -119,6 +119,15 @@ extern NSString * TermViewTitleDidChangeNotificationKey;
 - (void)modifySelectionInDirection:(NSString *)direction granularity:(NSString *)granularity;
 
 - (void)pasteString:(NSString *)str;
+// The loader over this terminal (see TermController): kept above the web view.
+@property (nonatomic, weak) UIView *moshroomOverlay;
+// Report `token` to the controller (moshroomTermViewDidPaint:) once the page has drawn: right away,
+// or only after the next output the session writes has been drawn.
+- (void)moshroomNotifyPaintedNow:(NSInteger)token;
+- (void)moshroomNotifyPaintedAfterNextOutput:(NSInteger)token;
+// The page was just shown again: if the output an after-output report waited for is already out,
+// report as soon as the page draws; if not, keep waiting for it.
+- (void)moshroomRecheckPaintedAfterOutput:(NSInteger)token;
 // A paste followed by an Enter once it has gone out; held with its Enter while the page is not ready.
 - (void)pasteString:(NSString *)str submit:(BOOL)submit;
 

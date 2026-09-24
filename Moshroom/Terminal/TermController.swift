@@ -139,6 +139,8 @@ class TermController: UIViewController {
   private var _proxyView = ProxyView(frame: .zero)
   private var _bgColor: UIColor? = nil
   private var _fontSizeBeforeScaling: Int? = nil
+  // The loader over this terminal while it is not drawing yet (see moshroomBeginCatchUp).
+  fileprivate let _catchUp = MoshroomCatchUp()
 
   @objc public var viewIsLoaded: Bool = false
 
@@ -277,7 +279,15 @@ class TermController: UIViewController {
     super.viewDidLoad()
     viewIsLoaded = true
 
+    // The session reaching its (invisible by design) local prompt ends a wait for it to draw.
+    NotificationCenter.default.addObserver(self, selector: #selector(_moshroomSessionPromptReady(_:)),
+                                           name: .moshroomPromptReady, object: nil)
     _termView.load()
+    // A tab brought back from its archive (a relaunch): its page loads, then its session, before
+    // there is anything to see.
+    if meta.isSuspended {
+      moshroomBeginCatchUp(expectOutput: true)
+    }
   }
 
   public override func viewWillLayoutSubviews() {
@@ -636,6 +646,12 @@ extension TermController: SuspendableSession {
 
   func resumeInPlace() -> Bool {
     guard let payload = _sessionPayload, payload.session != nil else { return false }
+    // A parked mosh session is about to wake: nothing new is drawn until its client does.
+    if let params = (payload.session as? MCPSession)?.sessionParams,
+       params.childSessionType == "mosh", params.hasEncodedState() {
+      MoshLog.log("session", "waking a parked mosh session")
+      moshroomBeginCatchUp(expectOutput: true)
+    }
     payload.resumeFromSuspended()
     _moshroomSessionDidGoLive()
     return true
@@ -675,6 +691,244 @@ extension TermController: SuspendableSession {
     archiver.bk_encode(_termView.termUIState, for: ArchiveKey.termUIState)
     sessionPayload.encode(with: archiver)
     return true
+  }
+}
+
+// MARK: - Catch-up loader
+
+extension TermController {
+  /// The terminal may not be drawing for a moment: the app is coming back, a parked session is
+  /// waking, a relaunched tab is restoring, or WebKit is rebuilding a page it threw away. A loader
+  /// covers the wait, but only if it lasts (a quick return shows nothing at all), and it goes the
+  /// moment the page reports it has drawn: right away, or, when `expectOutput`, once the session's
+  /// next output is on screen. A newer call supersedes an older one.
+  func moshroomBeginCatchUp(expectOutput: Bool) {
+    // A wait for the session's own output is the stronger one: a "drawn now" request (coming back,
+    // a window becoming key) must not cut it short, or the loader lifts before the session draws.
+    if !expectOutput, _catchUp.active, _catchUp.expectOutput {
+      return
+    }
+    let wasShown = _catchUp.active && _catchUp.shown
+    _catchUp.token += 1
+    let token = _catchUp.token
+    _catchUp.active = true
+    _catchUp.expectOutput = expectOutput
+    _catchUp.startedAt = Date()
+    // A loader already up stays up (and keeps turning) across a wait that supersedes it.
+    _catchUp.shown = wasShown
+    if expectOutput {
+      _termView.moshroomNotifyPainted(afterNextOutput: token)
+    } else {
+      _termView.moshroomNotifyPaintedNow(token)
+    }
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+      guard let self, self._catchUp.active, self._catchUp.token == token else { return }
+      self._showCatchUpLoader()
+    }
+    // Never for ever: whatever it was waiting for, the terminal is back in charge after this.
+    DispatchQueue.main.asyncAfter(deadline: .now() + 15) { [weak self] in
+      guard let self, self._catchUp.active, self._catchUp.token == token else { return }
+      MoshLog.log("session", "loader timed out")
+      self._endCatchUp()
+    }
+  }
+
+  /// The terminal was just put on screen: if a catch-up is still waiting, ask the page again (a page
+  /// that was hidden never ran the frames that would have answered).
+  func moshroomRecheckCatchUp() {
+    guard _catchUp.active else { return }
+    if _catchUp.expectOutput {
+      _termView.moshroomRecheckPainted(afterOutput: _catchUp.token)
+    } else {
+      _termView.moshroomNotifyPaintedNow(_catchUp.token)
+    }
+  }
+
+  /// The session reached its local prompt, which draws nothing by design: that IS the screen. (Posted
+  /// from the command queue with the session as its object; hopped to main here.)
+  @objc func _moshroomSessionPromptReady(_ n: Notification) {
+    DispatchQueue.main.async { [weak self] in
+      guard let self, self._catchUp.active, let session = self._session,
+            (n.object as AnyObject?) === session else { return }
+      self._termView.moshroomNotifyPaintedNow(self._catchUp.token)
+    }
+  }
+
+  @objc func moshroomTermViewDidPaint(_ token: NSNumber) {
+    guard _catchUp.active, token.intValue == _catchUp.token else { return }
+    _endCatchUp()
+  }
+
+  /// TermView is reloading its page after WebKit killed the renderer.
+  @objc func moshroomTermViewWillRebuild() {
+    moshroomBeginCatchUp(expectOutput: true)
+  }
+
+  private func _showCatchUpLoader() {
+    let loader = _catchUpLoader()
+    let alreadyUp = _catchUp.shown
+    _catchUp.shown = true
+    _termView.bringSubviewToFront(loader)
+    loader.show(caption: _catchUpCaption, onLight: _termView.backgroundColor?.isLight ?? false)
+    if !alreadyUp {
+      MoshLog.log("session", "loader shown")
+    }
+  }
+
+  private func _endCatchUp() {
+    let elapsed = Int(Date().timeIntervalSince(_catchUp.startedAt) * 1000)
+    if _catchUp.shown {
+      MoshLog.log("session", "screen drawing again after \(elapsed) ms")
+    }
+    _catchUp.active = false
+    _catchUp.shown = false
+    _catchUp.loader?.hide()
+  }
+
+  private func _catchUpLoader() -> MoshroomCatchUpView {
+    if let loader = _catchUp.loader { return loader }
+    let loader = MoshroomCatchUpView()
+    loader.translatesAutoresizingMaskIntoConstraints = false
+    _termView.addSubview(loader)
+    NSLayoutConstraint.activate([
+      loader.leadingAnchor.constraint(equalTo: _termView.leadingAnchor),
+      loader.trailingAnchor.constraint(equalTo: _termView.trailingAnchor),
+      loader.topAnchor.constraint(equalTo: _termView.topAnchor),
+      loader.bottomAnchor.constraint(equalTo: _termView.bottomAnchor),
+    ])
+    _termView.moshroomOverlay = loader
+    _catchUp.loader = loader
+    return loader
+  }
+
+  // What the wait is for: the host the session is on, when there is one (a tab still being restored
+  // does not know yet, so it goes by the host it was persisted on).
+  private var _catchUpCaption: String {
+    let knowsHost = moshroomHasLiveChildSession || meta.isSuspended
+    let host = knowsHost ? (meta.connectedHost ?? "").trimmingCharacters(in: .whitespacesAndNewlines) : ""
+    if !host.isEmpty { return "Resuming \(host)" }
+    // A brand-new tab whose page has never been up is starting, not resuming.
+    if !_termDevice.isReady && !meta.isSuspended { return "Starting terminal" }
+    return "Resuming session"
+  }
+}
+
+/// The catch-up loader's bookkeeping (see moshroomBeginCatchUp).
+final class MoshroomCatchUp {
+  var token = 0
+  var active = false
+  var expectOutput = false
+  var shown = false
+  var startedAt = Date()
+  var loader: MoshroomCatchUpView?
+}
+
+/// The loader over a terminal that is not drawing yet: a mushroom-red arc turning on a faint ring,
+/// and a line saying what it is waiting for. Touches pass through (the terminal stays usable), and it
+/// fades in and out rather than popping.
+final class MoshroomCatchUpView: UIView {
+  private let spinner = UIView()
+  private let ring = CAShapeLayer()
+  private let arc = CAShapeLayer()
+  private let caption = UILabel()
+
+  override init(frame: CGRect) {
+    super.init(frame: frame)
+    isUserInteractionEnabled = false
+    isHidden = true
+    alpha = 0
+    isAccessibilityElement = true
+    accessibilityTraits = .updatesFrequently
+
+    spinner.translatesAutoresizingMaskIntoConstraints = false
+    addSubview(spinner)
+    for layer in [ring, arc] {
+      layer.fillColor = UIColor.clear.cgColor
+      layer.lineWidth = 3.5
+      layer.lineCap = .round
+      spinner.layer.addSublayer(layer)
+    }
+    ring.strokeColor = UIColor.white.withAlphaComponent(0.10).cgColor
+    arc.strokeColor = UIColor.moshroomTint.cgColor
+    arc.strokeEnd = 0.3
+
+    caption.translatesAutoresizingMaskIntoConstraints = false
+    caption.font = .systemFont(ofSize: 13, weight: .semibold)
+    caption.textColor = UIColor.white.withAlphaComponent(0.7)
+    caption.textAlignment = .center
+    caption.lineBreakMode = .byTruncatingMiddle
+    addSubview(caption)
+
+    NSLayoutConstraint.activate([
+      spinner.centerXAnchor.constraint(equalTo: centerXAnchor),
+      spinner.centerYAnchor.constraint(equalTo: centerYAnchor, constant: -16),
+      spinner.widthAnchor.constraint(equalToConstant: 40),
+      spinner.heightAnchor.constraint(equalToConstant: 40),
+      caption.topAnchor.constraint(equalTo: spinner.bottomAnchor, constant: 16),
+      caption.centerXAnchor.constraint(equalTo: centerXAnchor),
+      caption.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: 24),
+      caption.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -24),
+    ])
+  }
+
+  required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+  override func layoutSubviews() {
+    super.layoutSubviews()
+    let bounds = spinner.bounds
+    let path = UIBezierPath(ovalIn: bounds.insetBy(dx: 2, dy: 2)).cgPath
+    // Standalone layers animate every property change: placed as they are, not slid into place.
+    CATransaction.begin()
+    CATransaction.setDisableActions(true)
+    for layer in [ring, arc] {
+      layer.frame = bounds
+      layer.path = path
+    }
+    CATransaction.commit()
+  }
+
+  /// `onLight`: the terminal's theme is light, so the ring and caption take dark ink.
+  func show(caption text: String, onLight: Bool) {
+    caption.text = text
+    accessibilityLabel = text
+    let ink: UIColor = onLight ? .black : .white
+    caption.textColor = ink.withAlphaComponent(onLight ? 0.6 : 0.7)
+    ring.strokeColor = ink.withAlphaComponent(0.10).cgColor
+    isHidden = false
+    _animate()
+    UIView.animate(withDuration: 0.2) { self.alpha = 1 }
+  }
+
+  func hide() {
+    guard !isHidden else { return }
+    UIView.animate(withDuration: 0.25, animations: { self.alpha = 0 }) { _ in
+      guard self.alpha == 0 else { return }
+      self.isHidden = true
+      self.arc.removeAllAnimations()
+    }
+  }
+
+  // A steady turn, with the arc growing and shrinking as it goes: the classic indeterminate spinner.
+  // Kept across trips to the background, and only added when missing, so a loader shown again never
+  // jumps back to its starting angle.
+  private func _animate() {
+    guard arc.animation(forKey: "turn") == nil else { return }
+    let turn = CABasicAnimation(keyPath: "transform.rotation.z")
+    turn.fromValue = 0
+    turn.toValue = 2 * Double.pi
+    turn.duration = 0.9
+    turn.repeatCount = .infinity
+    turn.isRemovedOnCompletion = false
+    arc.add(turn, forKey: "turn")
+    let breathe = CABasicAnimation(keyPath: "strokeEnd")
+    breathe.fromValue = 0.12
+    breathe.toValue = 0.62
+    breathe.duration = 0.9
+    breathe.autoreverses = true
+    breathe.repeatCount = .infinity
+    breathe.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+    breathe.isRemovedOnCompletion = false
+    arc.add(breathe, forKey: "breathe")
   }
 }
 

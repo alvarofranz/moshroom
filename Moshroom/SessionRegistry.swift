@@ -148,6 +148,7 @@ protocol SuspendableSession: AnyObject {
   
   
   @objc func suspend() {
+    MoshLog.log("session", "parking \(_sessionsIndex.values.filter { !$0.meta.isSuspended }.count) tab(s)")
     _sessionsIndex.forEach { self.suspendIfNeeded(session: $1) }
     _fsWriteMetaIndex()
   }
@@ -186,6 +187,7 @@ protocol SuspendableSession: AnyObject {
     // From its archive, or as a fresh session when there is none: a missing or unreadable archive
     // must never leave a tab with no session at all.
     let unarchiver = _fsRead(forKey: session.meta.key).flatMap { try? NSKeyedUnarchiver(forReadingFrom: $0) }
+    MoshLog.log("session", "restoring a tab (archive: \(unarchiver == nil ? "none" : "yes"))")
     session.resume(with: unarchiver)
   }
 
