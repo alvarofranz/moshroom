@@ -501,8 +501,9 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
     _jsIsBusy = YES;
     _jsBuffer = [[NSMutableString alloc] init];
     
-    NSString *jsScript = [self _withPaintReport:term_write(buffer) draws:[TermView _moshroomDraws:buffer]];
-    [self _evalJSScript:jsScript];
+    NSInteger token = 0;
+    NSString *jsScript = [self _withPaintReport:term_write(buffer) draws:[TermView _moshroomDraws:buffer] token:&token];
+    [self _evalJSScript:jsScript paintToken:token];
   });
 }
 
@@ -511,14 +512,33 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
 // sequences) do not count, or the loader would lift before anything is on screen. The report goes
 // first in the script so a write that throws cannot lose it; its animation frames still only run
 // once the whole script, the write included, is done.
-- (NSString *)_withPaintReport:(NSString *)jsScript draws:(BOOL)draws
+- (NSString *)_withPaintReport:(NSString *)jsScript draws:(BOOL)draws token:(NSInteger *)token
 {
   if (_outputPaintToken == 0 || !draws) {
     return jsScript;
   }
   NSString *withReport = [NSString stringWithFormat:@"term_notifyPainted(%ld);%@", (long)_outputPaintToken, jsScript];
+  *token = _outputPaintToken;
   _outputPaintToken = 0;
   return withReport;
+}
+
+// The page's own report (two animation frames, then a message) can go missing: measured on a page
+// rebuilt after WebKit dropped it, where it never arrived and the loader sat over a live terminal for
+// its whole 15 s cap. So the app reports too, a beat after the evaluation that carried the output
+// has run, whether it succeeded or not. Whichever arrives first ends the wait; the other is ignored.
+- (void)_reportPaintedSoon:(NSInteger)token
+{
+  if (token == 0) {
+    return;
+  }
+  __weak typeof(self) weakSelf = self;
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    id tc = weakSelf.termController;
+    if ([tc respondsToSelector:@selector(moshroomTermViewDidPaint:)]) {
+      [tc performSelector:@selector(moshroomTermViewDidPaint:) withObject:@(token)];
+    }
+  });
 }
 
 // Whether a chunk of output does anything but operating-system commands (ESC ] ... BEL / ST).
@@ -560,7 +580,9 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
     _readyPaintToken = token;
     return;
   }
-  [_webView evaluateJavaScript:[NSString stringWithFormat:@"term_notifyPainted(%ld);", (long)token] completionHandler:nil];
+  [_webView evaluateJavaScript:[NSString stringWithFormat:@"term_notifyPainted(%ld);", (long)token] completionHandler:^(id result, NSError *error) {
+    [self _reportPaintedSoon:token];
+  }];
 }
 
 // Moshroom: the user just sent input to the session — bring the viewport back to the live end (see
@@ -639,14 +661,22 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
     if (buffer.length > 0) {
       jsScript = [term_write(buffer) stringByAppendingString:jsScript];
     }
-    [self _evalJSScript:[self _withPaintReport:jsScript draws:YES]];
+    NSInteger token = 0;
+    jsScript = [self _withPaintReport:jsScript draws:YES token:&token];
+    [self _evalJSScript:jsScript paintToken:token];
   });
 }
 
 - (void)_evalJSScript:(NSString *)jsScript
 {
+  [self _evalJSScript:jsScript paintToken:0];
+}
+
+- (void)_evalJSScript:(NSString *)jsScript paintToken:(NSInteger)paintToken
+{
   dispatch_async(dispatch_get_main_queue(), ^{
     [_webView evaluateJavaScript: jsScript completionHandler:^(id result, NSError *error) {
+      [self _reportPaintedSoon:paintToken];
       dispatch_async(_jsQueue, ^{
         _jsIsBusy = NO;
         if (_jsBuffer.length > 0) {

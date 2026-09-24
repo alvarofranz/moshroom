@@ -604,6 +604,13 @@ extension TermController: SuspendableSession {
     }
     // Whatever the page held while it was gone reaches it only now: a bell in there is from then.
     _termDevice.moshroomQuietReplay()
+    // The page is back and the redraw is on its way: the loader has no business outlasting it by
+    // more than a moment, whatever becomes of the reports it is waiting for.
+    let token = _catchUp.token
+    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+      guard let self, self._catchUp.active, self._catchUp.token == token else { return }
+      self._endCatchUp()
+    }
     if (_session as? MCPSession)?.moshroomRepaintMoshSession() == true {
       return
     }
