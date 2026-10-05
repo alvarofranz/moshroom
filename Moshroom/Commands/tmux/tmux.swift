@@ -22,11 +22,14 @@
 ////////////////////////////////////////////////////////////////////////////////
 
 
-// The `tmux <host>` child session: SSH + tmux control mode, park, wake, kill.
+// The `tmux <host>` child session: SSH + tmux control mode, park, wake, detach.
 //
 // A tmux tab is a plain terminal tab whose local shell runs this child, exactly like mosh: MCPSession
-// dispatches `tmux` natively and keeps the child marker ("tmux" + TmuxParams) for as long as the remote
-// session is this tab's. Over one SSH exec channel it runs `tmux -u -C new-session -A -s <name>` and
+// dispatches `tmux` natively and keeps the child marker ("tmux" + TmuxParams) for as long as the tab is
+// attached to its session. The session is the host's (`main` unless the host names another), shared by
+// every tab on that host and by any other client the user has, each attached as its own client. Over
+// one SSH exec channel it runs `tmux -u -C new-session -A -s <name>` (never -D: nobody else is
+// detached) and
 // renders the pane's %output itself, so the terminal receives an ordinary byte stream: output banks in
 // the local scrollback and scrolls locally, keys go back as `send-keys -H` (exact bytes), and the
 // session lives on the host whatever happens to the app.
@@ -41,8 +44,8 @@
 //   network. MCPSession keeps the marker; waking runs a new child that re-attaches headless.
 // - LOST: a dropped connection (heartbeat, network change, channel error) reconnects by itself with a
 //   backoff, keys typed meanwhile are queued, and the refill catches the terminal up.
-// - END: the session ending on the host (the shell exits) returns the tab to its local prompt. Closing
-//   the tab kills the remote session.
+// - END: the session ending on the host (its last window exits) returns the tab to its local prompt.
+//   Closing the tab only detaches: the session stays on the host for the next tab, or another client.
 
 import Combine
 import Dispatch
@@ -160,7 +163,8 @@ import ios_system
         return -1
       }
       p.hostAlias = alias
-      p.sessionName = "moshroom-" + UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(8).lowercased()
+      // The host's session (main unless it names another); an alias that is not a saved host gets main.
+      p.sessionName = MoshHosts.withHost(alias)?.moshroomTmuxSession ?? MoshHosts.moshroomDefaultTmuxSession
       pendingCommandOnConnect = Self._commandOnConnect(for: alias)
       // The tab's archive must know about the session from now on: a relaunch after a crash finds it.
       mcpSession.moshroomCheckpointDidChange()
@@ -200,6 +204,7 @@ import ios_system
 
     var interactive = !resuming
     var failures = 0
+    var raced = false
     while true {
       if _killRequested {
         return 0
@@ -214,6 +219,10 @@ import ios_system
 
       if !everAttached && !resuming {
         switch result {
+        case .lost(let message) where message.contains("duplicate session") && !raced:
+          // Another tab created the same session a moment earlier: it exists now, attach to it.
+          raced = true
+          continue
         case .refused(let message), .lost(let message):
           // The user's own connect did not work: say why and give the prompt back.
           _say("Connection failed - \(message)")
@@ -234,7 +243,11 @@ import ios_system
         if let message { _say(message) }
         return 0
       case .fallback(let message):
-        _say(message)
+        // Said once per host: from then on the host simply gets plain SSH, quietly.
+        if !Self._fallbackNoted(host) {
+          Self._noteFallback(host, true)
+          _say("\u{1b}[2m\(message)\u{1b}[0m")
+        }
         moshroomFallbackCommand = "ssh \(host)"
         return 0
       case .refused(let message):
@@ -311,9 +324,24 @@ import ios_system
     // Attach only to the session this tab created (an exact name, never a prefix match); before it
     // exists the same name creates it.
     let tmuxCommand = p.everAttached ? "attach-session -t =\(name)" : "new-session -A -s \(name)"
+    MoshLog.log("tmux", "\(p.everAttached ? "re-attaching to" : "attaching to or creating") session \(name) on \(host)")
+    var tmuxProbe = "tmux"
+    // Debug builds only (this target's Swift Debug condition is MOSHROOM_PUBLISHING_OPTION_DEVELOPER).
+    #if DEBUG || MOSHROOM_PUBLISHING_OPTION_DEVELOPER
+    // Test hook: a program name in <Application Support>/Moshroom/debug-tmux-program makes the
+    // preflight look for that program instead, which is how "tmux is missing" is tested without
+    // uninstalling it anywhere. Read fresh on every connect.
+    if let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first,
+       let text = try? String(contentsOf: support.appendingPathComponent("Moshroom/debug-tmux-program"), encoding: .utf8) {
+      let program = text.trimmingCharacters(in: .whitespacesAndNewlines)
+      if !program.isEmpty, program.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" }) {
+        tmuxProbe = program
+      }
+    }
+    #endif
     let script = [
-      "command -v tmux >/dev/null 2>&1 || PATH=\"$PATH:/usr/local/bin:/opt/homebrew/bin:/snap/bin\"",
-      "command -v tmux >/dev/null 2>&1 || { echo MOSHROOM_TMUX_MISSING; exit 127; }",
+      "command -v \(tmuxProbe) >/dev/null 2>&1 || PATH=\"$PATH:/usr/local/bin:/opt/homebrew/bin:/snap/bin\"",
+      "command -v \(tmuxProbe) >/dev/null 2>&1 || { echo MOSHROOM_TMUX_MISSING; exit 127; }",
       "v=\"$(tmux -V 2>/dev/null)\"",
       "echo \"MOSHROOM_TMUX_VERSION $v\"",
       "case \"$v\" in \"tmux 0.\"*|\"tmux 1.\"*|\"tmux 2.\"*) echo MOSHROOM_TMUX_OLD; exit 126;; esac",
@@ -524,14 +552,18 @@ import ios_system
       if let v = TmuxVersion(text) {
         version = v
       }
+      // tmux is there now: if it ever was missing, the next time it is, say so again.
+      if let host = params.hostAlias, Self._fallbackNoted(host) {
+        Self._noteFallback(host, false)
+      }
       return
     }
     let host = params.hostAlias ?? "the host"
     switch line {
     case "MOSHROOM_TMUX_MISSING":
-      _finish(.fallback("tmux isn't installed on \(host), connecting with plain SSH (install tmux to keep sessions alive)."))
+      _finish(.fallback("tmux isn't installed on \(host), connected with plain SSH. Install tmux for sessions that survive."))
     case "MOSHROOM_TMUX_OLD":
-      _finish(.fallback("tmux on \(host) is too old (3.0 or newer is needed), connecting with plain SSH."))
+      _finish(.fallback("tmux on \(host) is too old (3.0 or newer is needed), connected with plain SSH."))
     case "MOSHROOM_TMUX_EXISTS":
       sessionExisted = true
     default:
@@ -980,21 +1012,16 @@ import ios_system
     parkAnswered.signal()
   }
 
+  // The tab is closing: this client detaches and the session stays on the host (other tabs, other
+  // clients and the next connect all use it). Between connections there is nothing to tell the host.
   private func _beginKill() {
     killing = true
-    let name = params.sessionName ?? ""
-    guard let gw = gateway, attached, !name.isEmpty else {
+    guard let gw = gateway, attached else {
       _finish(.killed)
-      // Between connections: the session is still on the host, close it from a connection of its own.
-      if let host = params.hostAlias, !name.isEmpty, params.everAttached {
-        Self.killRemoteSession(hostAlias: host, sessionName: name)
-      }
       return
     }
-    gw.send("kill-session -t =\(name)") { [weak self] _ in
-      self?._finish(.killed)
-    }
-    _after(1.5) { [weak self] in
+    gw.send("detach-client")
+    _after(1.0) { [weak self] in
       self?._finish(.killed)
     }
   }
@@ -1010,7 +1037,7 @@ import ios_system
     CFRunLoopWakeUp(loop)
   }
 
-  /// The tab is closing: kill the remote session (it is this tab's alone) and stop.
+  /// The tab is closing: detach from the session (it stays on the host) and stop.
   @objc public override func kill() {
     lock.lock()
     killRequested = true
@@ -1129,6 +1156,21 @@ import ios_system
 
   private var _reconnectingShown = false
 
+  // "tmux is missing on this host" was already said (UserDefaults, per alias).
+  private static func _fallbackKey(_ host: String) -> String { "MoshroomTmuxMissingNoted." + host }
+
+  private static func _fallbackNoted(_ host: String) -> Bool {
+    UserDefaults.standard.bool(forKey: _fallbackKey(host))
+  }
+
+  private static func _noteFallback(_ host: String, _ noted: Bool) {
+    if noted {
+      UserDefaults.standard.set(true, forKey: _fallbackKey(host))
+    } else {
+      UserDefaults.standard.removeObject(forKey: _fallbackKey(host))
+    }
+  }
+
   private static func _isDefinitive(_ error: Error) -> Bool {
     if let ssh = error as? SSHError {
       switch ssh {
@@ -1144,38 +1186,6 @@ import ios_system
       return ssh.description
     }
     return error.localizedDescription
-  }
-
-  // MARK: - Closing a parked tab
-
-  /// Kill a tab's remote session when no child is attached to it (the tab was parked, or between
-  /// reconnects). Best effort and headless: a host that cannot be reached keeps its session.
-  @objc static func killRemoteSession(hostAlias: String, sessionName: String) {
-    let thread = Thread {
-      guard let target = try? MoshroomSSH.resolveTarget(hostAlias: hostAlias, device: nil) else { return }
-      var done = false
-      var stream: SSH.Stream? = nil
-      var cancellable: AnyCancellable? = SSHClient.dial(target.hostName, with: target.config, withProxy: MoshroomSSH.executeProxyCommand)
-        .flatMap { $0.requestExec(command: "tmux kill-session -t =\(sessionName) 2>/dev/null; true") }
-        .flatMap { s -> AnyPublisher<DispatchData, Error> in
-          stream = s
-          return s.read(max: 4096)
-        }
-        .sink(receiveCompletion: { _ in done = true }, receiveValue: { _ in })
-      let timer = Timer(timeInterval: 0.25, repeats: true) { _ in }
-      RunLoop.current.add(timer, forMode: .default)
-      let deadline = Date().addingTimeInterval(15)
-      while !done && Date() < deadline {
-        CFRunLoopRunInMode(.defaultMode, 0.25, false)
-      }
-      timer.invalidate()
-      cancellable = nil
-      stream = nil
-      _ = cancellable
-      _ = stream
-      MoshLog.log("tmux", done ? "closed a parked session" : "could not reach the host to close a parked session")
-    }
-    thread.start()
   }
 }
 

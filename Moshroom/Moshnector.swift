@@ -34,11 +34,6 @@ enum MoshnectorMode {
   }
 }
 
-extension MoshHosts {
-  /// Settings > Hosts > "Keep sessions alive with tmux": Quick Connect's SSH mode opens the host
-  /// with `tmux <alias>` instead of a plain `ssh <alias>`.
-  var moshroomUsesTmux: Bool { useTmux?.boolValue ?? false }
-}
 
 /// THE saved-host card — one builder for every host list (Quick Connect, the Moshxplore host
 /// picker): red server glyph, bold alias, the optional gray description, generous padding.
@@ -103,8 +98,6 @@ final class MoshnectorView: UIView {
     modeControl.addAction(UIAction { [weak self] _ in
       guard let self else { return }
       self.mode = self.modeControl.selectedSegmentIndex == 1 ? .ssh : .mosh
-      // The rows say "tmux" only where SSH would open one: rebuild them for the new mode.
-      self._rebuildRows()
     }, for: .valueChanged)
 
     rowsStack.axis = .vertical
@@ -175,7 +168,8 @@ final class MoshnectorView: UIView {
     for host in hosts { rowsStack.addArrangedSubview(_hostRow(host.alias, description: host.description)) }
   }
 
-  // What a tap on this host runs: in SSH mode, a host set to keep its sessions alive opens in tmux.
+  // What a tap on this host runs: in SSH mode a host opens in tmux (its session lives on the server)
+  // unless its "Use tmux with SSH" setting is off.
   private func _tapMode(for alias: String) -> MoshnectorMode {
     if mode == .ssh, MoshHosts.withHost(alias)?.moshroomUsesTmux == true {
       return .tmux
@@ -185,19 +179,9 @@ final class MoshnectorView: UIView {
 
   // One saved host = one shared house card (see moshHostCardButton — the exact same card the
   // Moshxplore host picker shows), wired to connect in the selected mode. A long press (a right
-  // click on the Mac) offers every way in, whatever the switcher says.
+  // click on the Mac) offers every way in, whatever the switcher says, as a one-off.
   private func _hostRow(_ alias: String, description: String) -> UIView {
     let b = moshHostCardButton(alias: alias, description: description)
-    if _tapMode(for: alias) == .tmux, var cfg = b.configuration {
-      // The small tag: this tap keeps its session alive on the host.
-      var tag = AttributeContainer()
-      tag.font = UIFont.monospacedSystemFont(ofSize: 11, weight: .semibold)
-      tag.foregroundColor = UIColor.moshroomTint
-      var title = cfg.attributedTitle ?? AttributedString(alias)
-      title.append(AttributedString("  tmux", attributes: tag))
-      cfg.attributedTitle = title
-      b.configuration = cfg
-    }
     b.addAction(UIAction { [weak self] _ in
       guard let self else { return }
       self.onConnect?(self._tapMode(for: alias), alias)

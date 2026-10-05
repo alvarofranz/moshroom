@@ -54,6 +54,7 @@ int help_main(int argc, char *argv[]) {
     @"  <tab>: list available UNIX commands.",
     @"  mosh: mosh client.",
     @"  ssh: ssh client.",
+    @"  tmux: ssh into the host's tmux session (main), which survives the app.",
     @"  scp, sftp: copy files to and from a host.",
     @"  ssh-add: manage the keys loaded in the agent.",
     @"  ssh-copy-id: copy a public key to a host.",

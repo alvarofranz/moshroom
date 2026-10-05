@@ -78,6 +78,7 @@ static BOOL __kc_set(UICKeyChainStore *keychain, NSString *value, NSString *key)
   _commandOnConnect = [coder decodeObjectOfClasses:strings forKey:@"commandOnConnect"];
   _hostDescription = [coder decodeObjectOfClasses:strings forKey:@"hostDescription"];
   _useTmux = [coder decodeObjectOfClasses:numbers forKey:@"useTmux"];
+  _tmuxSession = [coder decodeObjectOfClasses:strings forKey:@"tmuxSession"];
   _prediction = [coder decodeObjectOfClasses:numbers forKey:@"prediction"];
   _proxyCmd = [coder decodeObjectOfClasses:strings forKey:@"proxyCmd"];
   _proxyJump = [coder decodeObjectOfClasses:strings forKey:@"proxyJump"];
@@ -105,6 +106,7 @@ static BOOL __kc_set(UICKeyChainStore *keychain, NSString *value, NSString *key)
   [encoder encodeObject:_commandOnConnect forKey:@"commandOnConnect"];
   [encoder encodeObject:_hostDescription forKey:@"hostDescription"];
   [encoder encodeObject:_useTmux forKey:@"useTmux"];
+  [encoder encodeObject:_tmuxSession forKey:@"tmuxSession"];
   [encoder encodeObject:_prediction forKey:@"prediction"];
   [encoder encodeObject:_proxyCmd forKey:@"proxyCmd"];
   [encoder encodeObject:_proxyJump forKey:@"proxyJump"];
@@ -222,6 +224,7 @@ sshConfigAttachment:(NSString *)sshConfigAttachment
          commandOnConnect:(NSString *)commandOnConnect
          hostDescription:(NSString *)hostDescription
                  useTmux:(NSNumber *)useTmux
+             tmuxSession:(NSString *)tmuxSession
               prediction:(enum MoshMoshPrediction)prediction
                 proxyCmd:(NSString *)proxyCmd
                proxyJump:(NSString *)proxyJump
@@ -321,6 +324,7 @@ sshConfigAttachment:(NSString *)sshConfigAttachment
   bkHost.commandOnConnect = commandOnConnect;
   bkHost.hostDescription = hostDescription;
   bkHost.useTmux = useTmux;
+  bkHost.tmuxSession = tmuxSession.length > 0 ? tmuxSession : nil;
   bkHost.lastModified = [NSDate date];
   if (![MoshHosts saveHosts]) {
     return nil;

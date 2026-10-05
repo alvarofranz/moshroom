@@ -27,6 +27,28 @@ import SSHConfig
 
 
 extension MoshHosts {
+  /// Settings > Hosts > "Use tmux with SSH": Quick Connect's SSH mode opens the host with
+  /// `tmux <alias>` instead of a plain `ssh <alias>`. ON unless explicitly turned off.
+  public var moshroomUsesTmux: Bool { useTmux?.boolValue ?? true }
+
+  /// The tmux session `tmux <alias>` attaches to (or creates): the host's own, else "main".
+  public var moshroomTmuxSession: String {
+    let name = Self.moshroomTmuxSessionName(tmuxSession ?? "")
+    return name.isEmpty ? Self.moshroomDefaultTmuxSession : name
+  }
+
+  public static let moshroomDefaultTmuxSession = "main"
+
+  /// A session name tmux keeps as typed: letters, digits, `_` and `-`. Anything else becomes `-`
+  /// (tmux itself rewrites `.` and `:` to `_`, which would make the name never match again), and a
+  /// name never starts with `-` (it would read as an option).
+  public static func moshroomTmuxSessionName(_ raw: String) -> String {
+    let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-")
+    var out = String(String.UnicodeScalarView(raw.unicodeScalars.map { allowed.contains($0) ? $0 : "-" }))
+    while out.hasPrefix("-") { out.removeFirst() }
+    return out
+  }
+
   static func sshConfig() throws -> SSHConfig {
     let config = SSHConfig()
     

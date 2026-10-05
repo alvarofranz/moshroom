@@ -693,13 +693,6 @@
   } else if (_cmdStream) {
     [self setActiveSession];
     ios_kill();
-  } else if ([@"tmux" isEqualToString:self.sessionParams.childSessionType]
-             && [self.sessionParams.childSessionParams isKindOfClass:[TmuxParams class]]) {
-    // A parked tmux tab: its session is still on the host and is this tab's alone.
-    TmuxParams *tmuxParams = (TmuxParams *)self.sessionParams.childSessionParams;
-    if (tmuxParams.everAttached && tmuxParams.hostAlias.length > 0 && tmuxParams.sessionName.length > 0) {
-      [MoshroomTmux killRemoteSessionWithHostAlias:tmuxParams.hostAlias sessionName:tmuxParams.sessionName];
-    }
   }
   
   ios_closeSession(_sessionUUID.UTF8String);

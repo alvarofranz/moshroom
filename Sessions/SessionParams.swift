@@ -112,7 +112,7 @@ public typealias MoshSessionParams = (any NSSecureCoding & MoshSessionParamsSnap
   }
 }
 
-/// The `tmux <host>` child (MoshroomTmux): which remote session belongs to this tab, and what a
+/// The `tmux <host>` child (MoshroomTmux): which remote session this tab is attached to, and what a
 /// re-attach needs to paint it again. Written by the child's thread while the main thread archives
 /// it, so every field goes through one lock. It carries no checkpoint: the session itself lives on
 /// the host, so the snapshot methods are no-ops.
@@ -144,7 +144,7 @@ public typealias MoshSessionParams = (any NSSecureCoding & MoshSessionParamsSnap
 
   /// The saved host the session is on.
   @objc var hostAlias: String? { get { _get(\.hostAlias) } set { _set(\.hostAlias, newValue) } }
-  /// The remote tmux session (moshroom-<8 hex>), this tab's alone.
+  /// The remote tmux session (the host's, `main` by default; other tabs and clients may share it).
   @objc var sessionName: String? { get { _get(\.sessionName) } set { _set(\.sessionName, newValue) } }
   /// tmux's session_created: a different value on re-attach means a different session.
   @objc var sessionCreated: String? { get { _get(\.sessionCreated) } set { _set(\.sessionCreated, newValue) } }

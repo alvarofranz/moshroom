@@ -137,7 +137,7 @@ struct Complete {
       "md5": "Calculate a message-digest fingerprint (checksum) for a file.", // fish
       "mkdir": "Make directories.", // fish
       "mosh": "Runs mosh client. 🦄",
-      "tmux": "Opens a tmux session on a host, kept alive there.",
+      "tmux": "SSH into the host's tmux session, which survives the app.",
       "mv": "Move files and directories.",
       "nslookup": "Query Internet name servers interactively", // fish
       "pbcopy": "Copy to the pasteboard.",

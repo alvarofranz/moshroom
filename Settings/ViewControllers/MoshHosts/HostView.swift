@@ -267,7 +267,9 @@ struct HostView: View {
   @State private var _moshCommand: String = ""
   @State private var _commandOnConnect: String = ""
   @State private var _hostDescription: String = ""
-  @State private var _useTmux: Bool = false
+  // ON unless the host says otherwise (a new host, and a host saved before the setting existed).
+  @State private var _useTmux: Bool = true
+  @State private var _tmuxSession: String = ""
   @State private var _loaded = false
   @State private var _enabled: Bool = true
 
@@ -279,6 +281,15 @@ struct HostView: View {
   private var _reloadList: () -> ()
   private var _cleanAlias: String {
     _alias.trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+
+  // A tmux session name keeps only what tmux keeps as typed (see MoshHosts.moshroomTmuxSessionName):
+  // anything else turns into a hyphen as the user types, like the alias.
+  private var _tmuxSessionSafe: Binding<String> {
+    Binding(
+      get: { _tmuxSession },
+      set: { _tmuxSession = MoshHosts.moshroomTmuxSessionName($0) }
+    )
   }
 
   // The alias is typed into the shell (`ssh <alias>`), so whitespace can never be valid —
@@ -342,10 +353,13 @@ struct HostView: View {
 
       Section(
         header: Text("SESSIONS"),
-        footer: Text("Quick Connect's SSH mode opens this host with `tmux \(_cleanAlias.count < 2 ? "[alias]" : _cleanAlias)`: the session lives on the host, survives the app closing, and comes back with its history. Needs tmux 3.0 or newer on the host. A long press on the host in Quick Connect offers every way in.")
+        footer: Text("SSH sessions live in tmux on the server: smooth scrolling and they survive the app closing. Falls back to plain SSH if tmux is missing.")
       ) {
-        Toggle("Keep sessions alive with tmux", isOn: $_useTmux)
+        Toggle("Use tmux with SSH", isOn: $_useTmux)
           .tint(.moshTint)
+        if _useTmux {
+          Field("Session", _tmuxSessionSafe, next: "Server", placeholder: MoshHosts.moshroomDefaultTmuxSession, id: "tmuxSession")
+        }
       }.disabled(!_enabled)
 
       Section(
@@ -456,7 +470,8 @@ struct HostView: View {
     _moshCommand = host.moshStartup ?? ""
     _commandOnConnect = host.commandOnConnect ?? ""
     _hostDescription = host.hostDescription ?? ""
-    _useTmux = host.useTmux?.boolValue ?? false
+    _useTmux = host.moshroomUsesTmux
+    _tmuxSession = host.tmuxSession ?? ""
     _agentForwardPrompt.rawValue = UInt32(host.agentForwardPrompt?.intValue ?? 0)
     _agentForwardKeys = host.agentForwardKeys ?? []
     _enabled = true
@@ -525,7 +540,9 @@ struct HostView: View {
       startUpCmd: _moshCommand,
       commandOnConnect: _commandOnConnect,
       hostDescription: _hostDescription.trimmingCharacters(in: .whitespacesAndNewlines),
-      useTmux: NSNumber(value: _useTmux),
+      // ON is the default and is stored as nil, so a host follows the default unless turned off.
+      useTmux: _useTmux ? nil : NSNumber(value: false),
+      tmuxSession: MoshHosts.moshroomTmuxSessionName(_tmuxSession),
       prediction: _moshPrediction,
       proxyCmd: _proxyCmd,
       proxyJump: _proxyJump,
