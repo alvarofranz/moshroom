@@ -1033,6 +1033,12 @@ function term_selAutoScroll(rows, x, y, what) {
   if (!_mshSel || _mshSel.state !== 'active') {
     return _mshGeometry();
   }
+  // A pointer past the edge selects up to the first (or last) VISIBLE row, never rows the
+  // scroll has not shown yet.
+  var view = sp.getScreenHeight();
+  if (view > 2) {
+    y = Math.max(1, Math.min(y, view - 1));
+  }
   if (what === 'start' || what === 'end') {
     return term_selMoveHandle(what, x, y);
   }
