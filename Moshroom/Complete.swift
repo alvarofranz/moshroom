@@ -82,7 +82,7 @@ struct Complete {
     if let commands = commandsAsArray() as? [String] {
       result.append(contentsOf: commands)
     }
-    result.append(contentsOf: ["mosh", "exit", "ssh-copy-id"])
+    result.append(contentsOf: ["mosh", "tmux", "exit", "ssh-copy-id"])
     
     let set = Set<String>(result)
     result = Array(set)
@@ -137,6 +137,7 @@ struct Complete {
       "md5": "Calculate a message-digest fingerprint (checksum) for a file.", // fish
       "mkdir": "Make directories.", // fish
       "mosh": "Runs mosh client. 🦄",
+      "tmux": "Opens a tmux session on a host, kept alive there.",
       "mv": "Move files and directories.",
       "nslookup": "Query Internet name servers interactively", // fish
       "pbcopy": "Copy to the pasteboard.",
@@ -179,7 +180,7 @@ struct Complete {
   private static func _completionKind(_ cmd: String, query: String = "") -> Kind {
     switch cmd {
     case "": return .command
-    case "ssh", "ssh2", "mosh": return .moshroomHost
+    case "ssh", "ssh2", "mosh", "tmux": return .moshroomHost
     case "ping": return .host
     case "sftp", "scp": return _scpCompletionKind(query)
     case "ls": return .directory

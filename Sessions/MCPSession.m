@@ -80,8 +80,9 @@
     ios_setMiniRoot(homePath);
     [self updateAllowedPaths];
 
-    // A tab relaunched with a parked mosh session picks it back up before anything else.
-    if ([self _moshroomRunParkedSession] || [self _moshroomRunReconnectIfAsked]) {
+    // A tab relaunched with a parked mosh or tmux session picks it back up before anything else.
+    // tmux first: the mosh loop clears any child marker it does not run itself.
+    if ([self _moshroomRunTmuxSession] || [self _moshroomRunParkedSession] || [self _moshroomRunReconnectIfAsked]) {
       return;
     }
     NSString *initialCommand = self.sessionParams.initialCommand;
@@ -159,6 +160,68 @@
   return NO;
 }
 
+// A tmux session lives on its host, so this tab only has to attach to it again: after a park (the app
+// slept), on a relaunch (the archive keeps the marker and the session name), or right after a typed
+// `tmux <host>` parked. Each child re-attaches headless and repaints the terminal; one that comes back
+// without parking means the session ended (or tmux could not be used) and the marker goes.
+//
+// Returns YES while the session stays parked because the app is asleep (moshroomResume continues it),
+// NO once there is nothing to attach to any more. Command queue only.
+- (BOOL)_moshroomRunTmuxSession
+{
+  NSUInteger wakes = 0;
+  while ([@"tmux" isEqualToString:self.sessionParams.childSessionType]
+         && [self.sessionParams.childSessionParams isKindOfClass:[TmuxParams class]]
+         && ((TmuxParams *)self.sessionParams.childSessionParams).sessionName.length > 0) {
+    if ([self _moshroomHasReconnect]) {
+      break;
+    }
+    if (self.moshroomSuspended) {
+      return YES;
+    }
+    // A child that parks the instant it starts, again and again, must not spin here.
+    if (++wakes > 8) {
+      break;
+    }
+    TmuxParams *tmuxParams = (TmuxParams *)self.sessionParams.childSessionParams;
+    MoshroomTmux *tmux = nil;
+    @synchronized (self) {
+      if (_moshroomKilled || !_device) {
+        return YES;
+      }
+      tmux = [[MoshroomTmux alloc] initWithMcpSession:self device:_device andParams:tmuxParams];
+      _childSession = tmux;
+    }
+    [tmux executeAttachedWithArgs:@""];
+    @synchronized (self) {
+      _childSession = nil;
+    }
+    if (!tmux.moshroomParked) {
+      [self _moshroomTakeTmuxFallback:tmux];
+      break;
+    }
+  }
+  if ([@"tmux" isEqualToString:self.sessionParams.childSessionType]) {
+    [self _clearChildSession];
+  }
+  return NO;
+}
+
+// tmux could not be used on the host (missing, too old): the child asked for plain SSH instead, run
+// next as if typed (see _moshroomRunReconnectIfAsked).
+- (void)_moshroomTakeTmuxFallback:(MoshroomTmux *)tmux
+{
+  NSString *fallback = tmux.moshroomFallbackCommand;
+  if (fallback.length == 0) {
+    return;
+  }
+  @synchronized (self) {
+    if (!_moshroomKilled && _moshroomReconnectCommand == nil) {
+      _moshroomReconnectCommand = [fallback copy];
+    }
+  }
+}
+
 - (BOOL)_moshroomHasReconnect
 {
   @synchronized (self) {
@@ -192,6 +255,26 @@
 // running; with one, the command loop picks the reconnect up as the client leaves.
 - (void)moshroomReconnectWith:(NSString *)command
 {
+  // A tmux tab reconnects to the SAME remote session: the running child drops its connection and
+  // attaches again, or, with no child running, the session's attach loop runs.
+  if ([@"tmux" isEqualToString:self.sessionParams.childSessionType]) {
+    Session *tmuxChild = _childSession;
+    if ([tmuxChild isKindOfClass:[MoshroomTmux class]]) {
+      [(MoshroomTmux *)tmuxChild moshroomReconnectNow];
+      return;
+    }
+    dispatch_async(_cmdQueue, ^{
+      if (_childSession != nil || ![@"tmux" isEqualToString:self.sessionParams.childSessionType]) {
+        return;
+      }
+      [self setActiveSession];
+      if ([self _moshroomRunTmuxSession] || [self _moshroomRunReconnectIfAsked]) {
+        return;
+      }
+      [self _moshroomBackAtPrompt];
+    });
+    return;
+  }
   @synchronized (self) {
     if (_moshroomKilled) {
       return;
@@ -220,6 +303,18 @@
 {
   self.moshroomSuspended = NO;
   dispatch_async(_cmdQueue, ^{
+    if ([@"tmux" isEqualToString:self.sessionParams.childSessionType]) {
+      // A child still running (it never parked: the app came back before it was asked) carries on.
+      if (_childSession != nil) {
+        return;
+      }
+      [self setActiveSession];
+      if ([self _moshroomRunTmuxSession] || [self _moshroomRunReconnectIfAsked]) {
+        return;
+      }
+      [self _moshroomBackAtPrompt];
+      return;
+    }
     if (![@"mosh" isEqualToString:self.sessionParams.childSessionType]) {
       return;
     }
@@ -245,11 +340,26 @@
 - (BOOL)moshroomMoshCanRepaint
 {
   Session *child = _childSession;
+  if ([child isKindOfClass:[MoshroomTmux class]]) {
+    return ((MoshroomTmux *)child).moshroomCanRepaint;
+  }
   return [child isKindOfClass:[MoshroomMosh class]] && ((MoshroomMosh *)child).moshroomCanRepaint;
 }
 
 - (BOOL)moshroomRepaintMoshSession
 {
+  // A tmux session is painted from tmux itself: a full refill by the running child, or by the next
+  // attach when parked (the terminal no longer holds anything to append to).
+  if ([@"tmux" isEqualToString:self.sessionParams.childSessionType]) {
+    Session *tmuxChild = _childSession;
+    if ([tmuxChild isKindOfClass:[MoshroomTmux class]]) {
+      return [(MoshroomTmux *)tmuxChild moshroomRepaintRebuiltView];
+    }
+    if ([self.sessionParams.childSessionParams isKindOfClass:[TmuxParams class]]) {
+      ((TmuxParams *)self.sessionParams.childSessionParams).viewHoldsSession = NO;
+    }
+    return YES;
+  }
   if (![@"mosh" isEqualToString:self.sessionParams.childSessionType]) {
     return NO;
   }
@@ -354,6 +464,16 @@
     // away if the app is awake, at the resume otherwise (see _moshroomRunParkedSession).
     if (mosh.moshroomParked && [self _moshroomRunParkedSession]) {
       return NO;
+    }
+  } else if ([cmd isEqualToString:@"tmux"]) {
+    MoshroomTmux *tmux = [self _runTmuxWithArgs:cmdline];
+    // A child that detached because the app went to sleep PARKED: the session is still on the host
+    // and is attached again at the resume (see _moshroomRunTmuxSession).
+    if (tmux.moshroomParked && [self _moshroomRunTmuxSession]) {
+      return NO;
+    }
+    if (!tmux.moshroomParked) {
+      [self _moshroomTakeTmuxFallback:tmux];
     }
   } else if ([cmd isEqualToString:@"ssh2"]) {
     [self _runSSHWithArgs:cmdline];
@@ -467,10 +587,11 @@
     return;
   }
   BOOL wasMosh = [@"mosh" isEqualToString:self.sessionParams.childSessionType];
+  BOOL wasTmux = [@"tmux" isEqualToString:self.sessionParams.childSessionType];
   self.sessionParams.childSessionType = nil;
   self.sessionParams.childSessionParams = nil;
-  // A mosh session's archive described something resumable: it must not outlive the session.
-  if (wasMosh) {
+  // A mosh or tmux session's archive described something resumable: it must not outlive the session.
+  if (wasMosh || wasTmux) {
     [self moshroomCheckpointDidChange];
   }
 }
@@ -505,6 +626,24 @@
     _childSession = nil;
   }
   return mosh;
+}
+
+- (MoshroomTmux *)_runTmuxWithArgs:(NSString *)args
+{
+  self.sessionParams.childSessionParams = [[TmuxParams alloc] init];
+  self.sessionParams.childSessionType = @"tmux";
+  MoshroomTmux *tmux = [[MoshroomTmux alloc] initWithMcpSession:self device:_device andParams:(TmuxParams *)self.sessionParams.childSessionParams];
+  @synchronized (self) {
+    _childSession = tmux;
+  }
+
+  NSString *str = [NSString stringWithFormat:@"%@", args];
+  [tmux executeAttachedWithArgs:str];
+
+  @synchronized (self) {
+    _childSession = nil;
+  }
+  return tmux;
 }
 
 - (void)_runSSHWithArgs:(NSString *)args
@@ -554,6 +693,13 @@
   } else if (_cmdStream) {
     [self setActiveSession];
     ios_kill();
+  } else if ([@"tmux" isEqualToString:self.sessionParams.childSessionType]
+             && [self.sessionParams.childSessionParams isKindOfClass:[TmuxParams class]]) {
+    // A parked tmux tab: its session is still on the host and is this tab's alone.
+    TmuxParams *tmuxParams = (TmuxParams *)self.sessionParams.childSessionParams;
+    if (tmuxParams.everAttached && tmuxParams.hostAlias.length > 0 && tmuxParams.sessionName.length > 0) {
+      [MoshroomTmux killRemoteSessionWithHostAlias:tmuxParams.hostAlias sessionName:tmuxParams.sessionName];
+    }
   }
   
   ios_closeSession(_sessionUUID.UTF8String);

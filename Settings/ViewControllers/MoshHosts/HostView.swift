@@ -267,6 +267,7 @@ struct HostView: View {
   @State private var _moshCommand: String = ""
   @State private var _commandOnConnect: String = ""
   @State private var _hostDescription: String = ""
+  @State private var _useTmux: Bool = false
   @State private var _loaded = false
   @State private var _enabled: Bool = true
 
@@ -338,6 +339,14 @@ struct HostView: View {
         Field("ProxyJump", $_proxyJump, next: "Server",    placeholder: "bastion1,bastion2", enabled: _enabled)
         FieldTextArea("SSH Config", $_sshConfigAttachment, enabled: _enabled)
       }
+
+      Section(
+        header: Text("SESSIONS"),
+        footer: Text("Quick Connect's SSH mode opens this host with `tmux \(_cleanAlias.count < 2 ? "[alias]" : _cleanAlias)`: the session lives on the host, survives the app closing, and comes back with its history. Needs tmux 3.0 or newer on the host. A long press on the host in Quick Connect offers every way in.")
+      ) {
+        Toggle("Keep sessions alive with tmux", isOn: $_useTmux)
+          .tint(.moshTint)
+      }.disabled(!_enabled)
 
       Section(
         header: Text("MOSH"),
@@ -447,6 +456,7 @@ struct HostView: View {
     _moshCommand = host.moshStartup ?? ""
     _commandOnConnect = host.commandOnConnect ?? ""
     _hostDescription = host.hostDescription ?? ""
+    _useTmux = host.useTmux?.boolValue ?? false
     _agentForwardPrompt.rawValue = UInt32(host.agentForwardPrompt?.intValue ?? 0)
     _agentForwardKeys = host.agentForwardKeys ?? []
     _enabled = true
@@ -515,6 +525,7 @@ struct HostView: View {
       startUpCmd: _moshCommand,
       commandOnConnect: _commandOnConnect,
       hostDescription: _hostDescription.trimmingCharacters(in: .whitespacesAndNewlines),
+      useTmux: NSNumber(value: _useTmux),
       prediction: _moshPrediction,
       proxyCmd: _proxyCmd,
       proxyJump: _proxyJump,

@@ -24,8 +24,20 @@
 import UIKit
 
 enum MoshnectorMode {
-  case ssh, mosh
-  var command: String { self == .ssh ? "ssh" : "mosh" }
+  case ssh, mosh, tmux
+  var command: String {
+    switch self {
+    case .ssh: return "ssh"
+    case .mosh: return "mosh"
+    case .tmux: return "tmux"
+    }
+  }
+}
+
+extension MoshHosts {
+  /// Settings > Hosts > "Keep sessions alive with tmux": Quick Connect's SSH mode opens the host
+  /// with `tmux <alias>` instead of a plain `ssh <alias>`.
+  var moshroomUsesTmux: Bool { useTmux?.boolValue ?? false }
 }
 
 /// THE saved-host card — one builder for every host list (Quick Connect, the Moshxplore host
@@ -68,6 +80,7 @@ final class MoshnectorView: UIView {
   var onConnect: ((MoshnectorMode, String) -> Void)?
 
   private var mode: MoshnectorMode = .mosh
+  private var hosts: [(alias: String, description: String)] = []
   private let modeControl = UISegmentedControl(items: ["Mosh", "SSH"])
   private let rowsStack = UIStackView()
   private let emptyLabel = UILabel()
@@ -88,7 +101,10 @@ final class MoshnectorView: UIView {
     // Mushroom-red selection with white text — the house switcher, styled once for the whole
     // app in MoshstyleAppearance.install() (Moshvault's Passwords/2FA picker matches for free).
     modeControl.addAction(UIAction { [weak self] _ in
-      self?.mode = self?.modeControl.selectedSegmentIndex == 1 ? .ssh : .mosh
+      guard let self else { return }
+      self.mode = self.modeControl.selectedSegmentIndex == 1 ? .ssh : .mosh
+      // The rows say "tmux" only where SSH would open one: rebuild them for the new mode.
+      self._rebuildRows()
     }, for: .valueChanged)
 
     rowsStack.axis = .vertical
@@ -145,24 +161,69 @@ final class MoshnectorView: UIView {
 
   // Rebuild the host list: one card per saved host — alias plus its optional gray description.
   func reload(hosts: [(alias: String, description: String)]) {
+    self.hosts = hosts
+    _rebuildRows()
+    // Always start at the first host (a rebuilt scroll can otherwise keep a stale offset).
+    scroll.setContentOffset(.zero, animated: false)
+  }
+
+  private func _rebuildRows() {
     rowsStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
     let empty = hosts.isEmpty
     emptyLabel.isHidden = !empty
     scroll.isHidden = empty
     for host in hosts { rowsStack.addArrangedSubview(_hostRow(host.alias, description: host.description)) }
-    // Always start at the first host (a rebuilt scroll can otherwise keep a stale offset).
-    scroll.setContentOffset(.zero, animated: false)
+  }
+
+  // What a tap on this host runs: in SSH mode, a host set to keep its sessions alive opens in tmux.
+  private func _tapMode(for alias: String) -> MoshnectorMode {
+    if mode == .ssh, MoshHosts.withHost(alias)?.moshroomUsesTmux == true {
+      return .tmux
+    }
+    return mode
   }
 
   // One saved host = one shared house card (see moshHostCardButton — the exact same card the
-  // Moshxplore host picker shows), wired to connect in the selected mode.
+  // Moshxplore host picker shows), wired to connect in the selected mode. A long press (a right
+  // click on the Mac) offers every way in, whatever the switcher says.
   private func _hostRow(_ alias: String, description: String) -> UIView {
     let b = moshHostCardButton(alias: alias, description: description)
+    if _tapMode(for: alias) == .tmux, var cfg = b.configuration {
+      // The small tag: this tap keeps its session alive on the host.
+      var tag = AttributeContainer()
+      tag.font = UIFont.monospacedSystemFont(ofSize: 11, weight: .semibold)
+      tag.foregroundColor = UIColor.moshroomTint
+      var title = cfg.attributedTitle ?? AttributedString(alias)
+      title.append(AttributedString("  tmux", attributes: tag))
+      cfg.attributedTitle = title
+      b.configuration = cfg
+    }
     b.addAction(UIAction { [weak self] _ in
       guard let self else { return }
-      self.onConnect?(self.mode, alias)
+      self.onConnect?(self._tapMode(for: alias), alias)
     }, for: .touchUpInside)
+    b.accessibilityIdentifier = alias
+    b.addInteraction(UIContextMenuInteraction(delegate: self))
     return b
+  }
+}
+
+extension MoshnectorView: UIContextMenuInteractionDelegate {
+  func contextMenuInteraction(_ interaction: UIContextMenuInteraction,
+                              configurationForMenuAtLocation location: CGPoint) -> UIContextMenuConfiguration? {
+    guard let alias = interaction.view?.accessibilityIdentifier, !alias.isEmpty else { return nil }
+    return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
+      let item: (String, String, MoshnectorMode) -> UIAction = { title, icon, mode in
+        UIAction(title: title, image: UIImage(systemName: icon)) { _ in
+          self?.onConnect?(mode, alias)
+        }
+      }
+      return UIMenu(title: alias, children: [
+        item("Connect (tmux)", "rectangle.stack", .tmux),
+        item("Connect (plain SSH)", "terminal", .ssh),
+        item("Connect (Mosh)", "antenna.radiowaves.left.and.right", .mosh),
+      ])
+    }
   }
 }
 
@@ -445,7 +506,7 @@ extension SpaceController {
     }
   }
 
-  // A command sent from the local prompt may be an `ssh <host>` / `mosh <host>` connect — if so,
+  // A command sent from the local prompt may be an `ssh <host>` / `mosh <host>` / `tmux <host>` connect: if so,
   // record its host. Robust by design: rather than parse ssh's flag grammar, it picks the argument
   // that matches a saved host, so flags and their values are skipped and ad-hoc hosts simply aren't
   // tracked. Gated on the local prompt, so a prompt typed to a remote agent is never mistaken for a
@@ -453,7 +514,7 @@ extension SpaceController {
   func noteConnectionCommand(_ command: String) {
     guard currentTerm()?.moshroomIsFreshShell == true else { return }
     let words = command.split(whereSeparator: { " \t\n".contains($0) }).map(String.init)
-    guard let verb = words.first, verb == "ssh" || verb == "mosh" else { return }
+    guard let verb = words.first, verb == "ssh" || verb == "mosh" || verb == "tmux" else { return }
     if let alias = words.dropFirst().first(where: moshroomSavedHostAliases.contains) {
       noteConnection(toHost: alias)
     }

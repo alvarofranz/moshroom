@@ -77,6 +77,7 @@ static BOOL __kc_set(UICKeyChainStore *keychain, NSString *value, NSString *key)
   _moshStartup = [coder decodeObjectOfClasses:strings forKey:@"moshStartup"];
   _commandOnConnect = [coder decodeObjectOfClasses:strings forKey:@"commandOnConnect"];
   _hostDescription = [coder decodeObjectOfClasses:strings forKey:@"hostDescription"];
+  _useTmux = [coder decodeObjectOfClasses:numbers forKey:@"useTmux"];
   _prediction = [coder decodeObjectOfClasses:numbers forKey:@"prediction"];
   _proxyCmd = [coder decodeObjectOfClasses:strings forKey:@"proxyCmd"];
   _proxyJump = [coder decodeObjectOfClasses:strings forKey:@"proxyJump"];
@@ -103,6 +104,7 @@ static BOOL __kc_set(UICKeyChainStore *keychain, NSString *value, NSString *key)
   [encoder encodeObject:_moshStartup forKey:@"moshStartup"];
   [encoder encodeObject:_commandOnConnect forKey:@"commandOnConnect"];
   [encoder encodeObject:_hostDescription forKey:@"hostDescription"];
+  [encoder encodeObject:_useTmux forKey:@"useTmux"];
   [encoder encodeObject:_prediction forKey:@"prediction"];
   [encoder encodeObject:_proxyCmd forKey:@"proxyCmd"];
   [encoder encodeObject:_proxyJump forKey:@"proxyJump"];
@@ -219,6 +221,7 @@ sshConfigAttachment:(NSString *)sshConfigAttachment
               startUpCmd:(NSString *)startUpCmd
          commandOnConnect:(NSString *)commandOnConnect
          hostDescription:(NSString *)hostDescription
+                 useTmux:(NSNumber *)useTmux
               prediction:(enum MoshMoshPrediction)prediction
                 proxyCmd:(NSString *)proxyCmd
                proxyJump:(NSString *)proxyJump
@@ -317,6 +320,7 @@ sshConfigAttachment:(NSString *)sshConfigAttachment
   // Applies to both a freshly-created and an edited host (not part of initWithAlias:).
   bkHost.commandOnConnect = commandOnConnect;
   bkHost.hostDescription = hostDescription;
+  bkHost.useTmux = useTmux;
   bkHost.lastModified = [NSDate date];
   if (![MoshHosts saveHosts]) {
     return nil;

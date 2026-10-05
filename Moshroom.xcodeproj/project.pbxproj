@@ -76,6 +76,11 @@
 		B1F10000000000000000B19F /* MoshifySession.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1F10000000000000000F13A /* MoshifySession.swift */; };
 		B1F10000000000000000B1A0 /* MoshifyEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1F10000000000000000F13B /* MoshifyEngine.swift */; };
 		B1F10000000000000000B1A1 /* MoshifyViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1F10000000000000000F13C /* MoshifyViews.swift */; };
+		B1F40000000000000000B1D0 /* TerminalSelection.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1F40000000000000000F1D0 /* TerminalSelection.swift */; };
+		B1F40000000000000000B1D1 /* tmux.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1F40000000000000000F1D1 /* tmux.swift */; };
+		B1F40000000000000000B1D2 /* TmuxControlParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1F40000000000000000F1D2 /* TmuxControlParser.swift */; };
+		B1F40000000000000000B1D3 /* TmuxGateway.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1F40000000000000000F1D3 /* TmuxGateway.swift */; };
+		B1F40000000000000000B1D4 /* TmuxResync.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1F40000000000000000F1D4 /* TmuxResync.swift */; };
 		B1F30000000000000000B1C0 /* MoshroomSFTPWorker.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1F30000000000000000F1C0 /* MoshroomSFTPWorker.swift */; };
 		B1EE0000000000000000B17D /* Moshkeys.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1EE0000000000000000F11E /* Moshkeys.swift */; };
 		B1EE0000000000000000C0DE /* Moshnector.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1EE0000000000000000C0DF /* Moshnector.swift */; };
@@ -433,6 +438,11 @@
 		B1F10000000000000000F13A /* MoshifySession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoshifySession.swift; sourceTree = "<group>"; };
 		B1F10000000000000000F13B /* MoshifyEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoshifyEngine.swift; sourceTree = "<group>"; };
 		B1F10000000000000000F13C /* MoshifyViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoshifyViews.swift; sourceTree = "<group>"; };
+		B1F40000000000000000F1D0 /* TerminalSelection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalSelection.swift; sourceTree = "<group>"; };
+		B1F40000000000000000F1D1 /* tmux.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = tmux.swift; sourceTree = "<group>"; };
+		B1F40000000000000000F1D2 /* TmuxControlParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TmuxControlParser.swift; sourceTree = "<group>"; };
+		B1F40000000000000000F1D3 /* TmuxGateway.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TmuxGateway.swift; sourceTree = "<group>"; };
+		B1F40000000000000000F1D4 /* TmuxResync.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TmuxResync.swift; sourceTree = "<group>"; };
 		B1F30000000000000000F1C0 /* MoshroomSFTPWorker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoshroomSFTPWorker.swift; sourceTree = "<group>"; };
 		B1EE0000000000000000C0DF /* Moshnector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Moshnector.swift; sourceTree = "<group>"; };
 		B1EE0000000000000000C0E1 /* Moshxplore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Moshxplore.swift; sourceTree = "<group>"; };
@@ -987,6 +997,17 @@
 			path = Terminal;
 			sourceTree = "<group>";
 		};
+		B1F40000000000000000A1D9 /* tmux */ = {
+			isa = PBXGroup;
+			children = (
+				B1F40000000000000000F1D1 /* tmux.swift */,
+				B1F40000000000000000F1D2 /* TmuxControlParser.swift */,
+				B1F40000000000000000F1D3 /* TmuxGateway.swift */,
+				B1F40000000000000000F1D4 /* TmuxResync.swift */,
+			);
+			path = tmux;
+			sourceTree = "<group>";
+		};
 		BD33F77F2AAA426D00CD16EE /* mosh */ = {
 			isa = PBXGroup;
 			children = (
@@ -1143,6 +1164,7 @@
 			isa = PBXGroup;
 			children = (
 				D215AC2F233521B600E164C3 /* WKWebView.swift */,
+				B1F40000000000000000F1D0 /* TerminalSelection.swift */,
 			);
 			path = WebKit;
 			sourceTree = "<group>";
@@ -1310,6 +1332,7 @@
 			isa = PBXGroup;
 			children = (
 				BD33F77F2AAA426D00CD16EE /* mosh */,
+				B1F40000000000000000A1D9 /* tmux */,
 				07FAB8E925C8E6C500E1CC2C /* ssh */,
 				D2F330D320A6F1DF0074ADD7 /* clear.m */,
 				D2F330C920A6CB840074ADD7 /* help.m */,
@@ -1898,6 +1921,11 @@
 				B1F10000000000000000B1A0 /* MoshifyEngine.swift in Sources */,
 				B1F10000000000000000B1A1 /* MoshifyViews.swift in Sources */,
 				B1F30000000000000000B1C0 /* MoshroomSFTPWorker.swift in Sources */,
+				B1F40000000000000000B1D0 /* TerminalSelection.swift in Sources */,
+				B1F40000000000000000B1D1 /* tmux.swift in Sources */,
+				B1F40000000000000000B1D2 /* TmuxControlParser.swift in Sources */,
+				B1F40000000000000000B1D3 /* TmuxGateway.swift in Sources */,
+				B1F40000000000000000B1D4 /* TmuxResync.swift in Sources */,
 				B10C0000000000000000B17D /* MoshLog.swift in Sources */,
 				D2AC6749220303D900177BC5 /* openurl.m in Sources */,
 				D27DD70A2A3B203F009E97BC /* NewSnippetViewController.swift in Sources */,

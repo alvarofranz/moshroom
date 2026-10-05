@@ -283,6 +283,8 @@ class TermController: UIViewController {
     // The session reaching its (invisible by design) local prompt ends a wait for it to draw.
     NotificationCenter.default.addObserver(self, selector: #selector(_moshroomSessionPromptReady(_:)),
                                            name: .moshroomPromptReady, object: nil)
+    NotificationCenter.default.addObserver(self, selector: #selector(_moshroomTmuxReconnecting(_:)),
+                                           name: .moshroomTmuxReconnecting, object: nil)
     _termView.load()
     // A tab brought back from its archive (a relaunch): its page loads, then its session, before
     // there is anything to see.
@@ -594,11 +596,15 @@ extension TermController: SuspendableSession {
     (_session as? MCPSession)?.moshroomMoshCanRepaint() ?? false
   }
 
-  /// A mosh session to a saved host is running or parked in this tab, so it can be reconnected in
-  /// place (see moshroomReconnect).
+  /// A mosh or tmux session to a saved host is running or parked in this tab, so it can be reconnected
+  /// in place (see moshroomReconnect).
   var moshroomReconnectHost: String? {
-    guard let mcp = _session as? MCPSession, mcp.sessionParams?.childSessionType == "mosh" else { return nil }
-    let host = (meta.connectedHost ?? moshroomConnectedHost ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    guard let mcp = _session as? MCPSession else { return nil }
+    let type = mcp.sessionParams?.childSessionType
+    guard type == "mosh" || type == "tmux" else { return nil }
+    // A tmux session knows its own host; mosh goes by the host the tab is on.
+    let tmuxHost = type == "tmux" ? (mcp.sessionParams?.childSessionParams as? TmuxParams)?.hostAlias : nil
+    let host = (tmuxHost ?? meta.connectedHost ?? moshroomConnectedHost ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
     guard !host.isEmpty, MoshHosts.withHost(host) != nil else { return nil }
     return host
   }
@@ -609,7 +615,9 @@ extension TermController: SuspendableSession {
   func moshroomReconnect() {
     guard let host = moshroomReconnectHost, let mcp = _session as? MCPSession else { return }
     moshroomConnectedHost = host
-    mcp.moshroomReconnect(with: "mosh \(host)")
+    // tmux attaches again to the same remote session (the command is only a label for it there).
+    let verb = mcp.sessionParams?.childSessionType == "tmux" ? "tmux" : "mosh"
+    mcp.moshroomReconnect(with: "\(verb) \(host)")
   }
 
   func resumeInPlace() -> Bool {
@@ -618,6 +626,11 @@ extension TermController: SuspendableSession {
     if let params = (payload.session as? MCPSession)?.sessionParams,
        params.childSessionType == "mosh", params.hasEncodedState() {
       MoshLog.log("session", "waking a parked mosh session")
+      moshroomBeginCatchUp()
+    }
+    // A parked tmux session re-attaches and repaints: the same wait.
+    if let params = (payload.session as? MCPSession)?.sessionParams, params.childSessionType == "tmux" {
+      MoshLog.log("session", "waking a parked tmux session")
       moshroomBeginCatchUp()
     }
     payload.resumeFromSuspended()
@@ -728,6 +741,27 @@ extension TermController {
       guard let self, self._catchUp.active, let session = self._session,
             (n.object as AnyObject?) === session else { return }
       self._endCatchUp()
+    }
+  }
+
+  /// This tab's tmux session lost its connection and is reconnecting by itself (or stopped trying):
+  /// the loader says so over the terminal, which keeps showing the session as it was. Main queue.
+  @objc func _moshroomTmuxReconnecting(_ n: Notification) {
+    guard let session = _session, (n.object as AnyObject?) === session else { return }
+    let on = (n.userInfo?["reconnecting"] as? Bool) ?? false
+    if on {
+      let host = (n.userInfo?["host"] as? String) ?? ""
+      // Not the content check's loader: this one stays until the session answers again.
+      _catchUp.token += 1
+      _catchUp.active = false
+      let loader = _catchUpLoader()
+      _catchUp.shown = true
+      _termView.bringSubviewToFront(loader)
+      loader.show(caption: host.isEmpty ? "Reconnecting" : "Reconnecting to \(host)",
+                  onLight: _termView.backgroundColor?.isLight ?? false)
+    } else if !_catchUp.active {
+      _catchUp.shown = false
+      _catchUp.loader?.hide()
     }
   }
 

@@ -65,6 +65,9 @@ enum MoshAgentForward {
 @property (nonatomic, strong) NSString *commandOnConnect;
 // Optional free-text one-liner shown in gray next to the alias (e.g. "a demo host for apple reviews").
 @property (nonatomic, strong) NSString *hostDescription;
+// BOOL. Quick Connect's SSH mode opens this host with `tmux <alias>` (a session that lives on the host
+// and survives the app) instead of a plain `ssh <alias>`. Nil (hosts saved before it existed) = off.
+@property (nonatomic, strong) NSNumber *useTmux;
 @property (nonatomic, strong) NSNumber *prediction;
 @property (nonatomic, strong) NSString *proxyCmd;
 @property (nonatomic, strong) NSString *proxyJump;
@@ -95,6 +98,7 @@ enum MoshAgentForward {
               startUpCmd:(NSString *)startUpCmd
          commandOnConnect:(NSString *)commandOnConnect
          hostDescription:(NSString *)hostDescription
+                 useTmux:(NSNumber *)useTmux
               prediction:(enum MoshMoshPrediction)prediction
                 proxyCmd:(NSString *)proxyCmd
                proxyJump:(NSString *)proxyJump

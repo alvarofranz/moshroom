@@ -112,6 +112,102 @@ public typealias MoshSessionParams = (any NSSecureCoding & MoshSessionParamsSnap
   }
 }
 
+/// The `tmux <host>` child (MoshroomTmux): which remote session belongs to this tab, and what a
+/// re-attach needs to paint it again. Written by the child's thread while the main thread archives
+/// it, so every field goes through one lock. It carries no checkpoint: the session itself lives on
+/// the host, so the snapshot methods are no-ops.
+@objc class TmuxParams: NSObject, NSSecureCoding, MoshSessionParamsSnapshotting {
+  private struct Fields {
+    var hostAlias: String? = nil
+    var sessionName: String? = nil
+    var sessionCreated: String? = nil
+    var paneId: Int = -1
+    var version: String? = nil
+    var lastCols: Int = 0
+    var lastHistorySize: Int = 0
+    var bracketedPaste = false
+    var mouseAnyMotion = false
+    var everAttached = false
+    var viewHoldsSession = false
+  }
+  private var _f = Fields()
+  private let _lock = NSLock()
+
+  private func _get<T>(_ k: KeyPath<Fields, T>) -> T {
+    _lock.lock(); defer { _lock.unlock() }
+    return _f[keyPath: k]
+  }
+  private func _set<T>(_ k: WritableKeyPath<Fields, T>, _ v: T) {
+    _lock.lock(); defer { _lock.unlock() }
+    _f[keyPath: k] = v
+  }
+
+  /// The saved host the session is on.
+  @objc var hostAlias: String? { get { _get(\.hostAlias) } set { _set(\.hostAlias, newValue) } }
+  /// The remote tmux session (moshroom-<8 hex>), this tab's alone.
+  @objc var sessionName: String? { get { _get(\.sessionName) } set { _set(\.sessionName, newValue) } }
+  /// tmux's session_created: a different value on re-attach means a different session.
+  @objc var sessionCreated: String? { get { _get(\.sessionCreated) } set { _set(\.sessionCreated, newValue) } }
+  @objc var paneId: Int { get { _get(\.paneId) } set { _set(\.paneId, newValue) } }
+  @objc var version: String? { get { _get(\.version) } set { _set(\.version, newValue) } }
+  /// The pane's width at the last resync: history captured at another width does not compare.
+  @objc var lastCols: Int { get { _get(\.lastCols) } set { _set(\.lastCols, newValue) } }
+  @objc var lastHistorySize: Int { get { _get(\.lastHistorySize) } set { _set(\.lastHistorySize, newValue) } }
+  /// Modes tmux has no format for, followed in the pane's output (replayed by a full refill).
+  @objc var bracketedPaste: Bool { get { _get(\.bracketedPaste) } set { _set(\.bracketedPaste, newValue) } }
+  @objc var mouseAnyMotion: Bool { get { _get(\.mouseAnyMotion) } set { _set(\.mouseAnyMotion, newValue) } }
+  /// The session was created (or attached) once: from then on only an exact attach is used, so a
+  /// session that ended is never silently replaced by a new one.
+  @objc var everAttached: Bool { get { _get(\.everAttached) } set { _set(\.everAttached, newValue) } }
+  /// Ephemeral: the terminal still shows the session as it was painted (an in-process wake), so a
+  /// re-attach only appends what it missed. False after a relaunch or a rebuilt page.
+  @objc var viewHoldsSession: Bool { get { _get(\.viewHoldsSession) } set { _set(\.viewHoldsSession, newValue) } }
+
+  override init() { super.init() }
+
+  private enum Key: CodingKey {
+    case hostAlias, sessionName, sessionCreated, paneId, version, lastCols, lastHistorySize
+    case bracketedPaste, mouseAnyMotion, everAttached
+  }
+
+  static var supportsSecureCoding: Bool { true }
+
+  func encode(with coder: NSCoder) {
+    let f: Fields = { _lock.lock(); defer { _lock.unlock() }; return _f }()
+    coder.bk_encode(f.hostAlias, for: Key.hostAlias)
+    coder.bk_encode(f.sessionName, for: Key.sessionName)
+    coder.bk_encode(f.sessionCreated, for: Key.sessionCreated)
+    coder.bk_encode(f.paneId, for: Key.paneId)
+    coder.bk_encode(f.version, for: Key.version)
+    coder.bk_encode(f.lastCols, for: Key.lastCols)
+    coder.bk_encode(f.lastHistorySize, for: Key.lastHistorySize)
+    coder.bk_encode(f.bracketedPaste, for: Key.bracketedPaste)
+    coder.bk_encode(f.mouseAnyMotion, for: Key.mouseAnyMotion)
+    coder.bk_encode(f.everAttached, for: Key.everAttached)
+  }
+
+  required init?(coder: NSCoder) {
+    super.init()
+    var f = Fields()
+    f.hostAlias = coder.bk_decode(for: Key.hostAlias)
+    f.sessionName = coder.bk_decode(for: Key.sessionName)
+    f.sessionCreated = coder.bk_decode(for: Key.sessionCreated)
+    f.paneId = coder.bk_decode(for: Key.paneId)
+    f.version = coder.bk_decode(for: Key.version)
+    f.lastCols = coder.bk_decode(for: Key.lastCols)
+    f.lastHistorySize = coder.bk_decode(for: Key.lastHistorySize)
+    f.bracketedPaste = coder.bk_decode(for: Key.bracketedPaste)
+    f.mouseAnyMotion = coder.bk_decode(for: Key.mouseAnyMotion)
+    f.everAttached = coder.bk_decode(for: Key.everAttached)
+    _f = f
+  }
+
+  @objc func hasEncodedState() -> Bool { false }
+  @objc func takeEncodedState() -> Data? { nil }
+  @objc func peekEncodedState() -> Data? { nil }
+  @objc func putEncodedState(_ data: Data) {}
+}
+
 @objc class MCPParams: NSObject, NSSecureCoding, MoshSessionParamsSnapshotting {
   // The child marker is rewritten by the command queue while the main thread archives it (the tab's
   // archive follows every checkpoint change), so both go through a lock.
@@ -148,7 +244,7 @@ public typealias MoshSessionParams = (any NSSecureCoding & MoshSessionParamsSnap
     super.init()
     self.childSessionType = coder.bk_decode(for: Key.childSessionType)
     // NOTE: include all known MCP children subclasses here for secure decoding
-    self.childSessionParams = coder.bk_decode(of: [MoshParams.self], for: Key.childSessionParams)
+    self.childSessionParams = coder.bk_decode(of: [MoshParams.self, TmuxParams.self], for: Key.childSessionParams)
   }
 
   // MARK: - MoshSessionParamsSnapshotting (forward)
