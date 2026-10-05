@@ -34,10 +34,13 @@ import Foundation
 /// The rule throughout: return a length only when the bytes SAY it. Nothing here estimates from
 /// "average bitrate" — a wrong time next to a track is worse than no time at all. What is exact:
 /// FLAC and WAV always, MP4/M4A whenever its `moov` sits at the front (Apple's own encoders and
-/// most others put it there), MP3 with a Xing/Info frame count or genuinely constant bitrate.
-/// Ogg-Opus is the one that cannot be done from the head — its length is the granule position of
-/// the LAST page — and it needs no parser anyway: those tracks are transcoded when they land and
-/// report their length exactly from then on.
+/// most others put it there), MP3 with a Xing/Info/VBRI frame count or genuinely constant bitrate.
+/// Two layouts keep the answer at the far end, an MP4 with a trailing `moov` and Ogg-Opus (whose
+/// length is the granule position of its LAST page), so those get a second read of the tail; an
+/// MP3 whose tag outgrows the head gets a second read where its frames begin.
+///
+/// Every size read from the file is untrusted: a malformed or truncated file answers nil, never a
+/// crash and never an endless walk.
 enum MoshifyAudioHeader {
 
   /// `head` should be the first few kilobytes (32 KB is plenty); `totalSize` is the file's size from
@@ -63,6 +66,23 @@ enum MoshifyAudioHeader {
     case "m4a", "mp4", "aac":   return headAnswer == nil
     default:                    return false
     }
+  }
+
+  /// Where an MP3's frames begin when the head was (nearly) all ID3 tag, embedded cover art
+  /// usually: the tag states its own size, so the offset is exact. nil when there is nothing to
+  /// gain from a second read.
+  static func audioOffset(head: Data, fileName: String) -> UInt64? {
+    guard (fileName as NSString).pathExtension.lowercased() == "mp3" else { return nil }
+    let start = id3End(head)
+    guard start > 0, start + 4096 > head.count else { return nil }
+    return UInt64(start)
+  }
+
+  /// The read taken at `audioOffset`: the first frames, with `offset` saying where in the file
+  /// they sit (the constant-bitrate arithmetic needs it).
+  static func duration(frames: Data, at offset: UInt64, fileName: String, totalSize: UInt64) -> TimeInterval? {
+    guard (fileName as NSString).pathExtension.lowercased() == "mp3" else { return nil }
+    return mp3Frames(frames, from: 0, base: offset, totalSize: totalSize)
   }
 
   /// With both ends of the file in hand. Same rule as ever: only what the bytes state.
@@ -213,23 +233,30 @@ enum MoshifyAudioHeader {
     return Double(duration) / Double(timescale)
   }
 
-  /// The payload range of the first atom with this name between `from` and `to`, searching one level
-  /// and (for containers) recursing into it.
+  /// The payload range of the first atom with this name between `from` and `to`, searching one
+  /// level. Sizes come from the file, so each is checked before it is trusted: a 64-bit size that
+  /// does not fit, or an atom smaller than its own header, ends the walk instead of trapping.
   private static func atom(named name: String, in d: Data, from: Int, to: Int) -> Range<Int>? {
+    let limit = min(to, d.count)
     var i = from
-    while i + 8 <= min(to, d.count) {
-      var size = Int(be32(d, i))
+    while i + 8 <= limit {
+      let raw = be32(d, i)
       let type = String(bytes: d[(i + 4)..<(i + 8)], encoding: .ascii) ?? ""
+      var size: Int
       var payload = i + 8
-      if size == 1 {                              // 64-bit size
-        guard i + 16 <= d.count else { return nil }
-        size = Int(be64(d, i + 8))
+      if raw == 1 {                               // 64-bit size
+        guard i + 16 <= d.count, let big = Int(exactly: be64(d, i + 8)) else { return nil }
+        size = big
         payload = i + 16
-      } else if size == 0 {                       // "to the end of the file"
-        size = min(to, d.count) - i
+      } else if raw == 0 {                        // "to the end of the file"
+        size = limit - i
+      } else {
+        size = Int(raw)
       }
-      guard size >= 8 else { return nil }
-      if type == name { return payload..<min(i + size, d.count) }
+      guard size >= payload - i else { return nil }
+      let remaining = d.count - i
+      if type == name { return payload..<(size >= remaining ? d.count : i + size) }
+      guard size < limit - i else { return nil }  // runs past what we have: nothing more here
       i += size
     }
     return nil
@@ -271,21 +298,31 @@ enum MoshifyAudioHeader {
 
   // MARK: - MP3
 
-  /// Skip any ID3v2 tag, find the first frame, and take the length from the Xing/Info frame count
-  /// when it is there. Without it, only a CBR file can be measured honestly: bitrate and size say
-  /// everything, and a VBR file without a Xing header returns nil rather than a plausible lie.
+  /// Skip any ID3v2 tag, find the first frame, and take the length from the Xing/Info (or VBRI)
+  /// frame count when it is there. Without one, only a CBR file can be measured honestly: bitrate
+  /// and size say everything, and a VBR file without a count returns nil rather than a plausible lie.
   private static func mp3(_ d: Data, totalSize: UInt64) -> TimeInterval? {
-    var start = 0
-    if d.count > 10, d[0...2].elementsEqual(Array("ID3".utf8)) {
-      let tag = (Int(d[6]) << 21) | (Int(d[7]) << 14) | (Int(d[8]) << 7) | Int(d[9])
-      start = 10 + tag
-      if (d[5] & 0x10) != 0 { start += 10 }   // footer
-    }
-    guard let frame = frameHeader(d, from: start) else { return nil }
-    let audioBytes = totalSize > UInt64(frame.offset) ? totalSize - UInt64(frame.offset) : 0
+    mp3Frames(d, from: id3End(d), base: 0, totalSize: totalSize)
+  }
 
-    // Xing ("Xing"/"Info") sits inside the first frame, after the side information.
-    let sideInfo = frame.channels == 1 ? 17 : 32
+  /// Where an ID3v2 tag at the very start of the file ends (0 when there is none).
+  private static func id3End(_ d: Data) -> Int {
+    guard d.count > 10, d[0...2].elementsEqual(Array("ID3".utf8)) else { return 0 }
+    let tag = (Int(d[6] & 0x7F) << 21) | (Int(d[7] & 0x7F) << 14) | (Int(d[8] & 0x7F) << 7) | Int(d[9] & 0x7F)
+    var end = 10 + tag
+    if (d[5] & 0x10) != 0 { end += 10 }   // footer
+    return end
+  }
+
+  /// The frame arithmetic, on a buffer whose first byte sits at `base` in the file.
+  private static func mp3Frames(_ d: Data, from start: Int, base: UInt64, totalSize: UInt64) -> TimeInterval? {
+    guard let frame = frameHeader(d, from: start) else { return nil }
+    let audioStart = base + UInt64(frame.offset)
+    let audioBytes = totalSize > audioStart ? totalSize - audioStart : 0
+
+    // Xing ("Xing"/"Info") sits inside the first frame, after the side information, whose size
+    // depends on the MPEG version as well as the channel mode.
+    let sideInfo = frame.mpeg1 ? (frame.channels == 1 ? 17 : 32) : (frame.channels == 1 ? 9 : 17)
     let xing = frame.offset + 4 + sideInfo
     if xing + 12 <= d.count {
       let tag = String(bytes: d[xing..<(xing + 4)], encoding: .ascii) ?? ""
@@ -299,7 +336,15 @@ enum MoshifyAudioHeader {
         }
       }
     }
-    // No Xing: trust the bitrate only when the next frame header agrees with it (constant bitrate).
+    // VBRI (Fraunhofer's encoder) sits at a fixed 32 bytes past the frame header, whatever the
+    // version. It marks a VBR file, so without a usable count the answer is nil, never the CBR guess.
+    let vbri = frame.offset + 4 + 32
+    if vbri + 18 <= d.count, String(bytes: d[vbri..<(vbri + 4)], encoding: .ascii) == "VBRI" {
+      let frames = be32(d, vbri + 14)
+      guard frames > 0, frame.sampleRate > 0 else { return nil }
+      return Double(frames) * Double(frame.samplesPerFrame) / Double(frame.sampleRate)
+    }
+    // No frame count: trust the bitrate only when the next frame header agrees with it (constant bitrate).
     guard let next = frameHeader(d, from: frame.offset + frame.frameLength),
           next.bitrate == frame.bitrate, frame.bitrate > 0, audioBytes > 0
     else { return nil }
@@ -313,6 +358,7 @@ enum MoshifyAudioHeader {
     let channels: Int
     let samplesPerFrame: Int
     let frameLength: Int
+    let mpeg1: Bool
   }
 
   private static let mp3Bitrates: [[Int]] = [
@@ -356,7 +402,8 @@ enum MoshifyAudioHeader {
       let channels = ((d[i + 3] >> 6) & 0x03) == 0x03 ? 1 : 2
       let frameLength = samplesPerFrame / 8 * bitrate / sampleRate + padding
       return Mp3Frame(offset: i, bitrate: bitrate, sampleRate: sampleRate, channels: channels,
-                      samplesPerFrame: samplesPerFrame, frameLength: max(frameLength, 4))
+                      samplesPerFrame: samplesPerFrame, frameLength: max(frameLength, 4),
+                      mpeg1: versionBits == 0x03)
     }
     return nil
   }
