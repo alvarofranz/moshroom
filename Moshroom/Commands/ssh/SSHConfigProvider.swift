@@ -28,7 +28,7 @@ import Combine
 import MoshroomConfig
 
 
-fileprivate let HostKeyChangedWarningMessage = "@@WARNING! REMOTE IDENTIFICATION HAS CHANGED.\nNew Public key hash: %@.\nAccepting the following prompt will add a new entry for this host.\nDo you trust the host key? [Y/n]: "
+fileprivate let HostKeyChangedWarningMessage = "@@WARNING! REMOTE IDENTIFICATION HAS CHANGED.\nNew Public key hash: %@.\nSomeone could be intercepting this connection, or the host's key was replaced.\nAccepting the following prompt will add a new entry for this host.\nType yes to trust the new host key [yes/N]: "
 
 fileprivate let HostKeyChangedUnknownRequestMessage = "Public key hash: %@.\nThe server is unknown.\nDo you trust the host key? [Y/n]: "
 
@@ -93,7 +93,7 @@ extension SSHClientConfigProvider {
 
     return prompt.userPrompts.publisher.tryMap { question -> String in
       guard let device = self.device else {
-        throw CommandError(message: "This host asks for a password. Connect to it once from a terminal tab (the password can be saved with the host).")
+        throw CommandError(message: "This host asks for a password (or did not accept your key). Connect to it once from a terminal tab, where the password can be saved with the host.")
       }
       guard let input = device.readline(question.prompt, secure: true) else {
         throw CommandError(message: "Couldn't read input")
@@ -150,17 +150,31 @@ extension SSHClientConfigProvider {
       messageToShow = String(format: HostKeyChangedNotFoundRequestMessage, serverFingerprint)
     }
 
+    let keyChanged: Bool
+    if case .changed = prompt { keyChanged = true } else { keyChanged = false }
+
     guard let device = self.device else {
-      // Headless: never accept a key nobody confirmed. The user connects once from a terminal tab,
-      // answers there, and every later app-side connect finds it in known_hosts.
-      printLn("Unknown or changed host key, and no terminal to confirm it in. Connect to this host once from a terminal tab first.", err: true)
-      return .just(SSH.InteractiveResponse.negative)
+      // Headless: never accept a key nobody confirmed, and say why instead of a generic failure.
+      // The user connects once from a terminal tab, answers there, and every later app-side
+      // connect finds the key in known_hosts.
+      let message = keyChanged
+        ? "This host's key has changed since it was last trusted. Connect to it from a terminal tab to review the new key."
+        : "This host's key is not known on this device yet. Connect to it once from a terminal tab to confirm it."
+      printLn(message, err: true)
+      return Fail(error: CommandError(message: message)).eraseToAnyPublisher()
     }
 
     let readAnswer = device.readline(messageToShow, secure: false)
 
-    if let answer = readAnswer?.lowercased() {
-      if answer.starts(with: "y") || answer.isEmpty {
+    if let answer = readAnswer?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+      if keyChanged {
+        // A changed (or different-type) key is what an interception looks like: only an
+        // explicit yes accepts it. Enter alone, or anything else, refuses.
+        if answer == "yes" || answer == "y" {
+          response = .affirmative
+        }
+      } else if answer.starts(with: "y") || answer.isEmpty {
+        // First contact with an unknown host keeps the usual default-yes answer.
         response = .affirmative
       }
     } else {

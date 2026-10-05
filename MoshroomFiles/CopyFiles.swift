@@ -203,7 +203,11 @@ extension Translator {
     return file
       .flatMap { destination -> CopyProgressInfoPublisher in
         if size == 0 {
-          return .just(CopyProgressInfo(name: fullFile, written:0, size: 0))
+          // Nothing to stream, but the destination is open (and already truncated): close it,
+          // or its handle stays open until the connection goes away.
+          return destination.close()
+            .map { _ in CopyProgressInfo(name: fullFile, written: 0, size: 0) }
+            .eraseToAnyPublisher()
         }
         
         return t.open(flags: O_RDONLY)

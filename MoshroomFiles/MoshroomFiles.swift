@@ -91,11 +91,6 @@ public protocol WriterTo {
   func writeTo(_ w: Writer) -> AnyPublisher<Int, Error>
 }
 
-public protocol ReaderFrom {
-  // Or make it to Cancellable
-  func readFrom(_ r: Reader) -> AnyPublisher<Int, Error>
-}
-
 public protocol File: Reader, Writer {
   func close() -> AnyPublisher<Bool, Error>
 }
@@ -119,10 +114,6 @@ public typealias CopyProgressInfoPublisher = AnyPublisher<CopyProgressInfo, Erro
 
 public protocol CopierFrom {
   func copy(from ts: [Translator], args: CopyArguments) -> CopyProgressInfoPublisher
-}
-
-public protocol CopierTo {
-  func copy(to ts: Translator) -> CopyProgressInfoPublisher
 }
 
 extension AnyPublisher {

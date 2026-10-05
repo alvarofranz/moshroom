@@ -38,6 +38,10 @@ public enum FileError: Error {
   }
 }
 
+extension FileError: LocalizedError {
+  public var errorDescription: String? { description }
+}
+
 extension FileError {
   init(in session: ssh_session) {
     let msg = SSHError.getErrorDescription(session)
@@ -82,7 +86,6 @@ public class SFTPClient {
   
   deinit {
     self.client.closeSFTP(sftp)
-    print("SFTP Out!!")
   }
 }
 
@@ -125,12 +128,15 @@ public class SFTPTranslator: MoshroomFiles.Translator {
     guard let canonicalPath = sftp_canonicalize_path(sftp, path.cString(using: .utf8)) else {
       throw FileError(title: "Could not canonicalize path", in: session)
     }
+    // Both the path string and the stat result are heap allocations libssh hands over to us.
+    defer { ssh_string_free_char(canonicalPath) }
     
     // Early protocol versions did not stat the item, so we do it ourselves.
     // A path like /tmp/notexist would not fail if whatever does not exist.
     guard let attrsPtr = sftp_stat(sftp, canonicalPath) else {
       throw FileError(title:"\(String(cString:canonicalPath)) No such file or directory.", in: session)
     }
+    defer { sftp_attributes_free(attrsPtr) }
     
     let attrs = attrsPtr.pointee
     var type: FileAttributeType = .typeUnknown
@@ -341,12 +347,12 @@ public class SFTPTranslator: MoshroomFiles.Translator {
       ssh_channel_set_blocking(self.channel, 1)
       defer { ssh_channel_set_blocking(self.channel, 0) }
       
-      let p = sftp_stat(sftp, self.path)
-      guard let attrs = p?.pointee else {
+      guard let p = sftp_stat(sftp, self.path) else {
         throw FileError(title: "Could not stat file", in: self.session)
       }
+      defer { sftp_attributes_free(p) }
       
-      return self.parseItemAttributes(attrs)
+      return self.parseItemAttributes(p.pointee)
     }.eraseToAnyPublisher()
   }
   
@@ -481,6 +487,10 @@ public class SFTPFile : MoshroomFiles.File {
   let maxConcurrentOps = 20
   var demand: Subscribers.Demand = .none
   var pub: PassthroughSubject<DispatchData, Error>!
+  // A bounded read (read(max:)) never asks the server for, nor hands on, more than its budget.
+  // nil = read to EOF (writeTo, a whole-file copy).
+  var bytesLeftToRequest: Int?
+  var bytesLeftToDeliver: Int?
   
   init(_ file: sftp_file, in sftpClient: SFTPClient) {
     self.sftpClient = sftpClient
@@ -495,10 +505,11 @@ public class SFTPFile : MoshroomFiles.File {
 
   public func close() -> AnyPublisher<Bool, Error> {
     return self.connection().tryMap { _ in
+      guard let file = self.file else { return true }   // already closed
       ssh_channel_set_blocking(self.channel, 1)
       defer { ssh_channel_set_blocking(self.channel, 0) }
       
-      let rc = sftp_close(self.file)
+      let rc = sftp_close(file)
       
       if rc != SSH_OK {
         throw FileError(title: "Error closing file", in: self.session)
@@ -510,7 +521,17 @@ public class SFTPFile : MoshroomFiles.File {
   }
   
   deinit {
-    print("SFTP file out")
+    // A handle nobody closed (a cancelled transfer, a header probe that took its bytes and moved
+    // on) is closed here, or the server keeps it open for the life of the session. Closing is a
+    // round trip, so it runs on the session's run loop; the block keeps the client alive until then.
+    guard let file else { return }
+    let client = sftpClient
+    client.rloop.perform {
+      ssh_channel_set_blocking(client.channel, 1)
+      sftp_close(file)
+      ssh_channel_set_blocking(client.channel, 0)
+    }
+    CFRunLoopWakeUp(client.rloop.getCFRunLoop())
   }
 }
 
@@ -528,8 +549,16 @@ extension SFTPFile: MoshroomFiles.Reader, MoshroomFiles.WriterTo {
     }.eraseToAnyPublisher()
   }
 
+  /// Read at most `length` bytes from the current offset, then finish. The budget bounds what is
+  /// requested from the server as well as what is delivered, so nothing is left in flight once the
+  /// publisher completes (a seek or another read can follow safely). Fewer bytes arrive at EOF.
   public func read(max length: Int) -> AnyPublisher<DispatchData, Error> {
+    guard length > 0 else {
+      return Empty(completeImmediately: true).setFailureType(to: Error.self).eraseToAnyPublisher()
+    }
     inflightReads = []
+    bytesLeftToRequest = length
+    bytesLeftToDeliver = length
     pub = PassthroughSubject<DispatchData, Error>()
     
     return
@@ -540,6 +569,8 @@ extension SFTPFile: MoshroomFiles.Reader, MoshroomFiles.WriterTo {
   
   public func writeTo(_ w: Writer) -> AnyPublisher<Int, Error> {
     inflightReads = []
+    bytesLeftToRequest = nil
+    bytesLeftToDeliver = nil
     pub = PassthroughSubject<DispatchData, Error>()
 
     return
@@ -550,7 +581,6 @@ extension SFTPFile: MoshroomFiles.Reader, MoshroomFiles.WriterTo {
         self.log.message("WRITING \(data.count)", SSH_LOG_DEBUG)
         return w.write(data, max: data.count)
       }
-      .print()
       .eraseToAnyPublisher()
   }
   
@@ -584,14 +614,33 @@ extension SFTPFile: MoshroomFiles.Reader, MoshroomFiles.WriterTo {
     
     self.log.message("Scheduled reads \(inflightReads.count). Current demand \(self.demand).", SSH_LOG_DEBUG)
 
+    if let data = data, data.count > 0, bytesLeftToDeliver != nil {
+      bytesLeftToDeliver! -= data.count
+    }
+    if let left = bytesLeftToDeliver, !isComplete {
+      if left <= 0 {
+        // The whole budget arrived: done, with nothing left in flight.
+        isComplete = true
+      } else if bytesLeftToRequest == 0 && inflightReads.isEmpty {
+        // A short reply before the budget: ask again for what is still missing (EOF then ends it).
+        bytesLeftToRequest = left
+      }
+    }
+
     // Schedule more blocks to read. This way data will already be ready when we come back.
     while isComplete == false && inflightReads.count < self.maxConcurrentOps {
-      let asyncRequest = sftp_async_read_begin(self.file, UInt32(self.blockSize))
+      var length = self.blockSize
+      if let left = bytesLeftToRequest {
+        if left <= 0 { break }
+        length = min(length, left)
+      }
+      let asyncRequest = sftp_async_read_begin(self.file, UInt32(length))
       if asyncRequest < 0 {
         pub.send(completion: .failure(FileError(title: "Could not pre-alloc request file", in: session)))
         return
       }
       inflightReads.append(UInt32(asyncRequest))
+      if bytesLeftToRequest != nil { bytesLeftToRequest! -= length }
     }
         
     if let data = data, data.count > 0 {
@@ -643,6 +692,9 @@ extension SFTPFile: MoshroomFiles.Reader, MoshroomFiles.WriterTo {
         } else if nbytes < 0 {
           throw FileError(title: "Error while reading blocks", in: session)
         } else if nbytes == 0 {
+          // EOF. Collect the replies still owed for the requests behind this one (they are EOF
+          // too), so none stay queued in libssh after the read is over.
+          _drainReads(Array(inflightReads[(idx + 1)...]))
           inflightReads = []
           return (data, true)
         }
@@ -656,6 +708,17 @@ extension SFTPFile: MoshroomFiles.Reader, MoshroomFiles.WriterTo {
     inflightReads += newReads
     
     return (data, false)
+  }
+
+  private func _drainReads(_ ids: [UInt32]) {
+    guard let file = self.file, !ids.isEmpty else { return }
+    sftp_file_set_blocking(file)
+    defer { sftp_file_set_nonblocking(file) }
+    let buf = UnsafeMutableRawPointer.allocate(byteCount: self.blockSize, alignment: MemoryLayout<UInt8>.alignment)
+    defer { buf.deallocate() }
+    for id in ids {
+      if sftp_async_read(file, buf, UInt32(self.blockSize), id) < 0 { break }
+    }
   }
 }
 
@@ -693,7 +756,9 @@ extension SFTPFile: MoshroomFiles.Writer {
             isFinished = true
           }
         } catch {
+          // Stop here: rescheduling after a failure would spin the run loop for ever.
           pb.send(completion: .failure(error))
+          return
         }
       }
 
@@ -757,6 +822,11 @@ extension SFTPFile: MoshroomFiles.Writer {
         self.log.message("Write AGAIN", SSH_LOG_DEBUG)
         break
       } else if rc < 0 {
+        // libssh has already freed every handle it answered, this failed one included; the ones
+        // behind it will never be waited on now, so release them and forget the lot. Leaving any
+        // of them in the list would hand a freed handle back to libssh on the next pass.
+        for (pending, _) in inflightWrites.dropFirst(completed + 1) { sftp_aio_free(pending) }
+        inflightWrites = []
         throw FileError(title: "Error while writing block", in: session)
       }
       ackedBytes += len

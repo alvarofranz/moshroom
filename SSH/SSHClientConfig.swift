@@ -93,8 +93,6 @@ public struct SSHClientConfig: CustomStringConvertible, Equatable {
   /// Default verbosity logging is disabled, SSH_LOG_NOLOG
   let loggingVerbosity: SSHLogLevel
   
-  let keepAliveInterval: Int? = nil
-  
   let proxyCommand: String?
   let proxyJump: String?
   
@@ -138,7 +136,8 @@ public struct SSHClientConfig: CustomStringConvertible, Equatable {
    - verifyHostCallback:
    - terminalEmulator:
    - sshDirectory: `ssh` directory, if `nil` it will use the default directory
-   - keepAliveInterval: if `nil` it won't send KeepAlive packages from Client to the Server
+   - keepAliveInterval: ignored. Client keepalives stay off: libssh did not process the replies a
+     server sends back to them correctly.
    */
   public init(user: String,
               port: String? = nil,
@@ -194,9 +193,6 @@ public struct SSHClientConfig: CustomStringConvertible, Equatable {
     self.pubKeyAuthentication = pubKeyAuthentication
     self.hostbasedAuthentication = hostbasedAuthentication
     self.gatewayPorts = gatewayPorts ?? false
-    // TODO Disable Keep Alive for now. LibSSH is not processing correctly the messages
-    // that may come back from the server.
-    // self.keepAliveInterval = keepAliveInterval
     
     authMethods?.forEach({ auth in
       if let auth = (auth as? Authenticator) {

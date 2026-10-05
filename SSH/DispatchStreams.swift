@@ -39,17 +39,26 @@ public enum DispatchStreamError: Error {
   }
 }
 
+/// The cleanup handler for a stream's channel. DispatchIO runs it exactly once, after the channel
+/// is closed (by `close()` or on deinit) and every pending operation has drained, which is the one
+/// safe moment to close the descriptor. Only a descriptor the stream OWNS is closed: a caller that
+/// hands in a dup() passes `closesDescriptor: true`, while a caller that keeps using its descriptor
+/// (or closes it itself) keeps the default.
+fileprivate func dispatchStreamCleanup(_ fd: Int32, owned: Bool) -> (Int32) -> Void {
+  guard owned, fd >= 0 else { return { _ in } }
+  return { _ in Darwin.close(fd) }
+}
+
 public class DispatchOutputStream: Writer {
   let stream: DispatchIO
   let queue: DispatchQueue
   var fd: Int32?
   
-  public init(stream: Int32) {
+  public init(stream: Int32, closesDescriptor: Bool = false) {
     self.fd = stream
     self.queue = DispatchQueue(label: "file-\(stream)")
-    self.stream = DispatchIO(type: .stream, fileDescriptor: stream, queue: self.queue, cleanupHandler: { error in
-      print("Dispatch closed with \(error)")
-    })
+    self.stream = DispatchIO(type: .stream, fileDescriptor: stream, queue: self.queue,
+                             cleanupHandler: dispatchStreamCleanup(stream, owned: closesDescriptor))
     self.stream.setLimit(lowWater: 0)
   }
   
@@ -94,12 +103,11 @@ public class DispatchInputStream {
   let queue: DispatchQueue
   var fd: Int32?
   
-  public init(stream: Int32) {
+  public init(stream: Int32, closesDescriptor: Bool = false) {
     self.fd = stream
     self.queue = DispatchQueue(label: "file-\(stream)")
-    self.stream = DispatchIO(type: .stream, fileDescriptor: stream, queue: self.queue, cleanupHandler: { error in
-      print("Dispatch \(error)")
-    })
+    self.stream = DispatchIO(type: .stream, fileDescriptor: stream, queue: self.queue,
+                             cleanupHandler: dispatchStreamCleanup(stream, owned: closesDescriptor))
     self.stream.setLimit(lowWater: 0)
   }
   

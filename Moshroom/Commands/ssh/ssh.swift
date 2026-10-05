@@ -59,7 +59,6 @@ public func moshroom_ssh_main(argc: Int32, argv: Argv) -> Int32 {
   var connection: SSH.SSHClient?
   var forwardTunnels: [PortForwardInfo] = []
   var remoteTunnels: [PortForwardInfo] = []
-  var proxyThread: Thread?
   var socks: [OptionalBindAddressInfo] = []
   var timer: Timer?
 
@@ -320,9 +319,11 @@ public func moshroom_ssh_main(argc: Int32, argv: Argv) -> Int32 {
     }
 
     return session.tryMap { s in
-      let outs = DispatchOutputStream(stream: dup(self.outstream))
-      let ins = DispatchInputStream(stream: dup(self.instream))
-      let errs = DispatchOutputStream(stream: dup(self.errstream))
+      // Dups we own: each stream closes its descriptor once its channel is done (close() in the
+      // teardown, or deinit), so a session no longer leaks three descriptors.
+      let outs = DispatchOutputStream(stream: dup(self.outstream), closesDescriptor: true)
+      let ins = DispatchInputStream(stream: dup(self.instream), closesDescriptor: true)
+      let errs = DispatchOutputStream(stream: dup(self.errstream), closesDescriptor: true)
 
       s.handleCompletion = { [weak self] in
         // Once finished, exit.
@@ -367,18 +368,16 @@ public func moshroom_ssh_main(argc: Int32, argv: Argv) -> Int32 {
                           from: "stdio", localPort: 22)
       .tryMap { s in
         SSHPool.register(stdioStream: s, runningCommand: command, on: conn)
-        let outStream = DispatchOutputStream(stream: dup(self.outstream))
-        let inStream = DispatchInputStream(stream: dup(self.instream))
+        let outStream = DispatchOutputStream(stream: dup(self.outstream), closesDescriptor: true)
+        let inStream = DispatchInputStream(stream: dup(self.instream), closesDescriptor: true)
         s.connect(stdout: outStream, stdin: inStream)
 
         s.handleCompletion = { [weak self] in
-          print("Stdio Tunnel completed")
           SSHPool.deregister(allTunnelsForConnection: conn)
           self?.kill()
           //SSHPool.deregister(runningCommand: command, on: conn)
         }
         s.handleFailure = { [weak self] error in
-          print("Stdio Tunnel completed")
           SSHPool.deregister(allTunnelsForConnection: conn)
           self?.kill()
           //SSHPool.deregister(runningCommand: command, on: conn)
@@ -512,7 +511,7 @@ public func moshroom_ssh_main(argc: Int32, argv: Argv) -> Int32 {
       .resizePty(rows: Int32(device.rows), columns: Int32(device.cols))
       .sink(receiveCompletion: { completion in
         if case .failure(let error) = completion {
-          print(error)
+          MoshLog.log("ssh", "resize failed: \(error)")
         }
         c?.cancel()
       }, receiveValue: {})
@@ -521,16 +520,13 @@ public func moshroom_ssh_main(argc: Int32, argv: Argv) -> Int32 {
   @objc public func kill() {
     // Cancelling here makes sure the flows are cancelled.
     // Trying to do it at the runloop has the issue that flows may continue running.
-    print("Kill received")
     connectionCancellable = nil
     
     awake()
   }
 
   func awaitRunLoop() {
-    let timer = Timer(timeInterval: TimeInterval(INT_MAX), repeats: true) { _ in
-      print("timer")
-    }
+    let timer = Timer(timeInterval: TimeInterval(INT_MAX), repeats: true) { _ in }
     self.timer = timer
     self.currentRunLoop.add(timer, forMode: .default)
     CFRunLoopRun()
@@ -542,7 +538,4 @@ public func moshroom_ssh_main(argc: Int32, argv: Argv) -> Int32 {
     CFRunLoopStop(cfRunLoop)
   }
 
-  deinit {
-    print("OUT")
-  }
 }

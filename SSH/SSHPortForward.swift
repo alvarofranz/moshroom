@@ -54,7 +54,6 @@ public class SSHPortForwardListener {
   let queue: DispatchQueue
   var isReady = false
   var log: SSHLogger { get { client.log } }
-  var cancellableBag: [AnyCancellable] = []
   
   var status = CurrentValueSubject<PortForwardState, Error>(.starting)
   

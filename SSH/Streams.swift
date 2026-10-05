@@ -98,7 +98,6 @@ public class Stream : Reader, Writer, WriterTo {
         })
     
     stdinCancellable = input?.writeTo(instream)
-      .print("INSTREAM")
       .receive(on: client.rloop).sink(
         receiveCompletion: { completion in
           switch completion {
@@ -208,7 +207,6 @@ public class Stream : Reader, Writer, WriterTo {
   }
   
   deinit {
-    print("Stream Deinit")
     self.log.message("Stream Deinit", SSH_LOG_INFO)
     self.client.closeChannel(self.channel)
   }
@@ -217,7 +215,6 @@ public class Stream : Reader, Writer, WriterTo {
 // Stream are files. We respect the API, but maybe we want to change it in the
 // future, and we may not want to tie it to the particular MoshroomFiles intricacies.
 public typealias Reader = MoshroomFiles.Reader
-public typealias ReaderFrom = MoshroomFiles.ReaderFrom
 public typealias Writer = MoshroomFiles.Writer
 public typealias WriterTo = MoshroomFiles.WriterTo
 
@@ -228,7 +225,6 @@ class OutStream {
   let rloop: RunLoop
   let session: ssh_session
   var isStderr: Int32 = 0
-  var currentReading: Reading?
   
   var log: SSHLogger { get { stream.log } }
   
@@ -481,7 +477,6 @@ class InStream {
   var client: SSHClient { stream.client }
   var rloop: RunLoop { stream.client.rloop }
   var session: ssh_session { stream.client.session }
-  var isClosed = false
   
   var log: SSHLogger { get { stream.log } }
   

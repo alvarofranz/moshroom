@@ -37,6 +37,7 @@
 
 import Combine
 import Foundation
+import ImageIO
 import UIKit
 
 import MoshroomConfig
@@ -52,6 +53,9 @@ struct MoshxploreEntry {
   let isSymlink: Bool
   let size: UInt64
   let modified: Date?
+  // false only for a link the listing did not get to ask about (past the resolve cap): its size is
+  // the length of the path it holds and its type is unknown, so nothing may be decided from them.
+  let isResolved: Bool
 
   init?(attrs: FileAttributes) {
     guard let name = attrs[.name] as? String, !name.isEmpty else { return nil }
@@ -61,15 +65,34 @@ struct MoshxploreEntry {
     self.isSymlink = type == .typeSymbolicLink
     self.size = (attrs[.size] as? NSNumber)?.uint64Value ?? 0
     self.modified = attrs[.modificationDate] as? Date
+    self.isResolved = !isSymlink
   }
 
-  // Rebuild an entry with the post-save size/date (a struct of lets — no mutation).
-  init(name: String, isDirectory: Bool, isSymlink: Bool, size: UInt64, modified: Date?) {
+  // Rebuild an entry with the post-save size/date (a struct of lets, no mutation).
+  init(name: String, isDirectory: Bool, isSymlink: Bool, size: UInt64, modified: Date?,
+       isResolved: Bool = true) {
     self.name = name
     self.isDirectory = isDirectory
     self.isSymlink = isSymlink
     self.size = size
     self.modified = modified
+    self.isResolved = isResolved
+  }
+
+  // A link, now that we know what it points at (nil attrs = broken: it stays a link, and resolved,
+  // because there is nothing more to learn about it).
+  func resolvedAs(_ attrs: FileAttributes?) -> MoshxploreEntry {
+    guard let attrs else {
+      return MoshxploreEntry(name: name, isDirectory: false, isSymlink: isSymlink, size: size,
+                             modified: modified, isResolved: true)
+    }
+    return MoshxploreEntry(
+      name: name,
+      isDirectory: (attrs[.type] as? FileAttributeType) == .typeDirectory,
+      isSymlink: isSymlink,
+      size: (attrs[.size] as? NSNumber)?.uint64Value ?? size,
+      modified: attrs[.modificationDate] as? Date ?? modified,
+      isResolved: true)
   }
 }
 
@@ -114,17 +137,40 @@ enum MoshxploreDownloads {
     return dir
   }
 
+  // Previews can be anything the user tapped, private keys and .env files included, so the cache
+  // is complete-protection and starts empty every run: a copy orphaned by a crash or a kill
+  // mid-preview does not outlive the run that fetched it.
+  private static let previewCacheURL: URL = {
+    let fm = FileManager.default
+    let dir = fm.temporaryDirectory.appendingPathComponent("moshxplore-preview", isDirectory: true)
+    try? fm.removeItem(at: dir)
+    try? fm.createDirectory(at: dir, withIntermediateDirectories: true,
+                            attributes: [.protectionKey: FileProtectionType.complete])
+    return dir
+  }()
+
   static func previewCache() -> URL {
-    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("moshxplore-preview", isDirectory: true)
-    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    let dir = previewCacheURL
+    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true,
+                                             attributes: [.protectionKey: FileProtectionType.complete])
     return dir
   }
 
-  // Make a host alias safe as a single folder name (strip path separators and other illegal chars).
+  /// A remote file name as a local one, or nil when it cannot be one. Names come straight from the
+  /// server's directory listing, which nothing validates: a name holding a slash or a dot-dot would
+  /// otherwise steer a download (and the delete of whatever it replaces) out of its folder.
+  static func localName(_ remote: String) -> String? {
+    guard !remote.isEmpty, remote != ".", remote != "..",
+          !remote.contains("/"), !remote.contains("\0") else { return nil }
+    return remote
+  }
+
+  // Make a host alias safe as a single folder name (strip path separators and other illegal chars,
+  // and the dots that would turn it into "." or ".." or a hidden folder).
   private static func sanitized(_ name: String) -> String {
     let illegal = CharacterSet(charactersIn: "/\\:*?\"<>|").union(.controlCharacters)
     return name.components(separatedBy: illegal).joined(separator: "-")
-      .trimmingCharacters(in: .whitespaces)
+      .trimmingCharacters(in: CharacterSet.whitespaces.union(CharacterSet(charactersIn: ".")))
   }
 }
 
@@ -151,7 +197,7 @@ enum MoshxplorePreview {
     "dmg", "iso", "img", "bin", "apk", "ipa", "deb", "rpm"]
 
   static func kind(for entry: MoshxploreEntry) -> Kind {
-    if entry.isDirectory { return .none }
+    if entry.isDirectory || !entry.isResolved { return .none }
     let ext = (entry.name as NSString).pathExtension.lowercased()
     if imageExt.contains(ext) { return entry.size <= imageMaxBytes ? .image : .none }
     if binaryExt.contains(ext) { return .none }
@@ -176,7 +222,7 @@ struct MoshxploreTextFile {
   let usesCRLF: Bool
 
   static func decode(_ data: Data) -> MoshxploreTextFile? {
-    guard !data.contains(0) else { return nil }   // NUL never appears in text — binary (or UTF-16)
+    guard !data.contains(0) else { return nil }   // NUL never appears in text: binary (or UTF-16)
     var body = data
     var hadBOM = false
     if body.starts(with: [0xEF, 0xBB, 0xBF]) { body = body.dropFirst(3); hadBOM = true }
@@ -184,7 +230,11 @@ struct MoshxploreTextFile {
     let encoding: String.Encoding
     let raw: String
     if let utf8 = String(data: body, encoding: .utf8) { encoding = .utf8; raw = utf8 }
-    else if let latin1 = String(data: body, encoding: .isoLatin1) { encoding = .isoLatin1; raw = latin1 }
+    else if !containsUTF8Sequences(body), let latin1 = String(data: body, encoding: .isoLatin1) {
+      encoding = .isoLatin1; raw = latin1
+    }
+    // UTF-8 with a stray bad byte (or another multi-byte encoding): Latin-1 would show it garbled,
+    // and editing it could only make that worse. Preview only.
     else { return nil }
 
     // UITextView types \n, so edit on \n and restore CRLF at save (a mixed-endings file
@@ -194,99 +244,160 @@ struct MoshxploreTextFile {
                               encoding: encoding, hadBOM: hadBOM, usesCRLF: usesCRLF)
   }
 
-  // Edited text → bytes in the file's original form. If the user typed characters the original
-  // encoding can't hold (emoji into a Latin-1 file), upgrade to UTF-8 rather than mangle them.
-  func encode(_ edited: String) -> Data {
+  // Edited text to bytes in the file's original form, or nil when the text now holds characters
+  // that encoding cannot (an emoji typed into a Latin-1 file). Re-encoding the whole file as UTF-8
+  // instead would silently rewrite every accented byte already in it.
+  func encode(_ edited: String) -> Data? {
     let restored = usesCRLF ? edited.replacingOccurrences(of: "\n", with: "\r\n") : edited
-    var out = restored.data(using: encoding) ?? Data(restored.utf8)
+    guard var out = restored.data(using: encoding) else { return nil }
     if hadBOM { out = Data([0xEF, 0xBB, 0xBF]) + out }
     return out
+  }
+
+  // Does this (not valid UTF-8) data still carry well-formed multi-byte UTF-8 sequences? Real
+  // Latin-1 text almost never does (an accented letter followed by a continuation byte), so this
+  // separates "UTF-8 with a bad byte somewhere" from a genuine single-byte file.
+  private static func containsUTF8Sequences(_ data: Data) -> Bool {
+    let bytes = [UInt8](data)
+    var i = 0
+    while i < bytes.count {
+      let b = bytes[i]
+      let length: Int
+      switch b {
+      case 0xC2...0xDF: length = 2
+      case 0xE0...0xEF: length = 3
+      case 0xF0...0xF4: length = 4
+      default: i += 1; continue
+      }
+      if i + length <= bytes.count,
+         bytes[(i + 1)..<(i + length)].allSatisfy({ $0 & 0xC0 == 0x80 }) {
+        return true
+      }
+      i += 1
+    }
+    return false
   }
 }
 
 // MARK: - SFTP engine
 
-// One persistent SFTP connection for a browse session, on its own run-loop thread (mirroring
-// MoshdropUploader / CopyFiles). `connect` once, then `list`/`download` reuse the same channel;
-// `stop` tears it all down. Every callback is delivered on the main queue.
+// One persistent SFTP connection for a browse session, on its own run-loop thread (the shared
+// MoshroomSFTPWorker). `connect` once, then `list`/`download` reuse the same channel; `stop`
+// tears it all down. Every callback is delivered on the main queue.
+//
+// The connection heals itself: an op that finds it gone (the app slept, the network changed and
+// the socket died) dials again first, and a listing or download that fails because the
+// connection dropped under it is retried once over the fresh dial. Uploads never auto-retry.
 final class MoshxploreSession {
 
-  private var thread: Thread?
-  private var runLoopRef: CFRunLoop?
-  private let ready = DispatchSemaphore(value: 0)
-  private var alive = false
+  // Preview fetches and saves to Files run in separate slots, so starting one never silently
+  // cancels the other (a cancelled op delivers no completion at all).
+  enum Purpose { case preview, save }
 
-  // The connected SFTP root. Touched only on the worker thread; we always walk a CLONE so it
-  // stays a stable anchor for absolute-path navigation.
+  private let worker = MoshroomSFTPWorker(name: "moshxplore.sftp")
+
+  // Everything below is touched only on the worker thread.
+
+  // What to dial (again). Set by connect.
+  private var hostAlias: String?
+  // The connected SFTP root. We always walk a CLONE so it stays a stable anchor for absolute-path
+  // navigation.
   private var root: Translator?
+  private var dialing = false
+  private var waitingForRoot: [(Result<Translator, Error>) -> Void] = []
   private var connectC: AnyCancellable?
   private var listC: AnyCancellable?
-  private var downloadC: AnyCancellable?
+  private var statC: AnyCancellable?
+  private var downloadC: [Purpose: AnyCancellable] = [:]
+  private var partial: [Purpose: URL] = [:]
   private var uploadC: AnyCancellable?
 
   private func start() {
-    guard thread == nil else { return }
-    let t = Thread { [weak self] in
-      guard let self else { return }
-      // Keep the run loop alive while libssh2 attaches its socket source to it.
-      let keepAlive = Port()
-      RunLoop.current.add(keepAlive, forMode: .default)
-      self.runLoopRef = CFRunLoopGetCurrent()
-      self.alive = true
-      self.ready.signal()
-      while self.alive {
-        RunLoop.current.run(mode: .default, before: .distantFuture)
-      }
-      RunLoop.current.remove(keepAlive, forMode: .default)
-    }
-    t.name = "moshxplore.sftp"
-    t.stackSize = 2 << 20
-    thread = t
-    t.start()
-    ready.wait()   // block until the worker's run loop ref is published (sub-millisecond)
+    worker.start(keepingAlive: self)
   }
 
   private func onWorker(_ block: @escaping () -> Void) {
-    guard let rl = runLoopRef else { return }
-    CFRunLoopPerformBlock(rl, CFRunLoopMode.defaultMode.rawValue, block)
-    CFRunLoopWakeUp(rl)
+    worker.perform(block)
   }
 
   // Connect + SFTP + resolve home. `completion` carries the absolute home path to list first.
-  func connect(hostAlias: String, device: TermDevice?,
-               completion: @escaping (Result<String, Error>) -> Void) {
+  // Headless, like every app-initiated connect (MoshroomSFTPWorker.connect): a host that needs an
+  // answer fails with a reason instead of waiting on a prompt nobody can see.
+  func connect(hostAlias: String, completion: @escaping (Result<String, Error>) -> Void) {
     start()
     onWorker { [weak self] in
       guard let self else { return }
-      let target: (hostName: String, host: MoshSSHHost, config: SSHClientConfig)
-      do {
-        target = try MoshroomSSH.resolveTarget(hostAlias: hostAlias, device: device)
-      } catch {
-        DispatchQueue.main.async { completion(.failure(error)) }
-        return
+      self.hostAlias = hostAlias
+      self.root = nil
+      self.withRoot { result in
+        let home = result.map { $0.current }
+        DispatchQueue.main.async { completion(home) }
       }
-
-      self.connectC = SSHClient.dial(target.hostName, with: target.config, withProxy: MoshroomSSH.executeProxyCommand)
-        .flatMap { $0.requestSFTP() }
-        .tryMap { try SFTPTranslator(on: $0) as Translator }
-        .flatMap { $0.walkTo("~") }   // canonicalize to the login home directory
-        .sink(receiveCompletion: { c in
-          if case .failure(let e) = c { DispatchQueue.main.async { completion(.failure(e)) } }
-        }, receiveValue: { [weak self] translator in
-          self?.root = translator
-          DispatchQueue.main.async { completion(.success(translator.current)) }
-        })
     }
+  }
+
+  // Hands the live root to `body`, dialing first when there is none or the one we had has died.
+  // Callers queue up behind a dial already under way. Worker thread only.
+  private func withRoot(_ body: @escaping (Result<Translator, Error>) -> Void) {
+    if let root, root.isConnected {
+      body(.success(root))
+      return
+    }
+    root = nil
+    waitingForRoot.append(body)
+    guard !dialing else { return }
+    guard let alias = hostAlias else {
+      finishDial(.failure(MoshxploreError.notConnected))
+      return
+    }
+    let sftp: AnyPublisher<Translator, Error>
+    do {
+      sftp = try MoshroomSFTPWorker.connect(alias: alias)
+    } catch {
+      finishDial(.failure(error))
+      return
+    }
+    dialing = true
+    connectC = sftp
+      .flatMap { $0.walkTo("~") }   // canonicalize to the login home directory
+      .sink(receiveCompletion: { [weak self] c in
+        if case .failure(let e) = c { self?.finishDial(.failure(e)) }
+      }, receiveValue: { [weak self] translator in
+        self?.root = translator
+        self?.finishDial(.success(translator))
+      })
+  }
+
+  private func finishDial(_ result: Result<Translator, Error>) {
+    dialing = false
+    let waiting = waitingForRoot
+    waitingForRoot = []
+    waiting.forEach { $0(result) }
+  }
+
+  // After a failed op: was it the connection that went away? Then forget it, so the next op (or
+  // the one retry) dials fresh.
+  private func connectionDropped(_ root: Translator) -> Bool {
+    if root.isConnected { return false }
+    if let current = self.root, (current as AnyObject) === (root as AnyObject) { self.root = nil }
+    return true
   }
 
   // List one absolute directory path. Symlinks are resolved first (a linked folder has to BE a
   // folder here, or nothing downstream lets you open it), then entries sort dirs-first, then by
   // case-insensitive name.
   func list(path: String, completion: @escaping (Result<[MoshxploreEntry], Error>) -> Void) {
-    onWorker { [weak self] in
-      guard let self, let root = self.root else {
-        DispatchQueue.main.async { completion(.failure(MoshxploreError.notConnected)) }
-        return
+    onWorker { [weak self] in self?._list(path: path, retry: true, completion: completion) }
+  }
+
+  private func _list(path: String, retry: Bool,
+                     completion: @escaping (Result<[MoshxploreEntry], Error>) -> Void) {
+    withRoot { [weak self] result in
+      guard let self else { return }
+      let root: Translator
+      switch result {
+      case .failure(let e): DispatchQueue.main.async { completion(.failure(e)) }; return
+      case .success(let r): root = r
       }
       self.listC = root.cloneWalkTo(path)
         .flatMap { dir -> AnyPublisher<[MoshxploreEntry], Error> in
@@ -299,8 +410,13 @@ final class MoshxploreSession {
             .flatMap { Self.resolvingSymlinks($0, in: dir.current, root: root) }
             .eraseToAnyPublisher()
         }
-        .sink(receiveCompletion: { c in
-          if case .failure(let e) = c { DispatchQueue.main.async { completion(.failure(e)) } }
+        .sink(receiveCompletion: { [weak self] c in
+          guard case .failure(let e) = c else { return }
+          if retry, let self, self.connectionDropped(root) {
+            self._list(path: path, retry: false, completion: completion)
+          } else {
+            DispatchQueue.main.async { completion(.failure(e)) }
+          }
         }, receiveValue: { entries in
           let sorted = entries.sorted { a, b in
             a.isDirectory != b.isDirectory ? a.isDirectory
@@ -313,7 +429,7 @@ final class MoshxploreSession {
 
   /// How many links one listing resolves. Each is a round trip on the single (serial) SFTP channel,
   /// so a directory holding hundreds of them must not keep the browser waiting; past the cap the
-  /// rest stay links, which is all they ever were before this existed.
+  /// rest stay links (marked unresolved, so the browser asks about one only when it is tapped).
   private static let symlinkResolveLimit = 64
 
   /// Re-tag every symlink with what it actually points at (see moshroomStatFollowingLinks). Order is
@@ -336,49 +452,118 @@ final class MoshxploreSession {
       .map { resolved in
         var out = entries
         for (index, attrs) in resolved {
-          guard let attrs, out.indices.contains(index) else { continue }
+          guard out.indices.contains(index) else { continue }
           let entry = out[index]
-          out[index] = MoshxploreEntry(
-            name: entry.name,
-            isDirectory: (attrs[.type] as? FileAttributeType) == .typeDirectory,
-            isSymlink: true,
-            size: (attrs[.size] as? NSNumber)?.uint64Value ?? entry.size,
-            modified: attrs[.modificationDate] as? Date ?? entry.modified)
+          // A broken link was asked about: what it holds is all there is to know.
+          guard let attrs else { out[index] = entry.resolvedAs(nil); continue }
+          out[index] = entry.resolvedAs(attrs)
         }
         return out
       }
       .eraseToAnyPublisher()
   }
 
-  // Download a single file into `destDir`. Used both to save (→ Documents/Moshroom) and to fetch a
-  // file for inline preview (→ a temp cache). `progress` reports the 0…1 fraction; `completion` the
-  // landed URL.
-  func download(remotePath: String, name: String, into destDir: URL,
-                progress: @escaping (Double) -> Void,
-                completion: @escaping (Result<URL, Error>) -> Void) {
+  // What one path really is, following links (the tap-time answer for a link the listing left
+  // unresolved). nil = broken or unreadable.
+  func statFollowingLinks(name: String, in dirPath: String,
+                          completion: @escaping (FileAttributes?) -> Void) {
     onWorker { [weak self] in
-      guard let self, let root = self.root else {
-        DispatchQueue.main.async { completion(.failure(MoshxploreError.notConnected)) }
-        return
+      self?.withRoot { [weak self] result in
+        guard let self, case .success(let root) = result else {
+          DispatchQueue.main.async { completion(nil) }
+          return
+        }
+        self.statC = root.moshroomStatFollowingLinks(child: name, in: dirPath)
+          .sink(receiveCompletion: { c in
+            if case .failure = c { DispatchQueue.main.async { completion(nil) } }
+          }, receiveValue: { attrs in
+            DispatchQueue.main.async { completion(attrs) }
+          })
+      }
+    }
+  }
+
+  // Download a single file to `destDir/name`. Used both to save (Documents/<host>/) and to fetch a
+  // file for inline preview (a temp cache). `progress` reports the 0…1 fraction; `completion` the
+  // landed URL and the remote file's attributes as they were when it was read (the baseline the
+  // editor compares against before saving).
+  //
+  // The bytes land under a hidden partial name and only replace `name` once complete: a failed or
+  // cancelled download never leaves a truncated file behind, nor costs the copy that was already
+  // there. `name` must be a safe single path component (MoshxploreDownloads.localName).
+  func download(remotePath: String, name: String, into destDir: URL, purpose: Purpose,
+                progress: @escaping (Double) -> Void,
+                completion: @escaping (Result<(URL, FileAttributes?), Error>) -> Void) {
+    onWorker { [weak self] in self?._download(remotePath: remotePath, name: name, into: destDir,
+                                              purpose: purpose, retry: true,
+                                              progress: progress, completion: completion) }
+  }
+
+  private func _download(remotePath: String, name: String, into destDir: URL, purpose: Purpose,
+                         retry: Bool,
+                         progress: @escaping (Double) -> Void,
+                         completion: @escaping (Result<(URL, FileAttributes?), Error>) -> Void) {
+    withRoot { [weak self] result in
+      guard let self else { return }
+      let root: Translator
+      switch result {
+      case .failure(let e): DispatchQueue.main.async { completion(.failure(e)) }; return
+      case .success(let r): root = r
       }
       let target = destDir.appendingPathComponent(name)
-      // Re-downloading replaces a prior copy (always one of our own managed folders).
-      try? FileManager.default.removeItem(at: target)
+      let partialName = ".partial-\(UUID().uuidString)"
+      let partialURL = destDir.appendingPathComponent(partialName)
+      self.discardPartial(purpose)
+      self.partial[purpose] = partialURL
 
       let localDir = MoshroomFiles.Local().walkTo(destDir.path)
       let remote = root.cloneWalkTo(remotePath)
+      var remoteAttrs: FileAttributes?
 
-      // SFTP reports incremental bytes (`written`) against the file's `size` — accumulate for a true
+      // SFTP reports incremental bytes (`written`) against the file's `size`; accumulate for a true
       // fraction (never a faked one).
       var sent: UInt64 = 0
-      self.downloadC = Publishers.Zip(localDir, remote)
-        .flatMap { ldir, rfile in
-          ldir.copy(from: [rfile], args: CopyArguments(preserve: CopyAttributesFlag([.timestamp]), checkTimes: false))
+      self.downloadC[purpose] = Publishers.Zip(localDir, remote)
+        .flatMap { ldir, rfile -> CopyProgressInfoPublisher in
+          // Read the attributes first (one round trip): the editor's change check needs them.
+          rfile.stat()
+            .map { Optional($0) }
+            .replaceError(with: nil)
+            .setFailureType(to: Error.self)
+            .flatMap { attrs -> CopyProgressInfoPublisher in
+              remoteAttrs = attrs
+              // Land under OUR name: following a link, the remote's own name is the target's.
+              return ldir.copy(from: rfile, newName: partialName,
+                               args: CopyArguments(preserve: CopyAttributesFlag([.timestamp]), checkTimes: false))
+            }
+            .eraseToAnyPublisher()
         }
-        .sink(receiveCompletion: { c in
+        .sink(receiveCompletion: { [weak self] c in
+          guard let self else { return }
           switch c {
-          case .finished: DispatchQueue.main.async { completion(.success(target)) }
-          case .failure(let e): DispatchQueue.main.async { completion(.failure(e)) }
+          case .finished:
+            self.partial[purpose] = nil
+            do {
+              let fm = FileManager.default
+              if fm.fileExists(atPath: target.path) {
+                _ = try fm.replaceItemAt(target, withItemAt: partialURL)
+              } else {
+                try fm.moveItem(at: partialURL, to: target)
+              }
+              let attrs = remoteAttrs
+              DispatchQueue.main.async { completion(.success((target, attrs))) }
+            } catch {
+              try? FileManager.default.removeItem(at: partialURL)
+              DispatchQueue.main.async { completion(.failure(error)) }
+            }
+          case .failure(let e):
+            self.discardPartial(purpose)
+            if retry, self.connectionDropped(root) {
+              self._download(remotePath: remotePath, name: name, into: destDir, purpose: purpose,
+                             retry: false, progress: progress, completion: completion)
+            } else {
+              DispatchQueue.main.async { completion(.failure(e)) }
+            }
           }
         }, receiveValue: { info in
           guard info.size > 0 else { return }
@@ -389,48 +574,83 @@ final class MoshxploreSession {
     }
   }
 
-  // Upload one local file into the remote directory `remoteDir`, landing under the local file's
-  // own name — the write-back half of the inline editor. Same connection, same worker thread;
-  // SFTP `create` opens O_CREAT|O_TRUNC, so saving over an existing file replaces it in place.
-  func upload(localURL: URL, remoteDir: String, completion: @escaping (Result<Void, Error>) -> Void) {
-    onWorker { [weak self] in
-      guard let self, let root = self.root else {
-        DispatchQueue.main.async { completion(.failure(MoshxploreError.notConnected)) }
-        return
-      }
-      let localFile = MoshroomFiles.Local().walkTo(localURL.path)
-      let remote = root.cloneWalkTo(remoteDir)
-      self.uploadC = Publishers.Zip(remote, localFile)
-        .flatMap { rdir, lfile in
-          rdir.copy(from: [lfile], args: CopyArguments(preserve: CopyAttributesFlag([]), checkTimes: false))
-        }
-        .sink(receiveCompletion: { c in
-          switch c {
-          case .finished: DispatchQueue.main.async { completion(.success(())) }
-          case .failure(let e): DispatchQueue.main.async { completion(.failure(e)) }
-          }
-        }, receiveValue: { _ in })
+  private func discardPartial(_ purpose: Purpose) {
+    if let url = partial.removeValue(forKey: purpose) {
+      try? FileManager.default.removeItem(at: url)
     }
   }
 
-  func cancelDownload() {
-    onWorker { [weak self] in self?.downloadC = nil }
+  // Read one path's attributes (the editor's "did it change since I opened it?" check).
+  func stat(remotePath: String, completion: @escaping (Result<FileAttributes, Error>) -> Void) {
+    onWorker { [weak self] in
+      self?.withRoot { [weak self] result in
+        guard let self else { return }
+        switch result {
+        case .failure(let e): DispatchQueue.main.async { completion(.failure(e)) }
+        case .success(let root):
+          self.statC = root.cloneWalkTo(remotePath)
+            .flatMap { $0.stat() }
+            .sink(receiveCompletion: { c in
+              if case .failure(let e) = c { DispatchQueue.main.async { completion(.failure(e)) } }
+            }, receiveValue: { attrs in
+              DispatchQueue.main.async { completion(.success(attrs)) }
+            })
+        }
+      }
+    }
+  }
+
+  // Upload one local file into the remote directory `remoteDir`, landing under the local file's
+  // own name: the write-back half of the inline editor. Same connection, same worker thread;
+  // SFTP `create` opens O_CREAT|O_TRUNC, so saving over an existing file replaces it in place
+  // (same inode, owner and permissions, which a write-then-rename could not keep).
+  func upload(localURL: URL, remoteDir: String, completion: @escaping (Result<Void, Error>) -> Void) {
+    onWorker { [weak self] in
+      self?.withRoot { [weak self] result in
+        guard let self else { return }
+        let root: Translator
+        switch result {
+        case .failure(let e): DispatchQueue.main.async { completion(.failure(e)) }; return
+        case .success(let r): root = r
+        }
+        let localFile = MoshroomFiles.Local().walkTo(localURL.path)
+        let remote = root.cloneWalkTo(remoteDir)
+        self.uploadC = Publishers.Zip(remote, localFile)
+          .flatMap { rdir, lfile in
+            rdir.copy(from: [lfile], args: CopyArguments(preserve: CopyAttributesFlag([]), checkTimes: false))
+          }
+          .sink(receiveCompletion: { [weak self] c in
+            switch c {
+            case .finished: DispatchQueue.main.async { completion(.success(())) }
+            case .failure(let e):
+              _ = self?.connectionDropped(root)   // the next attempt dials fresh
+              DispatchQueue.main.async { completion(.failure(e)) }
+            }
+          }, receiveValue: { _ in })
+      }
+    }
+  }
+
+  func cancelDownload(_ purpose: Purpose) {
+    onWorker { [weak self] in
+      self?.downloadC[purpose] = nil
+      self?.discardPartial(purpose)
+    }
   }
 
   func stop() {
-    guard let rl = runLoopRef else { return }
-    CFRunLoopPerformBlock(rl, CFRunLoopMode.defaultMode.rawValue) { [weak self] in
-      self?.connectC = nil
-      self?.listC = nil
-      self?.downloadC = nil
-      self?.uploadC = nil
-      self?.root = nil
-      self?.alive = false
-      CFRunLoopStop(CFRunLoopGetCurrent())
+    worker.stop { [weak self] in
+      guard let self else { return }
+      self.connectC = nil
+      self.listC = nil
+      self.statC = nil
+      self.downloadC = [:]
+      self.discardPartial(.preview)
+      self.discardPartial(.save)
+      self.uploadC = nil
+      self.root = nil
+      self.waitingForRoot = []
     }
-    CFRunLoopWakeUp(rl)
-    runLoopRef = nil
-    thread = nil
   }
 }
 
@@ -1034,12 +1254,11 @@ extension MoshxploreDetailView: UITextViewDelegate {
 
 // MARK: - The card
 
-// Pure presentation + its own SFTP session. SpaceController only feeds it the saved hosts, the
-// current device (for SSH config), and a close hook.
+// Pure presentation + its own SFTP session. SpaceController only feeds it the saved hosts and the
+// share-sheet hook; every connect is headless.
 final class MoshxploreView: UIView {
 
   var savedHosts: (() -> [String])?
-  var device: (() -> TermDevice?)?
   var presentShare: ((URL) -> Void)?    // hand a saved file to the system share sheet
 
   private static let dark = MoshxploreStyle.dark
@@ -1082,6 +1301,15 @@ final class MoshxploreView: UIView {
   private var detailTextFile: MoshxploreTextFile?   // decoded text + its on-disk form; nil = not editable
   private var detailDidSave = false // an edit landed remotely — re-list on back so the row is fresh
   private var savingDetail = false  // an upload is in flight — hold back/toggle until it resolves
+  // The remote file's size + date when it was fetched: Save checks them again first, so an edit
+  // made on the server meanwhile (an agent working on the same file) is never overwritten blind.
+  private var detailBaseline: (size: UInt64?, modified: Date?)?
+  private var overwriteConfirmed = false   // the user saw the "changed on the server" warning
+  // Arms on every op that must answer (connect, list, save). An op that has not answered by then
+  // is stuck on a connection that stopped responding (TCP without keepalive can sit for many
+  // minutes), so the session is dropped and the screen says so instead of spinning for ever.
+  private var watchdog: DispatchWorkItem?
+  private static let watchdogSeconds: TimeInterval = 45
 
   private static let byteFormatter: ByteCountFormatter = {
     let f = ByteCountFormatter(); f.countStyle = .file; return f
@@ -1227,6 +1455,7 @@ final class MoshxploreView: UIView {
 
   // Disconnect and reset — called when the card closes or the tab switches.
   func teardown() {
+    disarmWatchdog()
     session?.stop()
     session = nil
     hostAlias = nil
@@ -1244,6 +1473,7 @@ final class MoshxploreView: UIView {
   }
 
   private func showHostStep() {
+    disarmWatchdog()
     session?.stop(); session = nil
     hostAlias = nil
     clearDetail()
@@ -1272,7 +1502,6 @@ final class MoshxploreView: UIView {
   private func backToHosts() { showHostStep() }
 
   private func connect(to alias: String) {
-    guard let device = device?() else { showError("No terminal device available."); return }
     hostAlias = alias
     clearDetail()
     showStep()           // all hidden while the SFTP connection comes up
@@ -1281,8 +1510,15 @@ final class MoshxploreView: UIView {
 
     let session = MoshxploreSession()
     self.session = session
-    session.connect(hostAlias: alias, device: device) { [weak self] result in
-      guard let self, self.hostAlias == alias else { return }
+    armWatchdog { [weak self] in
+      self?.showHostStep()
+      self?.showError("\(alias) is not answering. Try again in a moment.")
+    }
+    // Headless: a browse is not a terminal, and a prompt sent to some other tab's terminal would
+    // wait there unseen. A host needing an answer fails with the reason instead.
+    session.connect(hostAlias: alias) { [weak self] result in
+      guard let self, self.hostAlias == alias, self.session === session else { return }
+      self.disarmWatchdog()
       switch result {
       case .success(let home): self.enter(path: home)
       case .failure(let error):
@@ -1307,17 +1543,54 @@ final class MoshxploreView: UIView {
     spinner.startAnimating()
     errorLabel.isHidden = true
 
+    let listingSession = session
+    armWatchdog { [weak self] in self?.connectionStalled() }
     session?.list(path: path) { [weak self] result in
-      guard let self, self.currentPath == path else { return }
+      guard let self, self.currentPath == path, self.session === listingSession else { return }
+      self.disarmWatchdog()
       self.spinner.stopAnimating()
+      // Always land on the browser, failure included: it carries the way out (up, other hosts).
+      // A failed FIRST listing used to leave every step hidden and nothing on screen to tap.
+      self.showStep(browser: true)
       switch result {
       case .success(let entries):
-        self.showStep(browser: true)
         self.renderEntries(entries)
       case .failure(let error):
         self.showError(self.message(for: error))
       }
     }
+  }
+
+  // MARK: Stalled connections
+
+  private func armWatchdog(_ onStall: @escaping () -> Void) {
+    watchdog?.cancel()
+    let work = DispatchWorkItem(block: onStall)
+    watchdog = work
+    DispatchQueue.main.asyncAfter(deadline: .now() + Self.watchdogSeconds, execute: work)
+  }
+
+  private func disarmWatchdog() {
+    watchdog?.cancel()
+    watchdog = nil
+  }
+
+  // An op on the current session never answered. Abandon that session (its worker unblocks and
+  // exits on its own once the socket finally errors) and start a fresh one on the same host: the
+  // next tap dials anew.
+  private func connectionStalled() {
+    guard let alias = hostAlias else { return }
+    session?.stop()
+    let fresh = MoshxploreSession()
+    session = fresh
+    fresh.connect(hostAlias: alias) { _ in }   // dial ahead; failures surface on use
+    spinner.stopAnimating()
+    if savingDetail {
+      savingDetail = false
+      detailView.setSaving(false)
+    }
+    if detailView.isHidden { showStep(browser: true) }
+    showError("\(alias) stopped answering. Try again.")
   }
 
   private func goUp() {
@@ -1359,13 +1632,27 @@ final class MoshxploreView: UIView {
       subtitle: subtitle(for: entry),
       onTap: { [weak self] in
         guard let self else { return }
-        // A folder opens; a file goes to its detail view (preview + download).
-        if entry.isDirectory { self.enter(path: self.childPath(entry.name)) }
+        // A folder opens; a file goes to its detail view (preview + download). A link the listing
+        // did not resolve (past its cap) is asked about now, so its real type and size decide.
+        if !entry.isResolved { self.resolveThenOpen(entry) }
+        else if entry.isDirectory { self.enter(path: self.childPath(entry.name)) }
         else { self.openDetail(entry) }
       })
   }
 
   // MARK: File detail (preview + download)
+
+  private func resolveThenOpen(_ entry: MoshxploreEntry) {
+    let dir = currentPath
+    spinner.startAnimating()
+    session?.statFollowingLinks(name: entry.name, in: dir) { [weak self] attrs in
+      guard let self, self.currentPath == dir else { return }
+      self.spinner.stopAnimating()
+      let real = entry.resolvedAs(attrs)
+      if real.isDirectory { self.enter(path: self.childPath(real.name)) }
+      else { self.openDetail(real) }
+    }
+  }
 
   private func openDetail(_ entry: MoshxploreEntry) {
     clearDetail()
@@ -1389,6 +1676,7 @@ final class MoshxploreView: UIView {
     guard !savingDetail, detailView.isEditingText, let original = detailTextFile else { return }
     detailView.showText(original.text, filename: detailEntry?.name ?? "")   // resets edit UI, drops keyboard
     detailView.setEditAvailable(true)
+    overwriteConfirmed = false   // a later edit asks again
     errorLabel.isHidden = true
   }
 
@@ -1415,19 +1703,35 @@ final class MoshxploreView: UIView {
     detailTextFile = nil
     detailDidSave = false
     savingDetail = false
+    detailBaseline = nil
+    overwriteConfirmed = false
     detailView.exitEditMode()   // resign the keyboard if a tab switch/close lands mid-edit
-    session?.cancelDownload()   // stop an in-flight preview fetch when leaving the detail view
+    session?.cancelDownload(.preview)   // stop an in-flight preview fetch when leaving the detail view
     if let url = previewURL { try? FileManager.default.removeItem(at: url); previewURL = nil }
   }
 
   // Fetch the file into a temp cache and render it; the copy is reused as the save source.
   private func fetchPreview(_ entry: MoshxploreEntry) {
-    session?.download(remotePath: childPath(entry.name), name: entry.name, into: MoshxploreDownloads.previewCache(),
+    guard let localName = MoshxploreDownloads.localName(entry.name) else {
+      detailView.showNoPreview(symbol: Self.symbol(for: entry), message: "This file's name can't be used on this device.")
+      return
+    }
+    session?.download(remotePath: childPath(entry.name), name: localName, into: MoshxploreDownloads.previewCache(),
+      purpose: .preview,
       progress: { _ in },
       completion: { [weak self] result in
-        guard let self, self.detailEntry?.name == entry.name else { return }
+        guard let self, self.detailEntry?.name == entry.name else {
+          if case .success(let (url, _)) = result { try? FileManager.default.removeItem(at: url) }
+          return
+        }
         switch result {
-        case .success(let url): self.previewURL = url; self.renderPreview(entry: entry, url: url)
+        case .success(let (url, attrs)):
+          self.previewURL = url
+          if let attrs {
+            self.detailBaseline = (size: (attrs[.size] as? NSNumber)?.uint64Value,
+                                   modified: attrs[.modificationDate] as? Date)
+          }
+          self.renderPreview(entry: entry, url: url)
         case .failure: self.detailView.showNoPreview(symbol: Self.symbol(for: entry), message: "Couldn't load a preview.")
         }
       })
@@ -1443,10 +1747,17 @@ final class MoshxploreView: UIView {
       var text: String?
       var textFile: MoshxploreTextFile?
       var binary = false
+      var tooLarge = false
       switch kind {
-      case .image: image = UIImage(contentsOfFile: url.path)
+      // Decoded at screen size via ImageIO: a small, highly compressed file can still be a huge
+      // bitmap (10000 x 10000 is 400 MB once drawn), and the viewer shows at most a screenful.
+      case .image: image = Self.downsampledImage(url, maxPixel: 2048)
       case .text:
-        if let data = try? Data(contentsOf: url) {
+        // Bounded read: the listing's size gated the fetch, but a file can grow before it lands.
+        let limit = Int(MoshxplorePreview.textMaxBytes)
+        if let data = Self.readUpTo(url, limit: limit + 1), data.count > limit {
+          tooLarge = true
+        } else if let data = Self.readUpTo(url, limit: limit) {
           textFile = MoshxploreTextFile.decode(data)
           if let textFile { text = textFile.text }
           else if data.contains(0) { binary = true }       // unknown extension that turned out binary
@@ -1465,9 +1776,29 @@ final class MoshxploreView: UIView {
         else if binary {
           self.detailView.showNoPreview(symbol: Self.symbol(for: entry), message: "Binary content.\nDownload to open it.")
         }
+        else if tooLarge {
+          self.detailView.showNoPreview(symbol: Self.symbol(for: entry), message: "Too large to preview here.\nDownload to open it.")
+        }
         else { self.detailView.showNoPreview(symbol: Self.symbol(for: entry), message: "Couldn't load a preview.") }
       }
     }
+  }
+
+  private static func downsampledImage(_ url: URL, maxPixel: CGFloat) -> UIImage? {
+    let opts: [CFString: Any] = [
+      kCGImageSourceCreateThumbnailFromImageAlways: true,
+      kCGImageSourceCreateThumbnailWithTransform: true,
+      kCGImageSourceThumbnailMaxPixelSize: maxPixel,
+    ]
+    guard let src = CGImageSourceCreateWithURL(url as CFURL, nil),
+          let cg = CGImageSourceCreateThumbnailAtIndex(src, 0, opts as CFDictionary) else { return nil }
+    return UIImage(cgImage: cg)
+  }
+
+  private static func readUpTo(_ url: URL, limit: Int) -> Data? {
+    guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+    defer { try? handle.close() }
+    return (try? handle.read(upToCount: limit)) ?? Data()
   }
 
   // MARK: Inline edit (the Edit ↔ Save button)
@@ -1486,56 +1817,125 @@ final class MoshxploreView: UIView {
     guard let entry = detailEntry, let file = detailTextFile, let staged = previewURL else { return }
     let edited = detailView.editedText
     let remoteDir = currentPath
+    let remotePath = childPath(entry.name)
     savingDetail = true
     detailView.setSaving(true)
     errorLabel.isHidden = true
 
     DispatchQueue.global(qos: .userInitiated).async { [weak self] in
       let data = file.encode(edited)
-      let wrote = (try? data.write(to: staged, options: .atomic)) != nil
+      let wrote = data.map { (try? $0.write(to: staged, options: .atomic)) != nil } ?? false
       DispatchQueue.main.async {
         guard let self, self.detailEntry?.name == entry.name else { return }
+        guard let data else {
+          self.endSaving()
+          self.showError("This file isn't UTF-8, and the text now has characters its encoding can't store. Remove them to save.")
+          return
+        }
         guard wrote else {
-          self.savingDetail = false
-          self.detailView.setSaving(false)
+          self.endSaving()
           self.showError("Couldn't stage the edited file.")
           return
         }
-        self.session?.upload(localURL: staged, remoteDir: remoteDir) { [weak self] result in
-          guard let self, self.detailEntry?.name == entry.name else { return }
-          self.savingDetail = false
-          self.detailView.setSaving(false)
-          switch result {
-          case .success:
-            self.detailDidSave = true
-            self.detailTextFile = MoshxploreTextFile(text: edited, encoding: file.encoding,
-                                                     hadBOM: file.hadBOM, usesCRLF: file.usesCRLF)
-            let updated = MoshxploreEntry(name: entry.name, isDirectory: false, isSymlink: entry.isSymlink,
-                                          size: UInt64(data.count), modified: Date())
-            self.detailEntry = updated
-            self.detailView.configure(name: updated.name, meta: self.detailMeta(for: updated), path: self.childPath(updated.name))
-            self.detailView.exitEditMode()
-          case .failure(let error):
-            self.showError(self.message(for: error))
-          }
-        }
+        self.armWatchdog { [weak self] in self?.connectionStalled() }
+        self.checkUnchangedThenUpload(entry: entry, file: file, edited: edited, data: data,
+                                      staged: staged, remoteDir: remoteDir, remotePath: remotePath)
       }
     }
   }
 
-  // The Download button — save into Documents/<host>/ (shown in Files.app as Moshroom › host › file).
+  // Before writing, ask whether the server's copy is still the one we fetched. If something else
+  // changed it meanwhile, say so and let a second Save overwrite it knowingly.
+  private func checkUnchangedThenUpload(entry: MoshxploreEntry, file: MoshxploreTextFile, edited: String,
+                                        data: Data, staged: URL, remoteDir: String, remotePath: String) {
+    guard let baseline = detailBaseline, !overwriteConfirmed else {
+      upload(entry: entry, file: file, edited: edited, data: data, staged: staged,
+             remoteDir: remoteDir, remotePath: remotePath)
+      return
+    }
+    session?.stat(remotePath: remotePath) { [weak self] result in
+      guard let self, self.detailEntry?.name == entry.name, self.savingDetail else { return }
+      if case .success(let attrs) = result {
+        let size = (attrs[.size] as? NSNumber)?.uint64Value
+        let modified = attrs[.modificationDate] as? Date
+        if size != baseline.size || modified != baseline.modified {
+          self.disarmWatchdog()
+          self.endSaving()
+          self.overwriteConfirmed = true
+          self.showError("\(entry.name) changed on the server since you opened it. Save again to overwrite it, or Cancel to keep the server's version.")
+          return
+        }
+      }
+      // Unchanged, or the check itself failed (the upload will report a real problem).
+      self.upload(entry: entry, file: file, edited: edited, data: data, staged: staged,
+                  remoteDir: remoteDir, remotePath: remotePath)
+    }
+  }
+
+  private func upload(entry: MoshxploreEntry, file: MoshxploreTextFile, edited: String,
+                      data: Data, staged: URL, remoteDir: String, remotePath: String) {
+    session?.upload(localURL: staged, remoteDir: remoteDir) { [weak self] result in
+      guard let self, self.detailEntry?.name == entry.name, self.savingDetail else { return }
+      self.disarmWatchdog()
+      self.endSaving()
+      switch result {
+      case .success:
+        self.detailDidSave = true
+        self.overwriteConfirmed = false
+        self.detailTextFile = MoshxploreTextFile(text: edited, encoding: file.encoding,
+                                                 hadBOM: file.hadBOM, usesCRLF: file.usesCRLF)
+        let updated = MoshxploreEntry(name: entry.name, isDirectory: false, isSymlink: entry.isSymlink,
+                                      size: UInt64(data.count), modified: Date())
+        self.detailEntry = updated
+        self.detailView.configure(name: updated.name, meta: self.detailMeta(for: updated), path: self.childPath(updated.name))
+        self.detailView.exitEditMode()
+        // The new baseline is the server's own view of what we just wrote (none until it answers,
+        // which only means the next save skips the check).
+        self.detailBaseline = nil
+        self.session?.stat(remotePath: remotePath) { [weak self] result in
+          guard let self, self.detailEntry?.name == entry.name, case .success(let attrs) = result else { return }
+          self.detailBaseline = (size: (attrs[.size] as? NSNumber)?.uint64Value,
+                                 modified: attrs[.modificationDate] as? Date)
+        }
+      case .failure(let error):
+        // The write truncates in place, so a failure part-way can leave the server's copy short.
+        self.showError("Couldn't save: \(self.message(for: error))\nThe file on the server may be incomplete. Your text is still here: Save again.")
+      }
+    }
+  }
+
+  private func endSaving() {
+    savingDetail = false
+    detailView.setSaving(false)
+  }
+
+  // The Download button: save into Documents/<host>/ (shown in Files.app as Moshroom › host › file).
   private func saveDetailFile() {
     guard let entry = detailEntry else { return }
+    guard let localName = MoshxploreDownloads.localName(entry.name) else {
+      showError("This file's name can't be used on this device.")
+      return
+    }
     let host = hostAlias ?? "downloads"
     let dest = MoshxploreDownloads.directory(host: host)
-    let target = dest.appendingPathComponent(entry.name)
+    let target = dest.appendingPathComponent(localName)
 
-    // Already fetched for preview? Copy it across instantly rather than downloading twice.
+    // Already fetched for preview? Copy it across instantly rather than downloading twice. The copy
+    // lands under a temporary name and replaces the old one only once complete.
     if let preview = previewURL, FileManager.default.fileExists(atPath: preview.path) {
       showProgress(title: "Saving \(entry.name)…", fraction: 1)
       DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-        try? FileManager.default.removeItem(at: target)
-        let ok = (try? FileManager.default.copyItem(at: preview, to: target)) != nil
+        let fm = FileManager.default
+        let temp = dest.appendingPathComponent(".partial-\(UUID().uuidString)")
+        var ok = (try? fm.copyItem(at: preview, to: temp)) != nil
+        if ok {
+          if fm.fileExists(atPath: target.path) {
+            ok = (try? fm.replaceItemAt(target, withItemAt: temp)) != nil
+          } else {
+            ok = (try? fm.moveItem(at: temp, to: target)) != nil
+          }
+        }
+        if !ok { try? fm.removeItem(at: temp) }
         DispatchQueue.main.async {
           guard let self else { return }
           if ok { self.showSaved(host: host, url: target) }
@@ -1545,14 +1945,15 @@ final class MoshxploreView: UIView {
       return
     }
 
-    // Otherwise fetch it straight into the host folder with a progress bar.
+    // Otherwise fetch it straight into the host folder with a progress bar. Its own slot: a
+    // preview still loading carries on, it is not cancelled by this.
     showProgress(title: "Downloading \(entry.name)…", fraction: 0)
-    session?.download(remotePath: childPath(entry.name), name: entry.name, into: dest,
+    session?.download(remotePath: childPath(entry.name), name: localName, into: dest, purpose: .save,
       progress: { [weak self] frac in self?.showProgress(title: "Downloading \(entry.name)…", fraction: frac) },
       completion: { [weak self] result in
         guard let self else { return }
         switch result {
-        case .success: self.showSaved(host: host, url: target)
+        case .success(let (url, _)): self.showSaved(host: host, url: url)
         case .failure(let error): self.hideProgress(); self.showError(self.message(for: error))
         }
       })
@@ -1578,7 +1979,7 @@ final class MoshxploreView: UIView {
     cancelButton.titleLabel?.font = MoshxploreStyle.font(15, .semibold)
     cancelButton.tintColor = Self.gray
     cancelButton.addAction(UIAction { [weak self] _ in
-      self?.session?.cancelDownload()
+      self?.session?.cancelDownload(.save)
       self?.hideProgress()
     }, for: .touchUpInside)
 
@@ -1668,7 +2069,8 @@ final class MoshxploreView: UIView {
 
   private func subtitle(for entry: MoshxploreEntry) -> String {
     var parts: [String] = []
-    if !entry.isDirectory { parts.append(Self.byteFormatter.string(fromByteCount: Int64(entry.size))) }
+    // An unresolved link's own size is just the length of the path it holds: say nothing.
+    if !entry.isDirectory && entry.isResolved { parts.append(Self.byteFormatter.string(fromByteCount: Int64(entry.size))) }
     if let date = entry.modified { parts.append(Self.dateFormatter.string(from: date)) }
     if entry.isSymlink { parts.insert("link", at: 0) }
     return parts.joined(separator: " · ")
@@ -1759,9 +2161,6 @@ final class MoshxploreTabController: UIViewController, MoshroomTabPage {
     view.backgroundColor = space?.view.backgroundColor ?? .moshroomBackground
 
     explorer.savedHosts = { [weak self] in self?.space?.moshroomSavedHostAliases ?? [] }
-    // Any live terminal's device, not the current tab's: while THIS tab is front, currentTerm()
-    // is nil by design, and connecting from the host picker must still work.
-    explorer.device = { [weak self] in self?.space?.moshroomAnyTermDevice }
     // Hand a saved file to the system share sheet (Save to Files, Quick Look, open-in apps…).
     explorer.presentShare = { [weak self] url in
       guard let self else { return }

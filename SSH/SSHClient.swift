@@ -29,10 +29,6 @@ import LibSSH
 typealias SSHConnection = AnyPublisher<ssh_session, Error>
 typealias SSHChannel = AnyPublisher<ssh_channel, Error>
 
-public func SSHInit() {
-  ssh_init()
-}
-
 // This is a macro in libssh, so we redefine it here
 // https://stackoverflow.com/questions/24662864/swift-how-to-use-sizeof
 func ssh_init_callbacks(_ cb: inout ssh_callbacks_struct) {
@@ -56,8 +52,6 @@ public class SSHClient {
   let rloop: RunLoop
   var callbacks: ssh_callbacks_struct
   var reversePorts: [Int32: PassthroughSubject<Stream, Error>] = [:]
-  
-  var keepAliveTimer: Timer?
   
   public var isConnected: Bool {
     ssh_is_connected(session) == 1
@@ -231,25 +225,6 @@ public class SSHClient {
     }
   }
   
-  func startKeepAliveTimer() {
-    // https://github.com/golang/go/issues/4552
-    keepAliveTimer?.invalidate()
-    keepAliveTimer = Timer(timeInterval: 15, target: self, selector: #selector(onServerKeepAlive), userInfo: nil, repeats: true)
-    rloop.add(keepAliveTimer!, forMode: .default)
-  }
-  
-  @objc private func onServerKeepAlive() {
-    guard isConnected else {
-      return
-    }
-    
-    let rc = ssh_client_send_keepalive(session)
-    if rc != SSH_OK {
-      keepAliveTimer?.invalidate()
-      print("ERROR Keep alive")
-    }
-  }
-  
   func setupCallbacks() -> Int32 {
     let ctxt = UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque())
     callbacks.userdata = ctxt
@@ -339,10 +314,6 @@ public class SSHClient {
       .flatMap{ client -> AnyPublisher<SSHClient, Error> in
         // If we logged in to the remote, agent requests may be remote and cannot be trusted
         client.trustAgentConnection = false
-
-        if client.options.keepAliveInterval != nil {
-          client.startKeepAliveTimer()
-        }
         return .just(client)
       }
       // If cancelled, the connection will be closed without being passed to the user or
@@ -888,7 +859,6 @@ public class SSHClient {
   }
   
   deinit {
-    print("SSH Session deinit")
     self.log.message("SSH Session deinit", SSH_LOG_INFO)
     // NOTE Disconnecting the socket from the RunLoop won't free it (?), so we still need to stop it.
     // Theory here was that once the socket is disconnected from the RunLoop, there is nothing else in the RunLoop so it would
@@ -941,7 +911,6 @@ public class SSHLogger {
   
   func message(_ message: String, _ level: Int32) {
     if verbosity.rawValue >= level {
-      print(message)
       logger?.send(message)
     }
   }

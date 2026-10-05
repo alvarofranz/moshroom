@@ -286,9 +286,8 @@ class SOCKSProtocol: NWProtocolFramerImplementation {
     if bound {
       do {
         try framer.writeOutputNoCopy(length: messageLength)
-      } catch let error {
+      } catch {
         // TODO Log error or post somewhere.
-        print("Hit error writing \(error)")
       }
       return
     }
@@ -302,9 +301,8 @@ class SOCKSProtocol: NWProtocolFramerImplementation {
     
     do {
       try framer.writeOutputNoCopy(length: messageLength)
-    } catch let error {
+    } catch {
       // TODO Log error or post somewhere.
-      print("Hit error writing \(error)")
     }
     
     if message.socksReply == .succeeded {
@@ -326,10 +324,6 @@ extension NWProtocolFramer.Message {
     self["SOCKSAddressType"] = addressType
   }
 
-  var socksRequest: SOCKSRequestType {
-    return self["SOCKSRequest"] as! SOCKSRequestType
-  }
-  
   var socksReply: SOCKSReplyType {
     return self["SOCKSReply"] as! SOCKSReplyType
   }
@@ -373,7 +367,6 @@ public class SOCKSServer {
     self.listener = try NWListener(using: .SOCKS, on: self.port)
 
     listener.newConnectionHandler = { [weak self] in self?.handleNewConnection($0) }
-    listener.stateUpdateHandler = { print("Listener \($0)") }
     listener.start(queue: queue)
   }
 
@@ -410,7 +403,7 @@ public class SOCKSServer {
         var cancellable: AnyCancellable?
         var stream: Stream?
 
-        print("Trying to connect to \(msg.address) on \(msg.port)")
+        self.log.message("SOCKS Server - Connecting to \(msg.address) on \(msg.port)", SSH_LOG_DEBUG)
 
         cancellable = self.client.requestForward(to: msg.address, port: Int32(msg.port),
                                                  from: "localhost", localPort: Int32(self.port.rawValue))
@@ -428,20 +421,18 @@ public class SOCKSServer {
           }
           .sink(receiveCompletion: { c in
             if case let .failure(error) = c {
-              print("Could not process Forward Request to \(msg.address) \(error)")
+              self.log.message("SOCKS Server - Could not forward to \(msg.address): \(error)", SSH_LOG_WARN)
               conn.cancel()
               cancellable = nil
               stream = nil
             }
           }, receiveValue: { s in
-            print("SOCKS forward received - \(msg.address)")
             // TODO We could make the connect a sink.
             // Then the flow is clear and Stream does not need to be persisted.
             // This would be a big change, but we could test if while maintaining the previous interface.
             stream = s
             s.connect(stdout: conn, stdin: conn)
             s.handleCompletion = {
-              print("SOCKS forward completed - \(msg.address)")
               stream = nil
               self.closeConnection(conn)
               cancellable = nil

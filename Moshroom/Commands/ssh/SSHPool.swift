@@ -63,6 +63,8 @@ class SSHPool {
                                proxy: SSH.SSHClient.ExecProxyCommandCallback? = nil,
                                exposeSocket exposed: Bool = true) -> AnyPublisher<SSH.SSHClient, Error> {
     let pb = PassthroughSubject<SSH.SSHClient, Error>()
+    // Looks write-only, but it is what keeps the dial subscription alive on the pool thread (and the
+    // receiveCancel below drops it). Do not remove.
     var dial: AnyCancellable?
     var runLoop: RunLoop!
 
@@ -77,7 +79,8 @@ class SSHPool {
           },
           receiveValue: { [weak self] conn in
             let control = SSHClientControl(for: conn, on: host, with: config, running: runLoop, exposed: exposed)
-            self?.queue.sync {
+            // A write on the concurrent queue must be a barrier, or it races the readers.
+            self?.queue.sync(flags: .barrier) {
               SSHPool.shared.controls.append(control)
             }
             pb.send(conn)
@@ -118,9 +121,21 @@ class SSHPool {
   }
 
   private func enforcePersistance(_ control: SSHClientControl) {
-    if control.numChannels == 0 {
+    if queue.sync(execute: { control.numChannels }) == 0 {
       self.removeControl(control)
     }
+  }
+
+  // A control's counters and collections are shared by every session on the connection, from
+  // different threads. Writes go through the barrier, reads through a plain sync. Nothing that can
+  // call back into the pool (closing a tunnel, cancelling a stream) may run inside either: the
+  // callback would sync on this same queue and deadlock. Callers take the value out, then act.
+  fileprivate static func mutate<T>(_ body: () -> T) -> T {
+    shared.queue.sync(flags: .barrier, execute: body)
+  }
+
+  fileprivate static func read<T>(_ body: () -> T) -> T {
+    shared.queue.sync(execute: body)
   }
 }
 
@@ -130,13 +145,18 @@ extension SSHPool {
       return
     }
 
-    c.localTunnels.forEach  { (k, _) in deregister(localForward: k, on: connection) }
-    c.remoteTunnels.forEach { (k, _) in deregister(remoteForward: k, on: connection) }
-    c.socks.forEach { (k, _) in deregister(socksBindAddress: k, on: connection) }
+    let (local, remote, socks) = read { (Array(c.localTunnels.keys), Array(c.remoteTunnels.keys), Array(c.socks.keys)) }
+    local.forEach  { deregister(localForward: $0, on: connection) }
+    remote.forEach { deregister(remoteForward: $0, on: connection) }
+    socks.forEach  { deregister(socksBindAddress: $0, on: connection) }
 
     // NOTE This is a workaround
-    c.streams.forEach { (_, s) in s.cancel() }
-    c.streams = []
+    let streams = mutate { () -> [(SSHCommand, SSH.Stream)] in
+      let streams = c.streams
+      c.streams = []
+      return streams
+    }
+    streams.forEach { (_, s) in s.cancel() }
     shared.enforcePersistance(c)
   }
 }
@@ -147,7 +167,7 @@ extension SSHPool {
     // running command is not enough here to identify the connction as some information
     // may be predefined from Config.
     if let c = control(on: connection) {
-      c.numShells += 1
+      mutate { c.numShells += 1 }
     }
   }
 
@@ -155,7 +175,7 @@ extension SSHPool {
     guard let c = control(on: connection) else {
       return
     }
-    c.numShells -= 1
+    mutate { c.numShells -= 1 }
     shared.enforcePersistance(c)
   }
 }
@@ -165,15 +185,15 @@ extension SSHPool {
   static func register(_ listener: SSHPortForwardListener,
                        portForwardInfo: PortForwardInfo,
                        on connection: SSH.SSHClient) {
-    let c = control(on: connection)
-    c?.localTunnels[portForwardInfo] = listener
+    guard let c = control(on: connection) else { return }
+    mutate { c.localTunnels[portForwardInfo] = listener }
   }
 
   static func deregister(localForward: PortForwardInfo, on connection: SSH.SSHClient) {
     guard let c = control(on: connection) else {
       return
     }
-    if let tunnel = c.localTunnels.removeValue(forKey: localForward) {
+    if let tunnel = mutate({ c.localTunnels.removeValue(forKey: localForward) }) {
       tunnel.close()
     }
     shared.enforcePersistance(c)
@@ -184,7 +204,7 @@ extension SSHPool {
       return false
     }
 
-    return c.localTunnels[localForward] != nil
+    return read { c.localTunnels[localForward] != nil }
   }
 }
 
@@ -193,15 +213,15 @@ extension SSHPool {
   static func register(_ client: SSHPortForwardClient,
                        portForwardInfo: PortForwardInfo,
                        on connection: SSH.SSHClient) {
-    let c = control(on: connection)
-    c?.remoteTunnels[portForwardInfo] = client
+    guard let c = control(on: connection) else { return }
+    mutate { c.remoteTunnels[portForwardInfo] = client }
   }
 
   static func deregister(remoteForward: PortForwardInfo, on connection: SSH.SSHClient) {
     guard let c = control(on: connection) else {
       return
     }
-    if let tunnel = c.remoteTunnels.removeValue(forKey: remoteForward) {
+    if let tunnel = mutate({ c.remoteTunnels.removeValue(forKey: remoteForward) }) {
       tunnel.close()
     }
     shared.enforcePersistance(c)
@@ -212,7 +232,7 @@ extension SSHPool {
       return false
     }
 
-    return c.remoteTunnels[remoteForward] != nil
+    return read { c.remoteTunnels[remoteForward] != nil }
   }
 }
 
@@ -221,15 +241,15 @@ extension SSHPool {
   static func register(_ server: SOCKSServer,
                        bindAddressInfo: OptionalBindAddressInfo,
                        on connection: SSH.SSHClient) {
-    let c = control(on: connection)
-    c?.socks[bindAddressInfo] = server
+    guard let c = control(on: connection) else { return }
+    mutate { c.socks[bindAddressInfo] = server }
   }
 
   static func deregister(socksBindAddress: OptionalBindAddressInfo, on connection: SSH.SSHClient) {
     guard let c = control(on: connection) else {
       return
     }
-    if let server = c.socks.removeValue(forKey: socksBindAddress) {
+    if let server = mutate({ c.socks.removeValue(forKey: socksBindAddress) }) {
       server.close()
     }
     shared.enforcePersistance(c)
@@ -240,14 +260,14 @@ extension SSHPool {
       return false
     }
 
-    return c.socks[socksBindAddress] != nil
+    return read { c.socks[socksBindAddress] != nil }
   }
 }
 
 extension SSHPool {
   static func register(stdioStream stream: SSH.Stream, runningCommand command: SSHCommand, on connection: SSH.SSHClient) {
-    let c = control(on: connection)
-    c?.streams.append((command, stream))
+    guard let c = control(on: connection) else { return }
+    mutate { c.streams.append((command, stream)) }
   }
 
   private func removeControl(_ control: SSHClientControl) {

@@ -63,6 +63,7 @@ enum MoshroomShareTray {
   /// Every tray item, newest first (the most recent share leads). Regular files only.
   static func items() -> [URL] {
     guard let dir = directory() else { return [] }
+    _sweepPartials(in: dir)
     let keys: [URLResourceKey] = [.contentModificationDateKey, .isRegularFileKey]
     guard let urls = try? FileManager.default.contentsOfDirectory(
       at: dir, includingPropertiesForKeys: keys, options: [.skipsHiddenFiles]) else { return [] }
@@ -111,6 +112,19 @@ enum MoshroomShareTray {
     guard let dir = directory(),
           url.deletingLastPathComponent().standardizedFileURL == dir.standardizedFileURL else { return }
     try? FileManager.default.removeItem(at: url)
+  }
+
+  /// A share extension killed mid-copy (it runs under a tight memory limit) leaves its hidden temp
+  /// file behind, and the listing skips hidden files, so nothing else would ever remove it. Any temp
+  /// older than an hour is one of those; a copy still in progress is seconds old.
+  private static func _sweepPartials(in dir: URL) {
+    let fm = FileManager.default
+    guard let urls = try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.contentModificationDateKey]) else { return }
+    let cutoff = Date().addingTimeInterval(-3600)
+    for url in urls where url.lastPathComponent.hasPrefix(".tmp-") {
+      let date = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+      if let date, date < cutoff { try? fm.removeItem(at: url) }
+    }
   }
 
   private static func _uniqueName(ext: String) -> String {

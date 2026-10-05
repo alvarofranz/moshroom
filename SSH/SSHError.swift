@@ -79,6 +79,12 @@ public enum SSHError: Error, Equatable {
   }
 }
 
+// Errors reach the UI through localizedDescription (the explorer, uploads, the music tab), which
+// without this reads "The operation couldn't be completed".
+extension SSHError: LocalizedError {
+  public var errorDescription: String? { description }
+}
+
 extension SSHError {
   init(title: String, forSession session: ssh_session?=nil) {
     if let session = session {

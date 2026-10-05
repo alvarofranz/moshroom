@@ -272,10 +272,14 @@ public class LocalFile : File {
     guard fd >= 0 else {
       throw LocalFileError(msg: "Could not initialize channel")
     }
+    // The channel owns the descriptor from here on: DispatchIO calls this handler exactly once,
+    // after the channel is closed and every pending operation has drained, which is the only
+    // safe moment to close it. Closing it anywhere else closed it twice, and the second close
+    // could hit an unrelated descriptor that had reused the number in the meantime.
     let channel = DispatchIO(type: .random,
                              fileDescriptor: fd,
                              queue: queue,
-                             cleanupHandler: { _ in })
+                             cleanupHandler: { _ in Darwin.close(fd) })
 
     self.fd = fd
     self.channel = channel
@@ -290,13 +294,12 @@ public class LocalFile : File {
   public func close() -> AnyPublisher<Bool, Error> {
     // TODO We should pass the errors from cleanupHandler
     self.channel.close(flags: .stop)
-    Darwin.close(fd)
     return .just(true)
   }
 
   deinit {
+    // Closing an already closed channel is a no-op, so this is safe after close().
     self.channel.close(flags: .stop)
-    Darwin.close(fd)
   }
 }
 
@@ -319,7 +322,6 @@ extension LocalFile: Reader, WriterTo {
     // We cannot just simply remove the semaphore, because then the EOF may be received before all other
     // operations are even processed.
     return readLoop(max: SSIZE_MAX)
-      .print("writing to...")
       .flatMap(maxPublishers: .max(1)) { data in
         return w.write(data, max: data.count)
       }.eraseToAnyPublisher()

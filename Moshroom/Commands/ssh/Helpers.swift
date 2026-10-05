@@ -76,8 +76,10 @@ extension Argv {
   }
 }
 
-struct CommandError: Error {
+struct CommandError: LocalizedError {
   let message: String
+  // Shown as is wherever the app reports a failed connect (explorer, uploads, music tab).
+  var errorDescription: String? { message }
 }
 
 func tty() -> TermDevice {

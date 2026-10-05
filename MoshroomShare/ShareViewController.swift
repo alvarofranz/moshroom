@@ -118,8 +118,20 @@ final class ShareViewController: UIViewController {
       provider.loadFileRepresentation(forTypeIdentifier: concrete) { url, _ in
         // The provided URL is temporary and reclaimed the moment this block returns — copy it into
         // the tray synchronously, right here, before leaving the group.
+        guard let url else {
+          // Some apps share an image that only exists in memory (no file behind it): ask for the
+          // bytes instead.
+          provider.loadDataRepresentation(forTypeIdentifier: concrete) { data, _ in
+            defer { group.leave() }
+            guard let data, !data.isEmpty else { return }
+            let ext = UTType(concrete)?.preferredFilenameExtension ?? "img"
+            if MoshroomShareTray.add(data: data, preferredExtension: ext) != nil {
+              lock.lock(); saved += 1; lock.unlock()
+            }
+          }
+          return
+        }
         defer { group.leave() }
-        guard let url else { return }
         let ext = url.pathExtension.isEmpty ? (UTType(concrete)?.preferredFilenameExtension ?? "img") : url.pathExtension
         if MoshroomShareTray.add(fileAt: url, preferredExtension: ext) != nil {
           lock.lock(); saved += 1; lock.unlock()

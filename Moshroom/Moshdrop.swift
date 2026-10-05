@@ -218,7 +218,9 @@ enum Moshdrop {
   /// A multi-MB iPhone photo becomes a couple hundred KB, and HEIC (which agents and vision models
   /// often can't read) becomes JPEG. We keep the JPEG only when it actually helps: HEIC/HEIF is always
   /// converted (compatibility); otherwise only if it came out smaller, so a tiny PNG or already-small
-  /// image is never bloated. GIFs are left alone (animation); PDFs and text/code never reach here.
+  /// image is never bloated, unless the original carries a GPS location, which the re-encode drops.
+  /// Images with real transparency become PNG rather than JPEG (no alpha). GIFs are left alone
+  /// (animation); PDFs and text/code never reach here.
   ///
   /// JPEG, not WebP: once the pixels are gone the dominant saving is already banked, and JPEG is read
   /// by everything on the remote side — including agent vision models, which reject HEIC. WebP would trim
@@ -236,18 +238,57 @@ enum Moshdrop {
     ]
     guard let cg = CGImageSourceCreateThumbnailAtIndex(src, 0, opts as CFDictionary) else { return nil }
 
-    let out = stagingDir().appendingPathComponent("c-\(UUID().uuidString).jpg")
-    guard let dest = CGImageDestinationCreateWithURL(out as CFURL, UTType.jpeg.identifier as CFString, 1, nil) else { return nil }
-    CGImageDestinationAddImage(dest, cg, [kCGImageDestinationLossyCompressionQuality: jpegQuality] as CFDictionary)
+    // JPEG has no alpha: a transparent PNG (a diagram, a logo, dark lines on nothing) would arrive
+    // as a black image. Anything with real transparency is re-encoded as PNG instead.
+    let transparent = _hasTransparency(cg)
+    let type: UTType = transparent ? .png : .jpeg
+    let out = stagingDir().appendingPathComponent("c-\(UUID().uuidString).\(transparent ? "png" : "jpg")")
+    guard let dest = CGImageDestinationCreateWithURL(out as CFURL, type.identifier as CFString, 1, nil) else { return nil }
+    let props: [CFString: Any] = transparent ? [:] : [kCGImageDestinationLossyCompressionQuality: jpegQuality]
+    CGImageDestinationAddImage(dest, cg, props as CFDictionary)
     guard CGImageDestinationFinalize(dest) else { try? FileManager.default.removeItem(at: out); return nil }
 
+    // The thumbnail carries no metadata, so the re-encode also drops a photo's location. That alone
+    // is reason to keep it even when it did not come out smaller.
     let isHeic = (ext == "heic" || ext == "heif")
     let newSize = _fileSize(out)
-    if !isHeic && (newSize == 0 || newSize >= _fileSize(url)) {
+    if !isHeic && !_hasLocation(src) && (newSize == 0 || newSize >= _fileSize(url)) {
       try? FileManager.default.removeItem(at: out)                           // didn't help → keep original
       return nil
     }
     return out
+  }
+
+  // Does any pixel actually show through? An alpha channel alone says nothing (plenty of opaque
+  // images carry one), so look: draw it once, small enough to be cheap, and scan the alpha bytes.
+  private static func _hasTransparency(_ image: CGImage) -> Bool {
+    switch image.alphaInfo {
+    case .none, .noneSkipFirst, .noneSkipLast: return false
+    default: break
+    }
+    let side = 256
+    let scale = min(1, CGFloat(side) / CGFloat(max(image.width, image.height)))
+    let w = max(1, Int(CGFloat(image.width) * scale)), h = max(1, Int(CGFloat(image.height) * scale))
+    var pixels = [UInt8](repeating: 0, count: w * h * 4)
+    let drawn: Bool = pixels.withUnsafeMutableBytes { buf in
+      guard let ctx = CGContext(data: buf.baseAddress, width: w, height: h, bitsPerComponent: 8,
+                                bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
+                                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+      ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+      return true
+    }
+    guard drawn else { return true }   // could not tell: PNG is the safe answer
+    var i = 3
+    while i < pixels.count {
+      if pixels[i] < 255 { return true }
+      i += 4
+    }
+    return false
+  }
+
+  private static func _hasLocation(_ src: CGImageSource) -> Bool {
+    guard let props = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any] else { return false }
+    return props[kCGImagePropertyGPSDictionary] != nil
   }
 
   private static func _fileSize(_ url: URL) -> Int {
@@ -258,12 +299,16 @@ enum Moshdrop {
   // video, audio, archives, apps, office binaries, unknown blobs — is refused.
   static func isAgentReadable(_ url: URL) -> Bool {
     let ext = url.pathExtension.lowercased()
+    // Our own lists first: the system type table maps some code extensions to media (`.ts` is an
+    // MPEG-2 transport stream to it, so TypeScript was refused as "video").
+    if _textExtensions.contains(ext) || _textLeafNames.contains(url.lastPathComponent.lowercased()) {
+      return true
+    }
     if let type = UTType(filenameExtension: ext) {
       if type.conforms(to: .movie) || type.conforms(to: .audiovisualContent) || type.conforms(to: .audio) { return false }
       if type.conforms(to: .image) || type.conforms(to: .pdf) || type.conforms(to: .text) { return true }
     }
-    if _textExtensions.contains(ext) { return true }
-    return _textLeafNames.contains(url.lastPathComponent.lowercased())
+    return false
   }
 
   private static let _textExtensions: Set<String> = [
@@ -272,7 +317,7 @@ enum Moshdrop {
     "sh","bash","zsh","fish","py","ipynb","js","jsx","mjs","cjs","ts","tsx","rb","go","rs",
     "c","h","cc","cpp","cxx","hpp","hh","swift","java","kt","kts","scala","php","pl","lua",
     "r","jl","dart","ex","exs","clj","vue","svelte","sql","gradle","properties","mk","cmake",
-    "diff","patch","tex","proto","graphql","gql","tf","hcl",
+    "diff","patch","tex","proto","graphql","gql","tf","hcl","mts","cts",
   ]
   private static let _textLeafNames: Set<String> = [
     ".env",".gitignore",".gitattributes",".editorconfig",".npmrc",".dockerignore",
@@ -287,13 +332,16 @@ enum Moshdrop {
     return dir
   }
 
-  /// Delete staging files left behind by an abandoned/relaunched draft (older than a day). Called
-  /// when the composer opens — cheap housekeeping so Caches/moshdrop/ can't grow unbounded.
-  static func sweepStaging() {
+  /// Delete staging files left behind by an abandoned/relaunched draft (staged more than a day
+  /// ago). Called when the composer opens: cheap housekeeping so Caches/moshdrop/ can't grow
+  /// unbounded. `keeping` names files a live draft still points at; they are never deleted,
+  /// however old.
+  static func sweepStaging(keeping: Set<URL> = []) {
     let fm = FileManager.default
     guard let items = try? fm.contentsOfDirectory(at: stagingDir(), includingPropertiesForKeys: [.contentModificationDateKey]) else { return }
+    let kept = Set(keeping.map { $0.standardizedFileURL.resolvingSymlinksInPath() })
     let cutoff = Date().addingTimeInterval(-24 * 3600)
-    for item in items {
+    for item in items where !kept.contains(item.standardizedFileURL.resolvingSymlinksInPath()) {
       let mod = (try? item.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
       if let mod, mod < cutoff { try? fm.removeItem(at: item) }
     }
@@ -319,6 +367,9 @@ enum Moshdrop {
     do {
       try? FileManager.default.removeItem(at: staged)
       try FileManager.default.copyItem(at: source, to: staged)
+      // copyItem keeps the source's date, and the staging sweep ages files by it: a photo taken
+      // last week would be swept from under the draft that just attached it.
+      try? FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: staged.path)
     } catch {
       if source != localURL { try? FileManager.default.removeItem(at: source) }
       return .failure(.failed(error))
@@ -328,6 +379,9 @@ enum Moshdrop {
     let isImage = (UTType(filenameExtension: staged.pathExtension)?.conforms(to: .image)) ?? false
     return .success(MoshdropAttachment(localURL: staged, displayName: displayName, isImage: isImage, remoteName: remoteName))
   }
+
+  /// The largest file a paste copies in (it is copied on the main thread).
+  static let pasteMaxBytes = 50 * 1024 * 1024
 
   /// If the clipboard holds an image or a real file, materialize it into a temp file *we own* and
   /// return it with a display name; nil when the clipboard is text-only or empty. The caller deletes
@@ -346,12 +400,18 @@ enum Moshdrop {
       let scoped = fileURL.startAccessingSecurityScopedResource()
       defer { if scoped { fileURL.stopAccessingSecurityScopedResource() } }
       let name = fileURL.lastPathComponent
-      let temp = FileManager.default.temporaryDirectory
-        .appendingPathComponent("paste-\(UUID().uuidString)-\(name)")
-      if (try? FileManager.default.copyItem(at: fileURL, to: temp)) != nil {
-        return (temp, name)
+      // Decide BEFORE copying (this runs on the main thread): something the agent can't read, a
+      // folder, or a huge file is never worth the copy. It falls through like an unreadable one.
+      let size = (try? fileURL.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey]))
+      if isAgentReadable(fileURL), size?.isRegularFile == true,
+         let bytes = size?.fileSize, bytes <= pasteMaxBytes {
+        let temp = FileManager.default.temporaryDirectory
+          .appendingPathComponent("paste-\(UUID().uuidString)-\(name)")
+        if (try? FileManager.default.copyItem(at: fileURL, to: temp)) != nil {
+          return (temp, name)
+        }
       }
-      // couldn't read it (sandbox / promise) — fall through to image/text
+      // couldn't (or shouldn't) read it: fall through to image/text
     }
 
     // 2) Raw image data (screenshot, "Copy Image") — write a PNG we own.
@@ -440,7 +500,10 @@ final class MoshdropPicker: NSObject {
 
   // MARK: Produce the inline attachment
 
+  // Every source here is a temp copy we made (the clipboard PNG, the Photos copy, the document
+  // picker's asCopy file): staging copies it on, so it goes once the attempt is over, either way.
   private func _emit(localURL: URL, displayName: String) {
+    defer { try? FileManager.default.removeItem(at: localURL) }
     switch Moshdrop.makeAttachment(localURL: localURL, displayName: displayName) {
     case .success(let attachment):
       onPicked(attachment)
@@ -492,7 +555,7 @@ extension MoshdropPicker: PHPickerViewControllerDelegate {
     guard let item = results.first?.itemProvider else { finish(); return }
     let preferred = item.registeredTypeIdentifiers.first(where: { UTType($0)?.conforms(to: .image) == true })
       ?? UTType.image.identifier
-    let suggested = item.suggestedName ?? "photo"
+    let suggested = (item.suggestedName ?? "photo").replacingOccurrences(of: "/", with: "-")
     item.loadFileRepresentation(forTypeIdentifier: preferred) { [weak self] url, error in
       guard let self else { return }
       if let error { DispatchQueue.main.async { self._fail(error) }; return }
@@ -519,55 +582,187 @@ extension MoshdropPicker: UIPopoverPresentationControllerDelegate {
   }
 }
 
-// MARK: - The SFTP uploader (own run-loop thread, mirroring CopyFiles.swift)
+// MARK: - The SFTP uploader (one warm connection per host, on its own run-loop thread)
 
+/// Uploads one attachment. A thin handle over the host's shared MoshdropConnection, so the files of
+/// one send (and a quick follow-up send) ride a single SSH connection. Main thread only.
 final class MoshdropUploader {
 
-  private var cancellable: AnyCancellable?
-  private var runLoop: CFRunLoop?
-  private var cancelled = false
+  private var connection: MoshdropConnection?
+  private var token: Int?
 
-  /// Cancel an in-flight upload from another thread: tear down the SSH work and wake the worker's
-  /// run loop so its thread exits cleanly. No completion is delivered (the caller already knows).
+  /// Cancel the in-flight upload: the work stops on the connection's own thread and no completion
+  /// is delivered (the caller already knows).
   func cancel() {
-    cancelled = true
-    cancellable?.cancel()
-    if let runLoop { CFRunLoopStop(runLoop) }
+    if let connection, let token { connection.cancel(token) }
+    token = nil
   }
 
   /// Uploads `localURL` into `~/<Moshdrop.remoteDir>/<remoteName>` on `hostAlias`, reusing
   /// the saved SSH config/keys. Completion is delivered on the main queue.
+  ///
+  /// Always headless (MoshroomSFTPWorker.connect): an upload runs behind the composer, where a
+  /// prompt would sit unseen, so a host that needs an answer (an unknown host key, a password nobody
+  /// saved) fails with the reason instead. `device` is accepted for source compatibility and unused.
   func upload(localURL: URL,
               hostAlias: String,
-              device: TermDevice,
+              device: TermDevice?,
               remoteName: String,
               progress: @escaping (Double) -> Void = { _ in },
               completion: @escaping (Result<Void, Error>) -> Void) {
+    let connection = MoshdropConnection.forHost(hostAlias)
+    self.connection = connection
+    token = connection.upload(localURL: localURL, remoteName: remoteName,
+                              progress: progress, completion: completion)
+  }
+}
 
-    let thread = Thread { [weak self] in
+/// One SFTP connection to one host, kept warm for a minute after its last upload. It dials once,
+/// makes `~/.moshroom/uploads/` once and sweeps it once, instead of all three per file. A
+/// connection that died while idle (the app slept, the network changed) is noticed and redialed,
+/// and an upload it broke is retried once: an upload is a whole-file overwrite under a content
+/// hash name, so running it again is harmless.
+final class MoshdropConnection {
+
+  private static var pool: [String: MoshdropConnection] = [:]   // main thread only
+  private static let idleSeconds: TimeInterval = 60
+  private static var nextToken = 0
+
+  static func forHost(_ alias: String) -> MoshdropConnection {
+    if let existing = pool[alias] { return existing }
+    let made = MoshdropConnection(hostAlias: alias)
+    pool[alias] = made
+    return made
+  }
+
+  let hostAlias: String
+  private let worker = MoshroomSFTPWorker(name: "moshdrop.upload")
+  private var idleWork: DispatchWorkItem?   // main thread
+
+  // Worker thread only.
+  private var dir: Translator?
+  private var dialing = false
+  private var waiting: [(Result<Translator, Error>) -> Void] = []
+  private var dialC: AnyCancellable?
+  private var ops: [Int: AnyCancellable] = [:]
+  private var cancelled = Set<Int>()
+
+  private init(hostAlias: String) {
+    self.hostAlias = hostAlias
+  }
+
+  private func start() {
+    worker.start(keepingAlive: self)
+  }
+
+  private func onWorker(_ block: @escaping () -> Void) {
+    worker.perform(block)
+  }
+
+  // MARK: Main-thread API
+
+  func upload(localURL: URL, remoteName: String,
+              progress: @escaping (Double) -> Void,
+              completion: @escaping (Result<Void, Error>) -> Void) -> Int {
+    idleWork?.cancel()
+    idleWork = nil
+    start()
+    Self.nextToken += 1
+    let token = Self.nextToken
+    let done: (Result<Void, Error>) -> Void = { [weak self] result in
+      DispatchQueue.main.async {
+        completion(result)
+        self?.scheduleIdleTeardown()
+      }
+    }
+    onWorker { [weak self] in
       guard let self else { return }
+      self._upload(token: token, localURL: localURL, remoteName: remoteName, retry: true,
+                   progress: progress, done: done)
+    }
+    return token
+  }
 
-      // Keep the run loop alive while libssh2 attaches its socket source to it.
-      let keepAlive = Port()
-      RunLoop.current.add(keepAlive, forMode: .default)
-      self.runLoop = CFRunLoopGetCurrent()
+  func cancel(_ token: Int) {
+    onWorker { [weak self] in
+      guard let self else { return }
+      // A running copy is cancelled outright (its staged temp is cleaned on cancel); one still
+      // waiting for the dial is marked, and skipped when the dial lands.
+      if self.ops.removeValue(forKey: token) == nil { self.cancelled.insert(token) }
+    }
+    scheduleIdleTeardown()
+  }
 
-      var finished = false
-      let done: (Result<Void, Error>) -> Void = { result in
-        guard !finished else { return }
-        finished = true
-        DispatchQueue.main.async { completion(result) }
-        CFRunLoopStop(CFRunLoopGetCurrent())
+  private func scheduleIdleTeardown() {
+    idleWork?.cancel()
+    let work = DispatchWorkItem { [weak self] in self?.teardown() }
+    idleWork = work
+    DispatchQueue.main.asyncAfter(deadline: .now() + Self.idleSeconds, execute: work)
+  }
+
+  private func teardown() {
+    if Self.pool[hostAlias] === self { Self.pool[hostAlias] = nil }
+    worker.stop { [weak self] in
+      guard let self else { return }
+      self.dialC = nil
+      self.ops = [:]
+      self.dir = nil
+      self.waiting = []
+    }
+  }
+
+  // MARK: Worker
+
+  private func _upload(token: Int, localURL: URL, remoteName: String, retry: Bool,
+                       progress: @escaping (Double) -> Void,
+                       done: @escaping (Result<Void, Error>) -> Void) {
+    withDir { [weak self] result in
+      guard let self else { return }
+      if self.cancelled.remove(token) != nil { return }
+      let dir: Translator
+      switch result {
+      case .failure(let e): done(.failure(e)); return
+      case .success(let d): dir = d
       }
 
+      // Stage the local file under its final remote name (SFTP copies it across verbatim), in a
+      // folder of its own so two uploads can never share a staging path.
+      let stagingDir = FileManager.default.temporaryDirectory
+        .appendingPathComponent("moshdrop-up-\(UUID().uuidString)", isDirectory: true)
+      let staged = stagingDir.appendingPathComponent(remoteName)
+      do {
+        try FileManager.default.createDirectory(at: stagingDir, withIntermediateDirectories: true)
+        try FileManager.default.copyItem(at: localURL, to: staged)
+      } catch {
+        try? FileManager.default.removeItem(at: stagingDir)
+        done(.failure(error))
+        return
+      }
+      let cleanUp = { try? FileManager.default.removeItem(at: stagingDir) }
+
       // Real upload progress: SFTP reports incremental bytes per chunk (`written`) against the
-      // file's total `size` — accumulate and surface a true 0…1 fraction (never a faked one).
+      // file's total `size`; accumulate and surface a true 0…1 fraction (never a faked one).
       var sent: UInt64 = 0
-      self.cancellable = self.publisher(localURL: localURL, hostAlias: hostAlias, device: device, remoteName: remoteName)
-        .sink(receiveCompletion: { c in
+      self.ops[token] = MoshroomFiles.Local().walkTo(staged.path)
+        .flatMap { file in
+          dir.copy(from: [file], args: CopyArguments(preserve: CopyAttributesFlag([]), checkTimes: false))
+        }
+        .handleEvents(receiveCompletion: { _ in cleanUp() }, receiveCancel: { cleanUp() })
+        .sink(receiveCompletion: { [weak self] c in
+          guard let self else { return }
+          self.ops[token] = nil
           switch c {
-          case .finished: done(.success(()))
-          case .failure(let e): done(.failure(e))
+          case .finished:
+            done(.success(()))
+          case .failure(let e):
+            if retry, !dir.isConnected {
+              // The connection died under us (most likely while idle): dial again, once.
+              self.dir = nil
+              self._upload(token: token, localURL: localURL, remoteName: remoteName, retry: false,
+                           progress: progress, done: done)
+            } else {
+              done(.failure(e))
+            }
           }
         }, receiveValue: { info in
           guard info.size > 0 else { return }
@@ -575,51 +770,45 @@ final class MoshdropUploader {
           let frac = min(1.0, Double(sent) / Double(info.size))
           DispatchQueue.main.async { progress(frac) }
         })
-
-      while !finished && !self.cancelled {
-        RunLoop.current.run(mode: .default, before: .distantFuture)
-      }
-      RunLoop.current.remove(keepAlive, forMode: .default)
     }
-    thread.name = "moshdrop.upload"
-    thread.stackSize = 2 << 20
-    thread.start()
   }
 
-  private func publisher(localURL: URL, hostAlias: String, device: TermDevice, remoteName: String) -> CopyProgressInfoPublisher {
-    let target: (hostName: String, host: MoshSSHHost, config: SSHClientConfig)
-    do {
-      target = try MoshroomSSH.resolveTarget(hostAlias: hostAlias, device: device)
-    } catch {
-      return Fail(error: error).eraseToAnyPublisher()
+  // The live uploads dir, dialing (and preparing it) first when there is none or it has died.
+  private func withDir(_ body: @escaping (Result<Translator, Error>) -> Void) {
+    if let dir, dir.isConnected {
+      body(.success(dir))
+      return
     }
-
-    // Stage the local file under its final remote name so SFTP copies it across verbatim.
-    let staged = FileManager.default.temporaryDirectory.appendingPathComponent(remoteName)
+    dir = nil
+    waiting.append(body)
+    guard !dialing else { return }
+    let sftp: AnyPublisher<Translator, Error>
     do {
-      try? FileManager.default.removeItem(at: staged)
-      try FileManager.default.copyItem(at: localURL, to: staged)
+      sftp = try MoshroomSFTPWorker.connect(alias: hostAlias)
     } catch {
-      return Fail(error: error).eraseToAnyPublisher()
+      finishDial(.failure(error))
+      return
     }
-
-    let localFile = MoshroomFiles.Local().walkTo(staged.path)
-
-    let destDir = SSHClient.dial(target.hostName, with: target.config, withProxy: MoshroomSSH.executeProxyCommand)
-      .flatMap { $0.requestSFTP() }
-      .tryMap { try SFTPTranslator(on: $0) as Translator }
+    dialing = true
+    dialC = sftp
       .flatMap { root in Self.ensureRemoteDir(root, path: "/~/\(Moshdrop.remoteDir)") }
       .flatMap { dir -> AnyPublisher<Translator, Error> in
-        // On the same connection, sweep stale uploads (best-effort), then hand the dir to the copy.
+        // Once per connection: sweep stale uploads (best-effort), then hand the dir on.
         Self.sweepRemote(dir).setFailureType(to: Error.self).map { _ in dir }.eraseToAnyPublisher()
       }
+      .sink(receiveCompletion: { [weak self] c in
+        if case .failure(let e) = c { self?.finishDial(.failure(e)) }
+      }, receiveValue: { [weak self] dir in
+        self?.dir = dir
+        self?.finishDial(.success(dir))
+      })
+  }
 
-    return Publishers.Zip(destDir, localFile)
-      .flatMap { dir, file in
-        dir.copy(from: [file], args: CopyArguments(preserve: CopyAttributesFlag([]), checkTimes: false))
-      }
-      .handleEvents(receiveCompletion: { _ in try? FileManager.default.removeItem(at: staged) })
-      .eraseToAnyPublisher()
+  private func finishDial(_ result: Result<Translator, Error>) {
+    dialing = false
+    let pending = waiting
+    waiting = []
+    pending.forEach { $0(result) }
   }
 
   // Best-effort housekeeping: delete files in the remote uploads dir older than 48h so it can't
