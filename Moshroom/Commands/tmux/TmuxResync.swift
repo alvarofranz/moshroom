@@ -225,20 +225,28 @@ enum TmuxResync {
   /// A full refill. `rows` is the terminal's own height. A `marker` means the terminal still shows
   /// something: that is pushed up into its scrollback first, so nothing on it is painted over, and a
   /// non-empty marker goes above the refill as a short dim line.
-  static func fullRefill(_ snap: TmuxSnapshot, rows: Int, modes: TmuxTrackedModes, marker: String?) -> [UInt8] {
-    var out = bytes("\u{1b}[0m\u{1b}[r")
-    // Leave the alternate screen first if the terminal is still on it (a rebuilt page never is).
-    if marker != nil {
-      out += bytes("\u{1b}[?1049l\u{1b}[\(max(rows, 1));1H")
-      for _ in 0..<max(rows, 1) { out += bytes("\r\n") }
-    }
-    out += bytes("\u{1b}[H\u{1b}[2J")
+  ///
+  /// With a marker the refill simply continues below the cursor: every line it writes scrolls what
+  /// was there up into the scrollback, and since it writes at least a screenful, the screen ends up
+  /// holding exactly the pane's. No blank rows are pushed into the scrollback on the way.
+  static func fullRefill(_ snap: TmuxSnapshot, rows: Int, modes: TmuxTrackedModes, marker: String?, leaveAlternate: Bool = false) -> [UInt8] {
     var lines: [[UInt8]] = []
-    if let marker, !marker.isEmpty {
-      lines.append(bytes("\u{1b}[2m\(marker)\u{1b}[0m"))
+    var out: [UInt8]
+    if let marker {
+      out = bytes("\u{1b}[0m")
+      if leaveAlternate {
+        out += bytes("\u{1b}[?1049l")
+      }
+      // Reset the scroll region without losing the cursor (DECSTBM homes it), then a fresh row.
+      out += bytes("\u{1b}7\u{1b}[r\u{1b}8\r\n")
+      if !marker.isEmpty {
+        lines.append(bytes("\u{1b}[2m\(marker)\u{1b}[0m"))
+      }
+    } else {
+      out = bytes("\u{1b}[0m\u{1b}[r\u{1b}[H\u{1b}[2J")
     }
     lines += snap.history.map(trimTrailingSpaces)
-    out += _primary(snap, lines: lines, rows: rows)
+    out += _primary(snap, lines: lines, rows: rows, eraseRows: marker != nil)
     out += _tail(snap, rows: rows, modes: modes)
     return out
   }
@@ -266,9 +274,11 @@ enum TmuxResync {
   // on its alternate one), starting at the home position of an empty screen. The first `rows` lines
   // fill it, every later one scrolls the top into the scrollback, so the screen ends up holding exactly
   // the last `rows` lines written: the pane's own screen.
-  private static func _primary(_ snap: TmuxSnapshot, lines: [[UInt8]], rows: Int) -> [UInt8] {
+  // `eraseRows`: the rows written over may still hold something (a refill that continues below the
+  // cursor), so each is erased before it is written.
+  private static func _primary(_ snap: TmuxSnapshot, lines: [[UInt8]], rows: Int, eraseRows: Bool = false) -> [UInt8] {
     var all = lines
-    var screen = snap.state.alternateOn ? snap.savedNormal : snap.screen
+    var screen = (snap.state.alternateOn ? snap.savedNormal : snap.screen).map(trimTrailingSpaces)
     // A pane taller than this terminal: its top rows belong to the scrollback here.
     if rows > 0, screen.count > rows {
       all += screen.prefix(screen.count - rows)
@@ -278,7 +288,7 @@ enum TmuxResync {
     var out = [UInt8]()
     for (i, line) in all.enumerated() {
       if i > 0 { out += bytes("\r\n") }
-      out += bytes("\u{1b}[0m")
+      out += bytes(eraseRows ? "\u{1b}[0m\u{1b}[2K" : "\u{1b}[0m")
       out += line
     }
     out += bytes("\u{1b}[0m")
@@ -327,12 +337,23 @@ enum TmuxResync {
     return out
   }
 
-  /// Trailing blanks are padding (tmux keeps them for joined lines); painting them could only make
-  /// hterm wrap a line the pane did not wrap. Only plain spaces at the very end, after the last escape.
+  /// Trailing blanks are padding (tmux keeps them for joined lines and with -N); painted, they could
+  /// make hterm wrap a line the pane did not wrap and they end up in every copy. Only plain spaces at
+  /// the very end, and only while the pen is the default one: blanks after a background colour are a
+  /// painted bar, not padding.
   static func trimTrailingSpaces(_ line: [UInt8]) -> [UInt8] {
     var end = line.count
     while end > 0 && line[end - 1] == 0x20 { end -= 1 }
-    return end == line.count ? line : Array(line[0..<end])
+    guard end < line.count else { return line }
+    if let escape = line[0..<end].lastIndex(of: 0x1B) {
+      // The last escape before the blanks must be an SGR that leaves the background default.
+      guard escape + 1 < end, line[escape + 1] == 0x5B,
+            let final = line[(escape + 2)..<end].firstIndex(where: { $0 >= 0x40 && $0 <= 0x7E }),
+            line[final] == 0x6D else { return line }
+      let params = String(decoding: line[(escape + 2)..<final], as: UTF8.self)
+      guard ["", "0", "39", "49", "39;49", "49;39", "0;39;49"].contains(params) else { return line }
+    }
+    return Array(line[0..<end])
   }
 
   // MARK: - Overlap
@@ -362,6 +383,51 @@ enum TmuxResync {
     var t = s
     while let last = t.last, last == " " || last == "\t" { t.removeLast() }
     return t
+  }
+}
+
+/// Drops the screen-style title sequence (ESC k <name> ESC \\) from a pane's output. Shells set it
+/// whenever TERM says screen or tmux, and a tmux client turns it into the window's name; a terminal
+/// that does not know it prints the name as text, which also throws readline's idea of the cursor
+/// column off. A sequence split between chunks is carried over.
+struct TmuxTitleFilter {
+  private enum State { case normal, escape, title, titleEscape }
+  private var state = State.normal
+  private var titleLength = 0
+
+  mutating func filter(_ bytes: [UInt8]) -> [UInt8] {
+    var out = [UInt8]()
+    out.reserveCapacity(bytes.count + 1)
+    for b in bytes {
+      switch state {
+      case .normal:
+        if b == 0x1B { state = .escape } else { out.append(b) }
+      case .escape:
+        if b == 0x6B {
+          state = .title
+          titleLength = 0
+        } else if b == 0x1B {
+          out.append(0x1B)
+        } else {
+          out.append(0x1B)
+          out.append(b)
+          state = .normal
+        }
+      case .title, .titleEscape:
+        titleLength += 1
+        if state == .titleEscape {
+          state = b == 0x5C ? .normal : (b == 0x1B ? .titleEscape : .title)
+        } else if b == 0x1B {
+          state = .titleEscape
+        } else if b == 0x07 {
+          state = .normal
+        } else if titleLength > 512 {
+          // Never a title that long: stop swallowing output.
+          state = .normal
+        }
+      }
+    }
+    return out
   }
 }
 

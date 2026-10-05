@@ -302,7 +302,31 @@ class TermController: UIViewController {
     _proxyView.destroyControlledView()
     _termDevice.delegate = nil
     _termView.terminate()
+    if _session == nil {
+      _moshroomCloseParkedTmuxSession()
+    }
     _session?.kill()
+  }
+
+  private enum ParkedArchiveKey: CodingKey { case sessionParams }
+
+  /// A tab restored after a relaunch but never shown has no session in memory, only its archive: if
+  /// that archive holds a tmux session, it is closed on the host like any other closed tmux tab.
+  /// (Same file SessionRegistry writes; read here because the registry deletes it right after.)
+  private func _moshroomCloseParkedTmuxSession() {
+    guard meta.isSuspended,
+          let support = try? FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
+                                                     appropriateFor: nil, create: false) else { return }
+    let url = support.appendingPathComponent("sessions").appendingPathComponent(meta.key.uuidString)
+    guard let data = try? Data(contentsOf: url),
+          let unarchiver = try? NSKeyedUnarchiver(forReadingFrom: data),
+          let params: MCPParams = unarchiver.bk_decode(of: [MCPParams.self], for: ParkedArchiveKey.sessionParams),
+          params.childSessionType == "tmux",
+          let tmux = params.childSessionParams as? TmuxParams,
+          tmux.everAttached,
+          let host = tmux.hostAlias, !host.isEmpty,
+          let name = tmux.sessionName, !name.isEmpty else { return }
+    MoshroomTmux.killRemoteSession(hostAlias: host, sessionName: name)
   }
 
   deinit {
@@ -607,6 +631,11 @@ extension TermController: SuspendableSession {
     let host = (tmuxHost ?? meta.connectedHost ?? moshroomConnectedHost ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
     guard !host.isEmpty, MoshHosts.withHost(host) != nil else { return nil }
     return host
+  }
+
+  /// Whether this tab's live child is a tmux control-mode session (reconnecting re-attaches it).
+  var moshroomIsTmuxSession: Bool {
+    (_session as? MCPSession)?.sessionParams?.childSessionType == "tmux"
   }
 
   /// Reconnect this tab's mosh session in place: what closing the tab and connecting again from Quick

@@ -90,6 +90,7 @@ import ios_system
   private var renderedPane: Int?
   private var keyQueue: [UInt8] = []
   private var modeTracker = TmuxModeTracker()
+  private var titleFilter = TmuxTitleFilter()
   private var parking = false
   private var killing = false
   private var awaitingDevice = false
@@ -160,8 +161,7 @@ import ios_system
       }
       p.hostAlias = alias
       p.sessionName = "moshroom-" + UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(8).lowercased()
-      pendingCommandOnConnect = MoshHosts.withHost(alias)?.commandOnConnect?
-        .trimmingCharacters(in: .whitespacesAndNewlines)
+      pendingCommandOnConnect = Self._commandOnConnect(for: alias)
       // The tab's archive must know about the session from now on: a relaunch after a crash finds it.
       mcpSession.moshroomCheckpointDidChange()
     }
@@ -265,6 +265,20 @@ import ios_system
         }
       }
     }
+  }
+
+  /// The host's "Command on connect", unless it starts a session manager of its own. Such a command
+  /// is there for mosh (`tmux new -A -s main` and friends): typed inside this tmux session it would
+  /// nest, or grab and detach a session the user keeps for other clients.
+  private static func _commandOnConnect(for alias: String) -> String? {
+    guard let command = MoshHosts.withHost(alias)?.commandOnConnect?
+      .trimmingCharacters(in: .whitespacesAndNewlines), !command.isEmpty else { return nil }
+    let first = command.split(whereSeparator: { " \t;&|".contains($0) }).first.map(String.init) ?? ""
+    let program = (first as NSString).lastPathComponent
+    if ["tmux", "screen", "byobu", "zellij", "abduco", "dtach"].contains(program) {
+      return nil
+    }
+    return command
   }
 
   // MARK: - One connection
@@ -454,6 +468,7 @@ import ios_system
     switch event {
     case .output(let pane, let bytes):
       guard live, !resyncing, pane == renderedPane else { return }
+      let bytes = titleFilter.filter(bytes)
       let before = modeTracker.modes
       modeTracker.scan(bytes)
       if modeTracker.modes != before {
@@ -646,16 +661,25 @@ import ios_system
       if snap.state.alternateOn {
         return TmuxResync.alternateRepaint(snap, rows: rows, modes: modes)
       }
-      return TmuxResync.fullRefill(snap, rows: rows, modes: modes, marker: reconnected)
+      return TmuxResync.fullRefill(snap, rows: rows, modes: modes, marker: reconnected, leaveAlternate: true)
     }
     if p.lastCols > 0, p.lastCols != snap.state.width {
       // tmux reflowed its history to another width: lines no longer compare.
       return TmuxResync.fullRefill(snap, rows: rows, modes: modes, marker: reconnected)
     }
-    guard let start = TmuxResync.newHistoryStart(localTail: tail.lines, remotePlain: snap.plainHistory ?? []) else {
-      return TmuxResync.fullRefill(snap, rows: rows, modes: modes, marker: reconnected)
+    if snap.history.isEmpty {
+      // Nothing has scrolled off on the host: the screen is all there is to paint.
+      return TmuxResync.overlapAppend(snap, newFrom: 0, rows: rows, modes: modes)
     }
-    return TmuxResync.overlapAppend(snap, newFrom: start, rows: rows, modes: modes)
+    if let start = TmuxResync.newHistoryStart(localTail: tail.lines, remotePlain: snap.plainHistory ?? []) {
+      return TmuxResync.overlapAppend(snap, newFrom: start, rows: rows, modes: modes)
+    }
+    if p.lastHistorySize == 0 {
+      // The host had no history at the last paint, so this terminal's scrollback holds only what came
+      // before the session (the connect line): everything the host banked since is new here.
+      return TmuxResync.overlapAppend(snap, newFrom: 0, rows: rows, modes: modes)
+    }
+    return TmuxResync.fullRefill(snap, rows: rows, modes: modes, marker: reconnected)
   }
 
   private func _quietOtherPanes(active: Int) {

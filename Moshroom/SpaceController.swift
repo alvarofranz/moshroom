@@ -1792,7 +1792,7 @@ extension SpaceController {
     }
   }
 
-  /// The tab pill of a mosh tab: reconnect it in place. mosh never gives up on a server it has heard
+  /// The tab pill of a mosh or tmux tab: reconnect it in place. mosh never gives up on a server it has heard
   /// from, so when that server stops answering (it rebooted, or the network in between blocks it) the
   /// tab would wait for ever, and closing it was the only way out.
   @objc func moshroomTabPillTapped() {
@@ -1803,8 +1803,11 @@ extension SpaceController {
     else {
       return
     }
+    let message = term.moshroomIsTmuxSession
+      ? "Attaches this tab to the same tmux session again. For a connection that stopped answering."
+      : "Starts a new mosh session in this tab. For a connection that stopped answering."
     let sheet = UIAlertController(title: "Reconnect to \(host)?",
-                                  message: "Starts a new mosh session in this tab. For a connection that stopped answering.",
+                                  message: message,
                                   preferredStyle: .actionSheet)
     sheet.addAction(UIAlertAction(title: "Reconnect", style: .default) { [weak term] _ in
       term?.moshroomReconnect()
