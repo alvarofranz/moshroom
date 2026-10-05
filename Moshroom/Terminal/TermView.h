@@ -56,14 +56,17 @@ extern NSString * TermViewTitleDidChangeNotificationKey;
 
 
 @class SmarterTermInput;
+@class TerminalSelectionController;
 
 @interface TermView : UIView
 
 - (nonnull instancetype)initWithFrame:(CGRect)frame termUIState:(nonnull TermUIState *)termUIState;
 
 @property (nonatomic, readonly) NSString *title;
+// Select-to-copy lives on the row model (see TerminalSelection.swift): whether a selection is up,
+// and the controller that owns it. Its text is fetched on demand, never mirrored here.
 @property (nonatomic, readonly) BOOL hasSelection;
-@property (nonatomic, readonly) NSString *selectedText;
+@property (nonatomic, readonly, nullable) TerminalSelectionController *selectionController;
 @property (nonatomic) id<TermViewDeviceProtocol> device;
 @property (nonatomic) UIEdgeInsets additionalInsets;
 @property (nonatomic) BOOL layoutLocked;
@@ -112,11 +115,6 @@ extern NSString * TermViewTitleDidChangeNotificationKey;
 - (void)writeB64:(NSData *)data;
 - (void)displayInput:(NSString *)input;
 - (void)apiResponse:(NSString *)name response:(NSString *)response;
-
-// Both are driven from Swift as modifySideOfSelection() / modifySelection(inDirection:granularity:)
-// — the second one's bridged spelling hides it from a grep for the ObjC name.
-- (void)modifySideOfSelection;
-- (void)modifySelectionInDirection:(NSString *)direction granularity:(NSString *)granularity;
 
 - (void)pasteString:(NSString *)str;
 // The loader over this terminal (see TermController): kept above the web view.

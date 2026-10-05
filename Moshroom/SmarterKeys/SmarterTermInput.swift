@@ -65,25 +65,7 @@ import Combine
     if traitCollection.userInterfaceIdiom != .pad {
       _setupAccessoryView()
     }
-
-    #if targetEnvironment(macCatalyst)
-    // When a Mac window becomes key again (Cmd-Tab away and back), AppKit restores first
-    // responder to the web content view — from then on selections paint through the UIKit
-    // overlay (deactivated gray / accent blue) instead of the page's red CSS. Take it back the
-    // moment the window returns.
-    NotificationCenter.default.addObserver(
-      self, selector: #selector(_moshroomWindowDidBecomeKey(_:)),
-      name: UIWindow.didBecomeKeyNotification, object: nil)
-    #endif
   }
-
-  #if targetEnvironment(macCatalyst)
-  @objc private func _moshroomWindowDidBecomeKey(_ note: Notification) {
-    guard (note.object as? UIWindow) === window else { return }
-    // Async: AppKit may restore the first responder after posting the notification.
-    DispatchQueue.main.async { [weak self] in self?.deactivateSelectionUI() }
-  }
-  #endif
   
   override func layoutSubviews() {
     super.layoutSubviews()
@@ -146,9 +128,9 @@ import Combine
   }
   
   override func becomeFirstResponder() -> Bool {
-    // Moshroom: the terminal never takes the keyboard, all input goes through Moshkitor. This view
-    // itself is never first responder (`Moshroom.scratchOnly` is a constant); the selection UI makes
-    // the WKContentView first responder instead (see activateSelectionUI).
+    // Moshroom: the terminal never takes the keyboard, all input goes through Moshkitor. Neither this
+    // view nor its content view is ever made first responder: select-to-copy is native and lives on
+    // the row model (TerminalSelection.swift), so no WebKit selection needs an active responder.
     return false
   }
   
@@ -157,49 +139,6 @@ import Combine
     contentView()?.isFirstResponder == true
   }
 
-  // Moshroom: on iOS, WKWebView only paints the ACTIVE selection look — the tinted (red)
-  // highlight plus the grab handles — while its inner content view is first responder. Otherwise
-  // UIKit shows the deactivated appearance: a dull dark box, no handles. That's why long-press
-  // selections came up "sometimes red and draggable, sometimes black and dead" — it depended on
-  // whether WebKit had happened to make the content view first responder earlier. Making it first
-  // responder exactly while a selection exists (and resigning when it clears) makes the good case
-  // THE case.
-  //
-  // This does NOT break the scratchOnly invariant (typing goes to Moshkitor, the terminal never
-  // shows a keyboard): `becomeFirstResponder` on this view stays blocked; the content view is
-  // targeted directly, and no keyboard can come up because the page's editable element was
-  // focused programmatically — WebKit never starts an input session for it (same reason the
-  // pre-existing "good" selections never raised one).
-  //
-  // Mac Catalyst deliberately does NOT take first responder: there are no grab handles on the
-  // Mac anyway, a first-responder WKWebView swallows hardware keys (the known Ventura+ bug), and
-  // the activated overlay paints with the SYSTEM accent (blue) instead of Moshroom red. Left
-  // unfocused, the selection is painted by the page itself — where the injected
-  // ::selection/:window-inactive CSS keeps it Moshroom red (term.js scopes user-select to the
-  // selection's lifetime so that styling applies).
-  @objc func activateSelectionUI() {
-    #if targetEnvironment(macCatalyst)
-    // Not just a no-op: AppKit RESTORES first responder to the content view whenever the window
-    // becomes key again (Cmd-Tab away and back), and from then on selections paint through the
-    // UIKit overlay — dull black, or accent blue — instead of the page's red CSS. Undo it at
-    // every selection so the page stays the painter.
-    //
-    // (A related trap, fixed at the ROOT elsewhere: presenting a `.fullScreen` modal pulls this
-    // web view out of the window, and on re-add WebKit latches selection painting into a dead
-    // near-black box that NO responder dance reliably heals — which is why every full-screen
-    // Moshroom modal presents as `.overFullScreen` instead, keeping the terminal in the window.)
-    deactivateSelectionUI()
-    #else
-    guard let cv = contentView(), !cv.isFirstResponder else { return }
-    cv.becomeFirstResponder()
-    #endif
-  }
-
-  @objc func deactivateSelectionUI() {
-    guard let cv = contentView(), cv.isFirstResponder else { return }
-    cv.resignFirstResponder()
-  }
-  
   func reportStateReset() {
     reportStateReset(false)
     device?.view?.cleanSelection()
@@ -347,17 +286,15 @@ extension SmarterTermInput {
     return nil
   }
   
+  // The web keyboard's selection commands. Moving a selection by direction belonged to the old
+  // WebKit selection and is gone; the commands that still mean something reach the row-model one.
   override func onSelection(_ args: [AnyHashable : Any]) {
-    if let dir = args["dir"] as? String, let gran = args["gran"] as? String {
-      device?.view?.modifySelection(inDirection: dir, granularity: gran)
-    } else if let op = args["command"] as? String {
-      switch op {
-      case "change": device?.view?.modifySideOfSelection()
-      case "copy": copy(self)
-      case "paste": device?.view?.pasteSelection(self)
-      case "cancel": fallthrough
-      default:  device?.view?.cleanSelection()
-      }
+    guard let op = args["command"] as? String else { return }
+    switch op {
+    case "copy": copy(self)
+    case "paste": device?.view?.pasteSelection(self)
+    case "change": break
+    default: device?.view?.cleanSelection()
     }
   }
   
@@ -470,34 +407,27 @@ extension SmarterTermInput {
   // The selection as the `q` parameter, encoded as a query VALUE: `.urlQueryAllowed` leaves & + = #
   // alone, so "C++ a&b" reached the search engine as "C   a" plus a stray parameter.
   private func _searchSelection(on base: String) {
-    guard
-      let text = device?.view?.selectedText, !text.isEmpty,
-      var components = URLComponents(string: base)
-    else {
-      return
+    device?.view?.selectionController?.fetchText(raw: false, oneLine: true) { text in
+      guard let text = text, var components = URLComponents(string: base) else { return }
+      var allowed = CharacterSet.urlQueryAllowed
+      allowed.remove(charactersIn: "&+=#?/")
+      components.percentEncodedQueryItems = [
+        URLQueryItem(name: "q", value: text.addingPercentEncoding(withAllowedCharacters: allowed))
+      ]
+      guard let url = components.url else { return }
+      moshroom_openurl(url)
     }
-    var allowed = CharacterSet.urlQueryAllowed
-    allowed.remove(charactersIn: "&+=#?/")
-    components.percentEncodedQueryItems = [
-      URLQueryItem(name: "q", value: text.addingPercentEncoding(withAllowedCharacters: allowed))
-    ]
-    guard let url = components.url else { return }
-    moshroom_openurl(url)
   }
   
   @objc func shareSelection(_ sender: Any) {
-    guard
-      let vc = device?.delegate?.viewController(),
-      let deviceView = device?.view,
-      let text = deviceView.selectedText
-    else {
-        return
+    guard let deviceView = device?.view else { return }
+    deviceView.selectionController?.fetchText(raw: false, oneLine: false) { [weak self] text in
+      guard let text = text, let vc = self?.device?.delegate?.viewController() else { return }
+      let ctrl = UIActivityViewController(activityItems: [text], applicationActivities: nil)
+      ctrl.popoverPresentationController?.sourceView = deviceView
+      ctrl.popoverPresentationController?.sourceRect = deviceView.selectionRect
+      vc.present(ctrl, animated: true, completion: nil)
     }
-    
-    let ctrl = UIActivityViewController(activityItems: [text], applicationActivities: nil)
-    ctrl.popoverPresentationController?.sourceView = deviceView
-    ctrl.popoverPresentationController?.sourceRect = deviceView.selectionRect
-    vc.present(ctrl, animated: true, completion: nil)
   }
 }
 

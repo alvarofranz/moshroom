@@ -22,7 +22,7 @@ hterm.Terminal.prototype.onFocusChange__ = function(focused) {
 hterm.Terminal.prototype.overlaySize = function() {};
 
 // Real DOM mouse events don't drive the terminal — clicks/moves are owned by the native
-// gesture layer (tap dispatch, drag-select) and fed back in synthetically. The one exception
+// gesture layer (tap dispatch, the row-model selection) and fed back in synthetically. The one exception
 // is `wheel`: hterm routes the scrollport's DOM wheel events (Mac trackpad/mouse — a touch
 // never generates them here) through onMouse_, and that path is what gives TUIs standard
 // wheel reports and alt-screen alternate-scroll arrows. Forward exactly those.

@@ -27,6 +27,17 @@ import WebKit
 
 class UIScrollViewWithoutHitTest: UIScrollView {
   var isInfinit = false
+
+  /// Asked before the scroll pan may begin: a long-press selection drag owns the finger, and a
+  /// scroll starting under it would move the text out from under the selection being made.
+  var panMayBegin: (() -> Bool)? = nil
+
+  override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+    if gestureRecognizer === panGestureRecognizer, let mayBegin = panMayBegin, !mayBegin() {
+      return false
+    }
+    return super.gestureRecognizerShouldBegin(gestureRecognizer)
+  }
   
   var reportedScroll: CGPoint? = nil
   
@@ -83,9 +94,12 @@ let MoshroomTerminalTailingNotification = "MoshroomTerminalTailingNotification"
 /**
  Gestures:
 
- - 1 finger tap - universal tap dispatch (term_tapAt: URL open / TUI click report / composer)
- - 1 finger long-press - select word → Copy
- - pan - terminal scroll (touch); on Mac Catalyst a left-drag is live text selection instead
+ - 1 finger tap - universal tap dispatch (term_tapAt: URL open / TUI click report / composer);
+   with a selection up it belongs to the selection, and a quick second / third tap selects a word /
+   a line (see TerminalSelectionController)
+ - 1 finger long-press - select the smart word, keep dragging to extend
+ - pan - terminal scroll (touch); on Mac Catalyst a left-drag selects instead (Shift extends,
+   Option selects a rectangle)
  */
 
 @objc class WKWebViewGesturesInteraction: NSObject, UIInteraction {
@@ -101,6 +115,9 @@ let MoshroomTerminalTailingNotification = "MoshroomTerminalTailingNotification"
   private let _tapRecognizer = UITapGestureRecognizer()
   #if targetEnvironment(macCatalyst)
   private let _mouseSelectRecognizer = UIPanGestureRecognizer()
+  // Where the button went down: the pan only begins once the pointer has moved past its hysteresis,
+  // and its translation at that moment does not reliably reach back to the press.
+  private var _mouseDownPoint: CGPoint? = nil
   #endif
   private var _pointerInteraction: Any? = nil
   private var _characterSize: CGSize? = nil
@@ -123,20 +140,10 @@ let MoshroomTerminalTailingNotification = "MoshroomTerminalTailingNotification"
   @objc private(set) var applicationCursor = false
 
   @objc var focused: Bool = false;
-  @objc var hasSelection: Bool = false {
-    didSet {
-      // While text is selected, a drag must not also scroll the terminal. On the Mac the scroll
-      // pans ignore the pointer entirely (see init) and the selection IS a live drag — dropping
-      // touches would cancel it mid-flight — so this guard is touch-only.
-      #if !targetEnvironment(macCatalyst)
-      if hasSelection {
-        _scrollView.panGestureRecognizer.dropTouches()
-        _termScrollView.panGestureRecognizer.dropTouches()
-        view?.dropSuperViewTouches()
-      }
-      #endif
-    }
-  }
+
+  /// Select-to-copy (TerminalSelection.swift). Every gesture that can make, move or end a selection
+  /// is routed through it; a selection is scroll-safe, so the scroll pans stay live while one is up.
+  @objc weak var selection: TerminalSelectionController? = nil
   
   @objc var indicatorStyle: UIScrollView.IndicatorStyle {
     get { _scrollView.indicatorStyle }
@@ -144,12 +151,10 @@ let MoshroomTerminalTailingNotification = "MoshroomTerminalTailingNotification"
   }
   
   var allRecognizers:[UIGestureRecognizer] {
-    // Moshroom: two custom gestures — long-press (select word → Copy) and single tap (the
+    // Moshroom: two custom gestures, long-press (smart-word selection) and single tap (the
     // universal tap dispatch: OSC 8 / URL open, mouse-report click to the TUI, input-row →
-    // composer; see term_tapAt) — plus the two scroll-view pans that drive terminal scroll.
-    // On the Mac a pan translates the mouse drag into a live text selection (see
-    // _onMouseSelectDrag) — WebKit-on-Catalyst never turns click-drags into WebCore drag
-    // selection by itself (only dblclick word-select comes for free).
+    // composer; see term_tapAt), plus the two scroll-view pans that drive terminal scroll.
+    // On the Mac a pan turns the mouse drag into a selection (see _onMouseSelectDrag).
     #if targetEnvironment(macCatalyst)
     return [
       _longPressRecognizer,
@@ -257,12 +262,19 @@ let MoshroomTerminalTailingNotification = "MoshroomTerminalTailingNotification"
 
     _longPressRecognizer.delegate = self
     _longPressRecognizer.addTarget(self, action: #selector(_onLongPress(_:)))
-    _longPressRecognizer.isEnabled = true   // Moshroom: long-press = select word → Copy
+    _longPressRecognizer.isEnabled = true   // Moshroom: long-press = smart-word selection
+
+    // While a long-press selection drag holds the finger, the scroll pans may not start under it.
+    let longPress = _longPressRecognizer
+    let panMayBegin: () -> Bool = {
+      longPress.state != .began && longPress.state != .changed
+    }
+    _scrollView.panMayBegin = panMayBegin
+    _termScrollView.panMayBegin = panMayBegin
 
     // Moshroom: single tap = the universal tap dispatch (term_tapAt). It must observe, never
-    // own, the touch stream — cancelsTouchesInView would steal the events WebKit needs for its
-    // native behaviours (Mac dblclick word-select, selection dismissal), and the selection /
-    // scroll guards live in _onTap instead.
+    // own, the touch stream (cancelsTouchesInView would steal events WebKit still needs), and the
+    // selection / scroll guards live in _onTap instead.
     _tapRecognizer.numberOfTapsRequired = 1
     _tapRecognizer.numberOfTouchesRequired = 1
     _tapRecognizer.cancelsTouchesInView = false
@@ -271,12 +283,14 @@ let MoshroomTerminalTailingNotification = "MoshroomTerminalTailingNotification"
 
     #if targetEnvironment(macCatalyst)
     // On the Mac a left-button DRAG selects text, like any terminal. The two scroll pans exist
-    // for touch scrolling — on Catalyst they'd claim the click-drag — while actual Mac scrolling
-    // (wheel / trackpad) arrives as DOM wheel events that hterm handles itself, never through
-    // these pans. So the pans ignore the pointer entirely here (iOS behaviour untouched), and a
-    // dedicated pan turns the drag into a live JS selection.
+    // for touch scrolling, and on Catalyst they would claim the click-drag; the wheel and trackpad
+    // still reach their scroll views (allowedTouchTypes drops touches only). So the pans ignore the
+    // pointer here (iOS behaviour untouched), and a dedicated pan drives the selection.
     _scrollView.panGestureRecognizer.allowedTouchTypes = []
     _termScrollView.panGestureRecognizer.allowedTouchTypes = []
+    // Press-and-hold is a touch idiom: with a mouse, holding still before a drag would select a word
+    // and then race the drag. Mac selection is the drag and the double / triple click.
+    _longPressRecognizer.isEnabled = false
     _mouseSelectRecognizer.maximumNumberOfTouches = 1
     _mouseSelectRecognizer.delegate = self
     _mouseSelectRecognizer.addTarget(self, action: #selector(_onMouseSelectDrag(_:)))
@@ -287,45 +301,33 @@ let MoshroomTerminalTailingNotification = "MoshroomTerminalTailingNotification"
   @objc func _onMouseSelectDrag(_ recognizer: UIPanGestureRecognizer) {
     guard focused else { return }
     let p = recognizer.location(in: recognizer.view)
-    switch recognizer.state {
-    case .began:
-      // The selection about to be born must be page-painted (red CSS), never the UIKit overlay —
-      // shed any first responder AppKit may have restored to the content view.
-      (_wkWebView as? SmarterTermInput)?.deactivateSelectionUI()
-      // Anchor at the true mouse-down point — by .began the pointer already moved past the
-      // recognizer's hysteresis, so walk the translation back to the origin.
-      let t = recognizer.translation(in: recognizer.view)
-      let start = CGPoint(x: p.x - t.x, y: p.y - t.y)
-      _wkWebView?.evaluateJavaScript(
-        "term_startSelectionAt(\(start.x), \(start.y)); term_extendSelectionTo(\(p.x), \(p.y));",
-        completionHandler: nil)
-    case .changed:
-      _wkWebView?.evaluateJavaScript("term_extendSelectionTo(\(p.x), \(p.y));", completionHandler: nil)
-    case .ended, .cancelled, .failed:
-      _wkWebView?.evaluateJavaScript("term_endSelection();", completionHandler: nil)
-    default:
-      break
-    }
+    // Anchor at the true mouse-down point, recorded as the press arrived (see shouldReceive).
+    let t = recognizer.translation(in: recognizer.view)
+    let start = _mouseDownPoint ?? CGPoint(x: p.x - t.x, y: p.y - t.y)
+    selection?.mouseDrag(recognizer.state, from: start, to: p, modifiers: recognizer.modifierFlags)
   }
   #endif
-  
+
   // Moshroom: a single tap keeps the TUI interactive without giving up the transcript model —
   // term_tapAt (term.js) dispatches it through generic terminal mechanisms only: an OSC 8 or
   // plain-text URL opens on the device, a program that asked for mouse events (DECSET 1000/…)
   // gets a standard click report at the cell, and a tap on the cursor row (the program's input
-  // line) opens the Moshkitor composer. A tap that lands mid-scroll is "stop the scroll", and a
-  // tap while a selection is up is "dismiss it" — neither may click, open, or compose.
+  // line) opens the Moshkitor composer. A tap that lands mid-scroll is "stop the scroll"; a tap
+  // the selection claims (a selection is up, or it is the second / third of a quick run) never
+  // clicks, opens or composes.
   @objc func _onTap(_ recognizer: UITapGestureRecognizer) {
     guard focused, recognizer.state == .ended else { return }
-    guard !hasSelection,
-          !_scrollView.isDecelerating, !_termScrollView.isDecelerating else { return }
+    guard !_scrollView.isDecelerating, !_termScrollView.isDecelerating else { return }
     let point = recognizer.location(in: recognizer.view)
+    if let selection = selection,
+       selection.tap(at: point, modifiers: recognizer.modifierFlags) == .handled {
+      return
+    }
     _wkWebView?.evaluateJavaScript("term_tapAt(\(point.x), \(point.y));") { [weak self] result, _ in
-      guard
-        let webView = self?._wkWebView,
-        let response = result as? [String: Any],
-        response["input"] as? Bool == true
-      else { return }
+      let response = result as? [String: Any]
+      let input = response?["input"] as? Bool == true
+      self?.selection?.tapDispatched(action: response?["action"] as? String ?? "none", input: input)
+      guard let webView = self?._wkWebView, input else { return }
       NotificationCenter.default.post(
         name: NSNotification.Name(MoshroomTerminalInputTapNotification), object: webView)
     }
@@ -382,21 +384,35 @@ let MoshroomTerminalTailingNotification = "MoshroomTerminalTailingNotification"
       userInfo: ["tailing": tailing])
   }
 
+  // Moshroom: long-press selects the smart word under the finger (a whole path, URL or flag, read
+  // from the row model, so it works in any TUI), and dragging on extends it word by word, scrolling
+  // at the edges. A swipe is a different gesture (it moves before the press matures) and still
+  // scrolls; once the press has matured the scroll pans may not start (see panMayBegin).
   @objc func _onLongPress(_ recognizer: UILongPressGestureRecognizer) {
-    guard focused, recognizer.state == .began else {
+    guard focused || recognizer.state != .began else {
       return
     }
-    // Moshroom: long-press selects the terminal word under the finger (rendered text, so it
-    // works for any TUI) and a single Copy item follows. A swipe is a different gesture and
-    // still scrolls — so this never fights the scroll.
-    let point = recognizer.location(in: recognizer.view)
-    _wkWebView?.evaluateJavaScript("term_selectWordAt(\(point.x), \(point.y));", completionHandler: nil)
+    if recognizer.state == .began {
+      // A scroll that had already started under the finger stops here.
+      _scrollView.panGestureRecognizer.dropTouches()
+      _termScrollView.panGestureRecognizer.dropTouches()
+    }
+    selection?.longPress(recognizer.state, at: recognizer.location(in: recognizer.view))
   }
 
 }
 
 extension WKWebViewGesturesInteraction: UIGestureRecognizerDelegate {
   func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+    return true
+  }
+
+  func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+    #if targetEnvironment(macCatalyst)
+    if gestureRecognizer === _mouseSelectRecognizer {
+      _mouseDownPoint = touch.location(in: gestureRecognizer.view)
+    }
+    #endif
     return true
   }
 }
@@ -474,6 +490,7 @@ extension WKWebViewGesturesInteraction: UIScrollViewDelegate {
   }
   
   func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+    selection?.scrollActivity(true)
     if scrollView == _termScrollView {
       if _termScrollView.panGestureRecognizer.numberOfTouches > 0 {
         _scrollPoint = _termScrollView.panGestureRecognizer.location(in: view)
@@ -485,6 +502,7 @@ extension WKWebViewGesturesInteraction: UIScrollViewDelegate {
   }
   
   func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
+    selection?.scrollActivity(false)
     if scrollView == _termScrollView {
       _termScrollView.recenterIfNeeded(force: true)
     }
@@ -494,6 +512,9 @@ extension WKWebViewGesturesInteraction: UIScrollViewDelegate {
   }
 
   func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
+    if !decelerate {
+      selection?.scrollActivity(false)
+    }
     if scrollView == _termScrollView {
       if !decelerate {
         _termScrollView.recenterIfNeeded(force: true)
@@ -583,6 +604,11 @@ extension WKWebViewGesturesInteraction: WKScriptMessageHandler {
       _mouseReportOn = msg["mouseReport"] as? Bool ?? false
       applicationCursor = msg["appCursor"] as? Bool ?? false
       _applyScrollMode()
+
+    // Moshroom: the page changed the selection on its own (output rewrote its rows, a trim, a screen
+    // switch, a scroll moved it). Geometry only, never text: see "Selection" in term.js.
+    case "selection":
+      selection?.pageDidPost(msg)
 
 
     default: break

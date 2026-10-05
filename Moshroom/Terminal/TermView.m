@@ -46,11 +46,13 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
 }
 
 
-@interface TermView () <WKScriptMessageHandler, WKUIDelegate, WKNavigationDelegate, UIGestureRecognizerDelegate, UIEditMenuInteractionDelegate>
+@interface TermView () <WKScriptMessageHandler, WKUIDelegate, WKNavigationDelegate, UIGestureRecognizerDelegate>
 @end
 
 @implementation TermView {
   WKWebViewGesturesInteraction *_gestureInteraction;
+  // Select-to-copy: gestures, handles, the copy pill and the clipboard (TerminalSelection.swift).
+  TerminalSelectionController *_selection;
   
   BOOL _jsIsBusy;
   dispatch_queue_t _jsQueue;
@@ -61,9 +63,6 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
   
   UIView *_coverView;
   UIView *_parentScrollView;
-
-  UIEditMenuInteraction *_editMenuIteraction;
-  NSTimer *_selectionMenuDebounceTimer;
 
   // The program's own terminal title (OSC 0/2), captured live from JS on every change and stored
   // here so the tab name survives even if WKWebView.title lags behind document.title. See -title.
@@ -94,7 +93,6 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
     return self;
   }
 
-  _selectionRect = CGRectZero;
   _layoutDebounceTimer = nil;
   _currentBounds = CGRectZero;
   _jsQueue = dispatch_queue_create(@"TermView.js".UTF8String, DISPATCH_QUEUE_SERIAL);
@@ -225,12 +223,6 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
   // non-opaque composites it over backgroundColor / scrollView.backgroundColor (both synced to the
   // terminal colour in setBackgroundColor:), so an unpainted area is always the theme background.
   _webView.opaque = NO;
-  // The long-press text selection highlight + its grab handles follow the view's tintColor — make
-  // them the Moshroom red so "select a word → Copy" reads clearly (a clear tint gave a black,
-  // handle-less selection). The blinking insertion caret is hidden separately (term.js applies
-  // caret-color:transparent 3×), so a red tint here does NOT bring a caret back — the terminal is
-  // read-only (you type in Moshkitor).
-  _webView.tintColor = [UIColor moshroomTint];
 
 #if DEBUG
   // Dev builds only: let Safari's Web Inspector attach to the terminal, and start the file-driven
@@ -241,13 +233,19 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
   [self _startDebugJSProbe];
 #endif
 
-  _editMenuIteraction = [[UIEditMenuInteraction alloc] initWithDelegate:self];
-  [_webView addInteraction:_editMenuIteraction];
-
    _gestureInteraction = [[WKWebViewGesturesInteraction alloc] initWithJsScrollerPath:@"t.scrollPort_.scroller_"];
   [_webView addInteraction:_gestureInteraction];
   
   [self addSubview:_webView];
+
+  // After the web view: the handles and the pill ride ABOVE it, in this view, so their touches
+  // never reach the web view's own recognizers.
+  _selection = [[TerminalSelectionController alloc] initWithWebView:_webView host:self];
+  _gestureInteraction.selection = _selection;
+  __weak typeof(self) weakSelf = self;
+  _selection.onSelectionStateChange = ^{
+    [weakSelf.device viewSelectionChanged];
+  };
 }
 
 - (void)didMoveToSuperview {
@@ -427,7 +425,22 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
 
 - (void)cleanSelection
 {
-  [_webView evaluateJavaScript:term_cleanSelection() completionHandler:nil];
+  [_selection clear];
+}
+
+- (BOOL)hasSelection
+{
+  return _selection.hasSelection;
+}
+
+- (CGRect)selectionRect
+{
+  return [_selection selectionRect];
+}
+
+- (TerminalSelectionController *)selectionController
+{
+  return _selection;
 }
 
 - (void)setCursorBlink:(BOOL)state
@@ -630,9 +643,7 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
   NSString *operation = sentData[@"op"];
   NSDictionary *data = sentData[@"data"] ?: @{};
 
-  if ([operation isEqualToString:@"selectionchange"]) {
-    [self _handleSelectionChange:data];
-  } else if ([operation isEqualToString:@"sigwinch"]) {
+  if ([operation isEqualToString:@"sigwinch"]) {
     struct winsize newWinSize = __winSizeFromJSON(data);
     _termUIState.rows = newWinSize.ws_row;
     _termUIState.cols = newWinSize.ws_col;
@@ -669,6 +680,8 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
     }
   } else if ([operation isEqualToString:@"openLink"]) {
     [self _openLink:data[@"url"]];
+  } else if ([operation isEqualToString:@"log"]) {
+    [MoshLogBridge log:data[@"area"] ?: @"terminal" message:data[@"message"] ?: @""];
   }
 }
 
@@ -699,6 +712,8 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
 - (void)_onTerminalReady:(NSDictionary *)data
 {
   [_webView ready];
+  // A (re)built page holds no selection: drop whatever native still showed for the old one.
+  [_selection pageDidReload];
   NSArray *bgColor = data[@"bgColor"];
   if (bgColor && bgColor.count == 3) {
     UIColor *color = [UIColor colorWithRed:[bgColor[0] floatValue] / 255.0f
@@ -767,124 +782,33 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
   return _gestureInteraction.focused;
 }
 
-- (void)_handleSelectionChange:(NSDictionary *)data
-{
-  _selectedText = data[@"text"];
-  _hasSelection = _selectedText.length > 0;
-  _gestureInteraction.hasSelection = _hasSelection;
-
-  [_device viewSelectionChanged];
-
-  [_selectionMenuDebounceTimer invalidate];
-  _selectionMenuDebounceTimer = nil;
-
-  if (!_hasSelection) {
-    [_editMenuIteraction dismissMenu];
-    // Selection is gone — give first responder back so hardware keys route normally again.
-    [_webView deactivateSelectionUI];
-    return;
-  }
-
-  // Activate the native selection UI (red highlight + grab handles on iOS) — without this the
-  // selection paints as WebKit's deactivated look: a black, handle-less box. On Mac Catalyst this
-  // is deliberately a no-op (the page paints the red itself). See activateSelectionUI.
-  [_webView activateSelectionUI];
-
-  _selectionRect = CGRectFromString(data[@"rect"]);
-
-  // Present the edit menu anchored at the selection — the delegate supplies the single Copy item.
-  // Debounced: a mouse drag / handle drag fires selectionchange continuously, and the menu must
-  // appear once the selection settles, not flicker along the way.
-  __weak TermView *weakSelf = self;
-  _selectionMenuDebounceTimer =
-    [NSTimer scheduledTimerWithTimeInterval:0.35 repeats:NO block:^(NSTimer *timer) {
-      TermView *sself = weakSelf;
-      if (!sself || !sself->_hasSelection) {
-        return;
-      }
-      UIEditMenuConfiguration *cfg =
-        [UIEditMenuConfiguration configurationWithIdentifier:nil
-                                                 sourcePoint:CGPointMake(CGRectGetMidX(sself->_selectionRect),
-                                                                         CGRectGetMinY(sself->_selectionRect))];
-      [sself->_editMenuIteraction presentEditMenuWithConfiguration:cfg];
-    }];
-}
-
-- (void)modifySideOfSelection
-{
-  [_webView evaluateJavaScript:term_modifySideSelection() completionHandler:nil];
-}
-
-- (void)modifySelectionInDirection:(NSString *)direction granularity:(NSString *)granularity
-{
-  [_webView evaluateJavaScript:term_modifySelection(direction, granularity) completionHandler:nil];
-}
-
 - (void)apiResponse:(NSString *)name response:(NSString *)response {
   [_webView evaluateJavaScript:term_apiResponse(name, response) completionHandler:nil];
 }
 
 - (void)pasteSelection:(id)sender
 {
-  NSString *str = _selectedText;
-  if (str) {
-    [_webView evaluateJavaScript:term_paste(str) completionHandler:nil];
-  }
-  [self cleanSelection];
+  __weak typeof(self) weakSelf = self;
+  [_selection fetchTextWithRaw:NO oneLine:NO completion:^(NSString *str) {
+    TermView *sself = weakSelf;
+    if (str) {
+      [sself->_webView evaluateJavaScript:term_paste(str) completionHandler:nil];
+    }
+    [sself cleanSelection];
+  }];
 }
 
-// Sanitize terminal selection for clipboard
-// hterm selection may include row-padding spaces at EOL; those should not leak
-// into the system clipboard as trailing whitespace.
-static NSString * _sanitizeTextForClipboard(NSString *text) {
-  if (!text || text.length == 0) {
-    return @"";
-  }
-
-  // Replace \r\n with \n
-  NSString *result = [text stringByReplacingOccurrencesOfString:@"\r\n" withString:@"\n"];
-
-  // Remove trailing spaces/tabs before newlines
-  NSRegularExpression *trailingEOL = [NSRegularExpression
-    regularExpressionWithPattern:@"[ \\t]+\\n"
-    options:0
-    error:nil];
-  result = [trailingEOL stringByReplacingMatchesInString:result
-                                                  options:0
-                                                    range:NSMakeRange(0, result.length)
-                                             withTemplate:@"\n"];
-
-  // Remove trailing spaces/tabs at end of text
-  NSRegularExpression *trailingEnd = [NSRegularExpression
-    regularExpressionWithPattern:@"[ \\t]+$"
-    options:0
-    error:nil];
-  result = [trailingEnd stringByReplacingMatchesInString:result
-                                                  options:0
-                                                    range:NSMakeRange(0, result.length)
-                                             withTemplate:@""];
-
-  return result;
-}
-
+// Cmd+C (and the selection's own Copy): the page builds the text from the row model, already
+// trimmed of row padding and with wrapped rows joined (see term_selText).
 - (void)copy:(id)sender
 {
-  NSString *text = _selectedText;
-  if (text) {
-    [UIPasteboard generalPasteboard].string = _sanitizeTextForClipboard(text);
-  }
-  [_editMenuIteraction dismissMenu];
-  [self cleanSelection];
+  [_selection copyWithRaw:NO];
 }
 
+// Cmd+Shift+C: the same, keeping trailing blanks.
 - (void)copyRaw:(id)sender
 {
-  NSString *text = _selectedText;
-  if (text) {
-    [UIPasteboard generalPasteboard].string = text;
-  }
-  [_editMenuIteraction dismissMenu];
-  [self cleanSelection];
+  [_selection copyWithRaw:YES];
 }
 
 - (void)paste:(id)sender
@@ -1115,23 +1039,6 @@ static NSString * _sanitizeTextForClipboard(NSString *text) {
   }
 }
 
--(void)_lockLayout {
-  if (self.termUIState) {
-    self.termUIState.layoutLocked = true;
-    self.termUIState.layoutLockedFrame = [self webViewFrame];
-  }
-  
-  // Update local state
-  self.layoutLockedFrame = [self webViewFrame];
-  
-  // Update constraint manager
-  if (self.constraintManager) {
-    [self.constraintManager setLayoutLocked:YES withFrame:[self webViewFrame]];
-  }
-  
-  self.layoutLocked = true;
-}
-
 -(void)_unlockLayout {
   if (self.termUIState) {
     self.termUIState.layoutLocked = false;
@@ -1148,78 +1055,6 @@ static NSString * _sanitizeTextForClipboard(NSString *text) {
   
   // Trigger layout update
   [self setNeedsLayout];
-}
-
-@end
-
-
-@implementation TermView (UIEditMenuInteractionDelegate)
-
-- (UIMenu *)editMenuInteraction:(UIEditMenuInteraction *)interaction menuForConfiguration:(UIEditMenuConfiguration *)configuration suggestedActions:(NSArray<UIMenuElement *> *)suggestedActions  API_AVAILABLE(ios(16.0)){
-
-  NSMutableArray *actions = [[NSMutableArray alloc] init];
-
-  // Moshroom: a terminal selection only ever needs Copy — that's the whole menu, nothing else.
-  if (_hasSelection) {
-    return [UIMenu menuWithChildren:@[
-      [UICommand commandWithTitle:@"Copy" image:[UIImage systemImageNamed:@"doc.on.doc"] action:@selector(copy:) propertyList:nil]
-    ]];
-  } else {
-    NSMutableArray *layoutActions = [[NSMutableArray alloc] init];
-
-    if ([self _isLayoutLocked]) {
-      [layoutActions addObject:[UICommand commandWithTitle:@"Unlock" image: [UIImage systemImageNamed:@"lock.slash"]
-                                                    action:@selector(_unlockLayout) propertyList:nil]];
-    } else {
-      [layoutActions addObject:[UICommand commandWithTitle:@"Lock" image: [UIImage systemImageNamed:@"lock"]
-                                                    action:@selector(_lockLayout) propertyList:nil]];
-    }
-    
-    UIMenu *layoutMenu = [UIMenu menuWithTitle:@"Layout" image:[UIImage systemImageNamed:@"squareshape.squareshape.dashed"] identifier:nil options:UIMenuOptionsSingleSelection children:layoutActions];
-    
-    [actions addObject:layoutMenu];
-  }
-  
-  
-  // Copy useful commands, skip cut: and replace paste: with pasteSelection:
-  for (UIMenuElement *elem in suggestedActions) {
-    if ([elem isKindOfClass:[UIMenu class]]) {
-      UIMenu *menu = (UIMenu *)elem;
-      if ([menu.identifier isEqual:UIMenuStandardEdit]) {
-        NSMutableArray *editItems = [[NSMutableArray alloc] init];
-        for (UIMenuElement *editElem in menu.children) {
-          if ([editElem isKindOfClass:[UICommand class]]) {
-
-            UICommand *cmd = (UICommand *)editElem;
-            if (cmd.action == @selector(cut:)) {
-              continue;
-            } else if (cmd.action == @selector(paste:) && _hasSelection) {
-              [editItems addObject:[UICommand commandWithTitle:@"Paste" image:[UIImage systemImageNamed:@"doc.on.clipboard"] action:@selector(pasteSelection:) propertyList:nil]];
-            } else if (cmd.action == @selector(copy:) && _hasSelection) {
-              [editItems addObject:editElem];
-              [editItems addObject:[UICommand commandWithTitle:@"Copy Raw" image:[UIImage systemImageNamed:@"doc.on.doc.fill"] action:@selector(copyRaw:) propertyList:nil]];
-            } else {
-              [editItems addObject:editElem];
-            }
-          }
-        }
-        UIMenu *newMenu = [UIMenu menuWithTitle:menu.title image:menu.image identifier:menu.identifier options:menu.options children:editItems];
-        newMenu.preferredElementSize = menu.preferredElementSize;
-        [actions insertObject: newMenu atIndex:0];
-        continue;
-      }
-      [actions addObject:elem];
-    }
-  }
-  
-  
-  
-  return [UIMenu menuWithChildren:actions];
-}
-
-
-- (bool)_isLayoutLocked {
-  return self.layoutLocked;
 }
 
 @end

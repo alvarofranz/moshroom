@@ -118,21 +118,6 @@ NSString *term_blendPaletteBlack(void)
   return @"_moshroomBlendPaletteBlack();";
 }
 
-NSString *term_cleanSelection(void)
-{
-  return @"term_cleanSelection();";
-}
-
-NSString *term_modifySelection(NSString *direction, NSString *granularity)
-{
-  return [NSString stringWithFormat:@"term_modifySelection(%@, %@);", _encodeString(direction), _encodeString(granularity)];
-}
-
-NSString *term_modifySideSelection(void)
-{
-  return @"term_modifySideSelection();";
-}
-
 NSString *term_processKB(NSString *str) {
   return  [NSString stringWithFormat:@"term_processKB(%@);", _encodeString(str)];
 }

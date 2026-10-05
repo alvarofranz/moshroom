@@ -36,7 +36,6 @@ hterm.Terminal.prototype.copyStringToClipboard = function(content) {
     setTimeout(this.showOverlay.bind(this, hterm.notifyCopyMessage, 500), 200);
   }
 
-  document.getSelection().removeAllRanges();
   _postMessage('copy', {content});
 };
 
@@ -57,135 +56,1072 @@ hterm.openUrl = function(url) {
   _postMessage('openLink', {url});
 };
 
-// ---- Selection painter (both platforms) ------------------------------------------------------
-// The selection highlight is OURS: translucent red rects derived from the live Range's client
-// geometry, in a fixed, non-interactive overlay. On the Mac it is the ONLY red (WebKit's own
-// selection painting is unreliable there — its activity-state latches — so ::selection is
-// transparent and this painter is the single source of truth). On iOS it rides ON TOP of the
-// native selection (which stays: the grab handles and their red tint are UIKit chrome above the
-// page), giving both platforms the same strong red. Repainted on every selectionchange (fires
-// per step of a live drag / handle drag) and on scroll/resize.
-var _moshroomSelOverlay = null;
+// ---- Selection (both platforms) --------------------------------------------------------------
+// Select-to-copy runs on hterm's ROW MODEL, never on a WebKit selection. The terminal is
+// user-select:none everywhere (see onTerminalReady), so WebKit never owns a selection, never paints
+// its own tint, and never loses one when hterm re-renders a row. Instead:
+//
+//   - A selection is two endpoints, each a (row record, column) pair in the active buffer. A row
+//     record is the object hterm keeps per row; its index in `scrollbackRows_ ++ screen_.rowsArray`
+//     is the absolute row. Records survive scrolling, trimming and scroll-region moves, so the
+//     selection follows its text instead of a DOM node that React may replace at any frame.
+//   - The highlight is painted by us from the cell grid (one flat rect per row run, never two rects
+//     over one pixel), so it is ONE shade whatever is underneath.
+//   - The text comes from the records: a wrapped row (hterm's overflow flag) joins the next with no
+//     newline, so a long command or URL copies as the one line it is.
+//   - Native (TerminalSelection.swift) owns the gestures, the handles, the copy pill and the
+//     clipboard. It only ever sees web-view points and absolute rows: every call below returns the
+//     geometry object synchronously, and page-side changes (output rewriting the rows, a trim, a
+//     screen switch, a scroll) are posted as {op: 'selection'} on the wkScroller handler. Text never
+//     travels until native asks for it (term_selText).
+//
+// Every read of hterm's private row shape (records `o`, `v`, `nodes`; nodes `txt`, `wcw`, `attrs`)
+// goes through the few helpers right below, and _mshSelfTest checks that shape once the terminal is
+// up: if a future hterm changes it, selection switches itself off with a log line rather than
+// copying garbage.
 
-// A Range over terminal rows reports OVERLAPPING client rects: for each selected row there is the
-// full row box AND the narrower box around the glyphs inside it. Painting every rect composited the
-// translucent red twice wherever they overlapped, so the highlight came out in two shades — darker
-// over the text, lighter over the empty tail of the line. Keep only the rects that no other rect
-// already covers (equal duplicates keep the first), so every pixel of a selection gets exactly one
-// coat and the red is uniform.
-function _moshroomDedupeRects(rects) {
-  var out = [];
-  for (var i = 0; i < rects.length; i++) {
-    var r = rects[i];
-    if (r.width <= 0 || r.height <= 0) {
+var _mshSel = null;              // the live selection, see _mshNew
+var _mshSelEnabled = false;      // set by _mshSelfTest
+var _mshGeomSeq = 0;             // stamps every geometry, so native can drop a stale one
+var _mshOverlay = null;          // the highlight layer
+var _mshValidateQueued = false;
+var _mshPostQueued = false;
+var _mshLastPostKey = '';
+var _mshSelColor = 'rgba(255,82,90,0.45)';
+var _mshReanchorMinChars = 3;    // a re-anchor needs at least this much non-blank text to trust
+
+// -- Row shape (the only place that knows hterm's field names) --
+
+function _mshRowCount() {
+  return t.getRowCount();
+}
+
+function _mshRowAt(R) {
+  return R >= 0 && R < _mshRowCount() ? t.getRowNode(R) : null;
+}
+
+function _mshRowWraps(rec) {
+  return !!(rec && rec.o);
+}
+
+// One entry per COLUMN: {s: what is drawn there, w: 1 or 2}. A wide character's second column is a
+// continuation entry {s: '', w: 0}; zero-width code points (combining marks, variation selectors)
+// join the character before them, so a grapheme is never split.
+function _mshCells(rec) {
+  var cells = [];
+  var nodes = rec && rec.nodes;
+  if (!nodes) {
+    return cells;
+  }
+  for (var i = 0; i < nodes.length; i++) {
+    var n = nodes[i];
+    var txt = n.txt || '';
+    if (!txt) {
       continue;
     }
-    var covered = false;
-    for (var j = 0; j < rects.length && !covered; j++) {
-      if (j === i) {
-        continue;
+    if (n.attrs && n.attrs.asciiNode) {
+      for (var j = 0; j < txt.length; j++) {
+        cells.push({s: txt[j], w: 1});
       }
-      var o = rects[j];
-      if (o.width <= 0 || o.height <= 0) {
-        continue;
-      }
-      var contains = o.left <= r.left + 1 && o.top <= r.top + 1 &&
-                     o.right >= r.right - 1 && o.bottom >= r.bottom - 1;
-      if (!contains) {
-        continue;
-      }
-      var areaO = o.width * o.height;
-      var areaR = r.width * r.height;
-      // Strictly bigger wins; between identical rects the earlier index survives.
-      covered = areaO > areaR || (areaO === areaR && j < i);
+      continue;
     }
-    if (!covered) {
-      out.push(r);
+    for (var k = 0; k < txt.length;) {
+      var cp = txt.codePointAt(k);
+      var ch = String.fromCodePoint(cp);
+      k += ch.length;
+      var w = lib.wc.charWidth(cp);
+      if (w === 0 && cells.length) {
+        var last = cells.length - 1;
+        if (cells[last].w === 0 && last > 0) {
+          last--;
+        }
+        cells[last].s += ch;
+        continue;
+      }
+      if (w === 2) {
+        cells.push({s: ch, w: 2});
+        cells.push({s: '', w: 0});
+      } else {
+        cells.push({s: ch, w: 1});
+      }
     }
+  }
+  return cells;
+}
+
+function _mshCellsText(cells, c0, c1) {
+  var out = '';
+  var end = Math.min(c1, cells.length);
+  for (var c = Math.max(c0, 0); c < end; c++) {
+    out += cells[c].s;
   }
   return out;
 }
 
-// A selection that spans more than one row highlights every row but the last one all the way to the
-// END OF THE LINE — the convention in every browser and terminal, and also exactly what the platform's
-// own selection layer underneath paints (that layer follows the web view's red tintColor and shows
-// through at a low alpha). The Range's rect for the FIRST row stops where that row's text stops, so
-// without this the tail of the first row was left with only the faint platform tint: the same
-// selection appeared in two different shades. Widen every row except the bottom-most to the row width.
-function _moshroomFillToLineEnd(rects) {
-  if (rects.length < 2) {
-    return rects;
-  }
-  var rowWidth = 0;
-  var bottomTop = -Infinity;
-  for (var i = 0; i < rects.length; i++) {
-    rowWidth = Math.max(rowWidth, rects[i].right);
-    bottomTop = Math.max(bottomTop, rects[i].top);
-  }
-  var screen = t && t.scrollPort_ ? t.scrollPort_.screen_ : null;
-  if (screen && screen.clientWidth > rowWidth) {
-    rowWidth = screen.clientWidth;
-  }
-  var out = [];
-  for (var j = 0; j < rects.length; j++) {
-    var r = rects[j];
-    if (r.top >= bottomTop - 1 || r.right >= rowWidth - 1) {
-      out.push(r);
-      continue;
+function _mshSelfTest() {
+  try {
+    var ok = typeof t.getRowNode === 'function' && typeof t.getRowCount === 'function' &&
+      Array.isArray(t.scrollbackRows_) && t.screen_ && Array.isArray(t.screen_.rowsArray) &&
+      t.screen_.rowsArray.length > 0 && lib && lib.wc && typeof lib.wc.charWidth === 'function' &&
+      t.scrollPort_ && t.scrollPort_.rowNodes_ && t.scrollPort_.characterSize;
+    if (ok) {
+      var rec = t.screen_.rowsArray[0];
+      ok = rec && 'o' in rec && 'v' in rec && Array.isArray(rec.nodes) && rec.nodes.length > 0 &&
+        typeof rec.nodes[0].txt === 'string' && typeof rec.nodes[0].wcw === 'number' &&
+        !!rec.nodes[0].attrs;
     }
-    out.push({left: r.left, top: r.top, width: rowWidth - r.left, height: r.height});
+    if (ok) {
+      // The width model agrees with hterm's own on a wide character.
+      ok = lib.wc.charWidth('中'.codePointAt(0)) === 2 && lib.wc.charWidth(0x61) === 1;
+    }
+    _mshSelEnabled = !!ok;
+  } catch (e) {
+    _mshSelEnabled = false;
   }
-  return out;
+  if (!_mshSelEnabled) {
+    _postMessage('log', {area: 'selection', message: 'row model self-test failed, selection disabled'});
+  }
 }
 
-function _moshroomPaintSelection() {
-  if (!_moshroomSelOverlay) {
-    _moshroomSelOverlay = document.createElement('div');
-    _moshroomSelOverlay.style.cssText =
-      'position:fixed;inset:0;pointer-events:none;z-index:2147483646;';
-    (document.body || document.documentElement).appendChild(_moshroomSelOverlay);
+// -- Geometry (web-view points, the space the native gestures use) --
+
+function _mshGeom() {
+  var sp = t.scrollPort_;
+  var ch = sp.characterSize.height;
+  var cw = sp.characterSize.width;
+  var view = sp.screen_.getBoundingClientRect();
+  // The row container carries the sub-row transform, so its rect already includes the shift.
+  var rows = sp.rowNodes_.getBoundingClientRect();
+  var fold = sp.topFold_ ? sp.topFold_.offsetHeight : 0;
+  var top = sp.getTopRowIndex();
+  return {
+    ch: ch,
+    cw: cw,
+    left: rows.left,
+    originTop: rows.top + fold - top * ch,   // client y of absolute row 0
+    top: top,
+    visible: sp.visibleRowCount,
+    cols: t.screenSize.width,
+    view: view,
+  };
+}
+
+// The absolute row under a client y, clamped to the buffer.
+function _mshRowAtY(y, g) {
+  var R = Math.floor((y - g.originTop) / g.ch);
+  var count = _mshRowCount();
+  return Math.max(0, Math.min(R, count - 1));
+}
+
+// The boundary between two cells nearest to x: what a drag or a handle moves. Never inside a wide
+// character.
+function _mshBoundaryAt(x, R, g) {
+  var f = (x - g.left) / g.cw;
+  var col = Math.max(0, Math.min(Math.round(f), g.cols));
+  var cells = _mshCells(_mshRowAt(R));
+  if (col < cells.length && cells[col].w === 0) {
+    col = (f - (col - 1)) < ((col + 1) - f) ? col - 1 : col + 1;
   }
-  _moshroomSelOverlay.textContent = '';
-  var sel = document.getSelection();
-  if (!sel || sel.rangeCount === 0 || sel.isCollapsed) {
+  return col;
+}
+
+// The cell under x (for word and URL lookups): its column, stepped back onto a wide character's
+// first column.
+function _mshCellAt(x, R, g) {
+  var col = Math.max(0, Math.min(Math.floor((x - g.left) / g.cw), g.cols - 1));
+  var cells = _mshCells(_mshRowAt(R));
+  if (col > 0 && col < cells.length && cells[col].w === 0) {
+    col--;
+  }
+  return col;
+}
+
+// -- Positions --
+
+function _mshPos(R, col) {
+  return {rec: _mshRowAt(R), col: col, R: R};
+}
+
+// Where a position's record is now. Records only move (scrolling, a trim, a scroll region); one that
+// cannot be found was trimmed away or reused, and the caller drops what depended on it.
+function _mshIndexOf(p) {
+  if (!p || !p.rec) {
+    return -1;
+  }
+  if (t.getRowNode(p.R) === p.rec) {
+    return p.R;
+  }
+  var sb = t.scrollbackRows_;
+  var i = t.screen_.rowsArray.indexOf(p.rec);
+  if (i >= 0) {
+    return (p.R = sb.length + i);
+  }
+  i = sb.indexOf(p.rec);
+  return i >= 0 ? (p.R = i) : -1;
+}
+
+function _mshCmp(R1, c1, R2, c2) {
+  return R1 !== R2 ? R1 - R2 : c1 - c2;
+}
+
+// -- Units: what one press selects at a given granularity --
+
+// The logical line through row R: the rows hterm wrapped into one, as cells with their row and
+// column, plus the joined string and each cell's offset in it.
+function _mshLogicalLine(R) {
+  var count = _mshRowCount();
+  var first = R;
+  while (first > 0 && R - first < 200 && _mshRowWraps(_mshRowAt(first - 1))) {
+    first--;
+  }
+  var last = R;
+  while (last < count - 1 && last - R < 200 && _mshRowWraps(_mshRowAt(last))) {
+    last++;
+  }
+  var cells = [];
+  var str = '';
+  for (var r = first; r <= last; r++) {
+    var rc = _mshCells(_mshRowAt(r));
+    for (var c = 0; c < rc.length; c++) {
+      if (rc[c].w === 0) {
+        continue;
+      }
+      cells.push({s: rc[c].s, w: rc[c].w, R: r, col: c, off: str.length});
+      str += rc[c].s;
+    }
+  }
+  return {first: first, last: last, cells: cells, str: str};
+}
+
+function _mshLineCellIndex(line, R, col) {
+  for (var i = 0; i < line.cells.length; i++) {
+    var cell = line.cells[i];
+    if (cell.R === R && col >= cell.col && col < cell.col + cell.w) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+function _mshIsWordChar(s) {
+  if (!s || /^\s+$/.test(s) || s === ' ') {
+    return false;
+  }
+  var cp = s.codePointAt(0);
+  if (cp >= 0x2500 && cp <= 0x257f) {
+    return false;            // box drawing: TUI borders and gutters
+  }
+  return '"\'`()[]{}<>|'.indexOf(s[0]) < 0;
+}
+
+var _moshroomUrlRegex = /(?:[a-z][a-z0-9+.-]*:\/\/|www\.|mailto:)[^\s\[\](){}<>"'`]+/gi;
+
+// A URL in the logical line that contains cell index `idx`: {from, to} cell indexes (to exclusive)
+// and the cleaned URL, or null.
+function _mshUrlInLine(line, idx) {
+  if (idx < 0) {
+    return null;
+  }
+  var off = line.cells[idx].off;
+  _moshroomUrlRegex.lastIndex = 0;
+  var m;
+  while ((m = _moshroomUrlRegex.exec(line.str))) {
+    if (off < m.index || off >= m.index + m[0].length) {
+      continue;
+    }
+    // Trailing punctuation belongs to the prose, not the link.
+    var url = m[0].replace(/[.,;:!?'")\]}>]+$/, '');
+    var endOff = m.index + url.length;
+    if (off >= endOff) {
+      return null;
+    }
+    var from = idx, to = idx + 1;
+    while (from > 0 && line.cells[from - 1].off >= m.index) {
+      from--;
+    }
+    while (to < line.cells.length && line.cells[to].off < endOff) {
+      to++;
+    }
+    return {from: from, to: to, url: url};
+  }
+  return null;
+}
+
+// The smart word under (R, col), as cell indexes in its logical line: a URL containing the point
+// wins (even across wrapped rows); otherwise the run of characters that are not whitespace, quotes,
+// brackets, pipes or box drawing, minus trailing sentence punctuation. So /srv/app/foo.swift:12,
+// --flag=value and user@host come out whole.
+function _mshWordAt(R, col) {
+  var line = _mshLogicalLine(R);
+  var idx = _mshLineCellIndex(line, R, col);
+  if (idx < 0 || !_mshIsWordChar(line.cells[idx].s)) {
+    return null;
+  }
+  var url = _mshUrlInLine(line, idx);
+  if (url) {
+    return {line: line, from: url.from, to: url.to};
+  }
+  var from = idx, to = idx + 1;
+  while (from > 0 && _mshIsWordChar(line.cells[from - 1].s)) {
+    from--;
+  }
+  while (to < line.cells.length && _mshIsWordChar(line.cells[to].s)) {
+    to++;
+  }
+  while (to - 1 > idx && /^[.,;:!?]$/.test(line.cells[to - 1].s)) {
+    to--;
+  }
+  return {line: line, from: from, to: to};
+}
+
+function _mshSpanFromLine(line, from, to) {
+  var a = line.cells[from];
+  var b = line.cells[to - 1];
+  return {sR: a.R, sC: a.col, eR: b.R, eC: b.col + b.w};
+}
+
+// The whole logical line through R, without its surrounding blanks.
+function _mshLineSpan(R) {
+  var line = _mshLogicalLine(R);
+  var from = 0, to = line.cells.length;
+  while (from < to && !/\S/.test(line.cells[from].s)) {
+    from++;
+  }
+  while (to > from && !/\S/.test(line.cells[to - 1].s)) {
+    to--;
+  }
+  return from < to ? _mshSpanFromLine(line, from, to) : null;
+}
+
+// The unit at (x, y) for a granularity, as {sR, sC, eR, eC}. A word press on blank space falls back
+// to the boundary there, which is what lets a word drag cross the gaps between words.
+function _mshUnitAt(x, y, gran, g) {
+  var R = _mshRowAtY(y, g);
+  if (gran === 'word') {
+    var w = _mshWordAt(R, _mshCellAt(x, R, g));
+    if (w) {
+      return _mshSpanFromLine(w.line, w.from, w.to);
+    }
+  } else if (gran === 'line') {
+    var span = _mshLineSpan(R);
+    if (span) {
+      return span;
+    }
+    var line = _mshLogicalLine(R);
+    return {sR: line.first, sC: 0, eR: line.first, eC: 0};
+  }
+  var col = _mshBoundaryAt(x, R, g);
+  return {sR: R, sC: col, eR: R, eC: col};
+}
+
+// -- The selection --
+
+function _mshNew(unit, gran, mode) {
+  _mshSel = {
+    primary: t.isPrimaryScreen(),
+    cols: t.screenSize.width,
+    mode: mode || 'linear',
+    gran: gran,
+    state: 'active',
+    anc: {s: _mshPos(unit.sR, unit.sC), e: _mshPos(unit.eR, unit.eC)},
+    s: _mshPos(unit.sR, unit.sC),
+    e: _mshPos(unit.eR, unit.eC),
+    snap: null,
+    snapDirty: true,
+  };
+  return _mshSel;
+}
+
+// Moves the focus: the selection runs from the anchor unit to the focus unit, keeping the whole
+// anchor unit selected whichever way the focus went (a word drag keeps its first word).
+function _mshFocus(unit) {
+  var sel = _mshSel;
+  var aS = _mshIndexOf(sel.anc.s), aE = _mshIndexOf(sel.anc.e);
+  if (aS < 0 || aE < 0) {
+    return false;
+  }
+  if (sel.mode === 'rect') {
+    var r0 = Math.min(aS, unit.sR), r1 = Math.max(aS, unit.sR);
+    var c0 = Math.min(sel.anc.s.col, unit.sC), c1 = Math.max(sel.anc.s.col, unit.sC);
+    sel.s = _mshPos(r0, c0);
+    sel.e = _mshPos(r1, c1);
+  } else if (_mshCmp(unit.sR, unit.sC, aS, sel.anc.s.col) < 0) {
+    sel.s = _mshPos(unit.sR, unit.sC);
+    sel.e = _mshPos(aE, sel.anc.e.col);
+  } else {
+    sel.s = _mshPos(aS, sel.anc.s.col);
+    sel.e = _mshCmp(unit.eR, unit.eC, aE, sel.anc.e.col) > 0
+      ? _mshPos(unit.eR, unit.eC)
+      : _mshPos(aE, sel.anc.e.col);
+  }
+  sel.snapDirty = true;
+  return true;
+}
+
+function _mshIsEmpty(sel) {
+  if (!sel) {
+    return true;
+  }
+  var sR = _mshIndexOf(sel.s), eR = _mshIndexOf(sel.e);
+  if (sR < 0 || eR < 0) {
+    return true;
+  }
+  if (sel.mode === 'rect') {
+    return sel.s.col === sel.e.col;
+  }
+  return _mshCmp(sR, sel.s.col, eR, sel.e.col) >= 0;
+}
+
+// The selected columns of the i-th selected row (of n): [c0, c1).
+function _mshRowRange(sel, i, n) {
+  if (sel.mode === 'rect') {
+    return [sel.s.col, sel.e.col];
+  }
+  return [i === 0 ? sel.s.col : 0, i === n - 1 ? sel.e.col : Infinity];
+}
+
+// The text of each selected row, kept so output that rewrites the rows can be detected, the
+// selection re-found if the text only moved, and copied as the user saw it if it did not survive.
+function _mshTakeSnapshot() {
+  var sel = _mshSel;
+  sel.snapDirty = false;
+  sel.snap = null;
+  var sR = _mshIndexOf(sel.s), eR = _mshIndexOf(sel.e);
+  if (sR < 0 || eR < 0 || eR < sR) {
     return;
   }
-  var rects = _moshroomFillToLineEnd(_moshroomDedupeRects(sel.getRangeAt(0).getClientRects()));
-  for (var i = 0; i < rects.length; i++) {
-    var r = rects[i];
-    if (r.width <= 0 || r.height <= 0) {
-      continue;
-    }
-    var d = document.createElement('div');
-    d.style.cssText = 'position:fixed;background:rgba(255,82,90,0.45);' +
-      'left:' + r.left + 'px;top:' + r.top + 'px;width:' + r.width + 'px;height:' + r.height + 'px;';
-    _moshroomSelOverlay.appendChild(d);
+  var n = eR - sR + 1;
+  var snap = [];
+  for (var i = 0; i < n; i++) {
+    var rec = t.getRowNode(sR + i);
+    var range = _mshRowRange(sel, i, n);
+    snap.push({rec: rec, txt: _mshCellsText(_mshCells(rec), range[0], range[1]), o: _mshRowWraps(rec)});
+  }
+  sel.snap = snap;
+}
+
+function _mshSnapshotIfNeeded() {
+  if (_mshSel && _mshSel.state === 'active' && _mshSel.snapDirty) {
+    _mshTakeSnapshot();
   }
 }
 
-document.addEventListener('scroll', _moshroomPaintSelection, true);
-window.addEventListener('resize', _moshroomPaintSelection);
+// -- Text --
 
-document.addEventListener('selectionchange', function() {
-  var current = term_getCurrentSelection();
-  // Selection gone (copied, cleaned, or the TUI redrew the rows under it) — drop the
-  // selectability override so the terminal is back to its scroll-not-select default.
-  if (!current.text) {
-    _moshroomSetSelecting(false);
-  }
-  _moshroomPaintSelection();
-  _postMessage('selectionchange', current);
-});
+var _mshGutterRegex = /^[─-╿|]$/;
 
-// A double/triple-click on a BLANK region makes WebCore select the whole whitespace run — a huge
-// ghost rectangle over empty rows. Kill exactly that after the click settles (a drag's mouseup
-// arrives with detail 1 and single clicks carry no selection, so neither is touched).
-document.addEventListener('mouseup', function(e) {
-  if (e.detail >= 2) {
-    var sel = document.getSelection();
-    if (sel && sel.toString() && !sel.toString().trim()) {
-      sel.removeAllRanges();
+// rows: [{txt, o}] in order. linear: a wrapped row joins the next with no newline and keeps its
+// trailing blanks (the line continues there); any other row loses its trailing blanks (unless raw)
+// and ends with a newline.
+function _mshJoinRows(rows, mode, raw) {
+  var out = '';
+  for (var i = 0; i < rows.length; i++) {
+    var txt = rows[i].txt;
+    var last = i === rows.length - 1;
+    if (mode !== 'rect' && rows[i].o && !last) {
+      out += txt;
+      continue;
     }
+    out += raw ? txt : txt.replace(/\s+$/, '');
+    if (!last) {
+      out += '\n';
+    }
+  }
+  return out;
+}
+
+// "One line": the selection as a single line, for pasting a wrapped command or a paragraph a TUI
+// broke into rows. Rows join with one space (wrapped rows with none), runs of blanks collapse, and a
+// box-drawing gutter that every row carries at the same column (a TUI's border, a diff's bar) is
+// dropped on either side.
+function _mshOneLine(rows) {
+  var txts = [];
+  var i;
+  for (i = 0; i < rows.length; i++) {
+    txts.push(rows[i].txt);
+  }
+  if (rows.length > 1) {
+    txts = _mshStripGutter(txts, false);
+    txts = _mshStripGutter(txts, true);
+  }
+  var out = '';
+  for (i = 0; i < txts.length; i++) {
+    out += txts[i];
+    if (i < txts.length - 1 && !rows[i].o) {
+      out += ' ';
+    }
+  }
+  return out.replace(/\s+/g, ' ').trim();
+}
+
+function _mshStripGutter(txts, right) {
+  var at = -1;
+  for (var i = 0; i < txts.length; i++) {
+    var s = txts[i];
+    if (!/\S/.test(s)) {
+      continue;
+    }
+    var k = right ? s.replace(/\s+$/, '').length - 1 : s.search(/\S/);
+    if (!_mshGutterRegex.test(s[k]) || (at >= 0 && k !== at)) {
+      return txts;
+    }
+    at = k;
+  }
+  if (at < 0) {
+    return txts;
+  }
+  return txts.map(function(s) {
+    if (!/\S/.test(s)) {
+      return s;
+    }
+    return right ? s.slice(0, at) : s.slice(at + 1);
+  });
+}
+
+// The selected rows as [{txt, o}]: live from the records, or the snapshot once the text is gone.
+function _mshRowsForText(sel) {
+  if (sel.state === 'clip') {
+    return sel.snap || [];
+  }
+  _mshSnapshotIfNeeded();
+  return sel.snap || [];
+}
+
+// -- Painting --
+
+function _mshEnsureOverlay() {
+  if (!_mshOverlay) {
+    _mshOverlay = document.createElement('div');
+    _mshOverlay.style.cssText =
+      'position:fixed;overflow:hidden;pointer-events:none;z-index:2147483646;left:0;top:0;width:0;height:0;';
+    (document.body || document.documentElement).appendChild(_mshOverlay);
+  }
+  return _mshOverlay;
+}
+
+// The selection's visible rects in client coordinates, at most one per row (consecutive full rows
+// merged), so no pixel is ever covered twice and the red is one shade everywhere. Every row but the
+// last of a linear selection runs to the end of the line, the convention of every terminal.
+function _mshRects(sel, g) {
+  var rects = [];
+  var sR = _mshIndexOf(sel.s), eR = _mshIndexOf(sel.e);
+  if (sR < 0 || eR < 0) {
+    return rects;
+  }
+  var n = eR - sR + 1;
+  var from = Math.max(sR, g.top - 1);
+  var to = Math.min(eR, g.top + g.visible + 1);
+  for (var R = from; R <= to; R++) {
+    var range = _mshRowRange(sel, R - sR, n);
+    var c0 = range[0];
+    var c1 = sel.mode === 'linear' && R < eR ? g.cols : Math.min(range[1], g.cols);
+    if (c1 <= c0) {
+      continue;
+    }
+    var x = g.left + c0 * g.cw;
+    var y = g.originTop + R * g.ch;
+    var w = (c1 - c0) * g.cw;
+    var prev = rects[rects.length - 1];
+    if (prev && prev.x === x && prev.w === w && Math.abs(prev.y + prev.h - y) < 0.5) {
+      prev.h += g.ch;
+      continue;
+    }
+    rects.push({x: x, y: y, w: w, h: g.ch});
+  }
+  return rects;
+}
+
+function _mshPaint() {
+  if (!_mshOverlay && !_mshSel) {
+    return;
+  }
+  var ov = _mshEnsureOverlay();
+  var sel = _mshSel;
+  var rects = [];
+  var g = null;
+  if (sel && sel.state === 'active' && t && t.scrollPort_) {
+    g = _mshGeom();
+    rects = _mshRects(sel, g);
+    var v = g.view;
+    ov.style.left = v.left + 'px';
+    ov.style.top = v.top + 'px';
+    ov.style.width = v.width + 'px';
+    ov.style.height = v.height + 'px';
+  }
+  while (ov.childNodes.length > rects.length) {
+    ov.removeChild(ov.lastChild);
+  }
+  for (var i = 0; i < rects.length; i++) {
+    var d = ov.childNodes[i];
+    if (!d) {
+      d = document.createElement('div');
+      d.style.cssText = 'position:absolute;background:' + _mshSelColor + ';';
+      ov.appendChild(d);
+    }
+    var r = rects[i];
+    d.style.left = (r.x - g.view.left) + 'px';
+    d.style.top = (r.y - g.view.top) + 'px';
+    d.style.width = r.w + 'px';
+    d.style.height = r.h + 'px';
+  }
+  _mshQueuePost();
+}
+
+// -- The geometry native reads --
+
+function _mshGeometry(extra) {
+  var sel = _mshSel;
+  var out = {seq: ++_mshGeomSeq, state: 'none', enabled: _mshSelEnabled};
+  if (extra) {
+    for (var k in extra) {
+      out[k] = extra[k];
+    }
+  }
+  if (!sel || !t || !t.scrollPort_) {
+    return out;
+  }
+  if (sel.state === 'clip') {
+    out.state = 'clip';
+    out.rows = sel.snap ? sel.snap.length : 0;
+    return out;
+  }
+  if (_mshIsEmpty(sel)) {
+    return out;
+  }
+  var g = _mshGeom();
+  var sR = _mshIndexOf(sel.s), eR = _mshIndexOf(sel.e);
+  var v = g.view;
+  var point = function(R, col) {
+    var y = g.originTop + R * g.ch;
+    return {
+      x: g.left + col * g.cw,
+      y: y,
+      h: g.ch,
+      row: R,
+      visible: y + g.ch * 0.5 >= v.top && y + g.ch * 0.5 <= v.bottom,
+    };
+  };
+  var rects = _mshRects(sel, g);
+  var bounds = null;
+  for (var i = 0; i < rects.length; i++) {
+    var r = rects[i];
+    var x0 = Math.max(r.x, v.left), y0 = Math.max(r.y, v.top);
+    var x1 = Math.min(r.x + r.w, v.right), y1 = Math.min(r.y + r.h, v.bottom);
+    if (x1 <= x0 || y1 <= y0) {
+      continue;
+    }
+    if (!bounds) {
+      bounds = {x: x0, y: y0, x1: x1, y1: y1};
+    } else {
+      bounds.x = Math.min(bounds.x, x0);
+      bounds.y = Math.min(bounds.y, y0);
+      bounds.x1 = Math.max(bounds.x1, x1);
+      bounds.y1 = Math.max(bounds.y1, y1);
+    }
+  }
+  out.state = 'active';
+  out.mode = sel.mode;
+  out.gran = sel.gran;
+  out.rows = eR - sR + 1;
+  out.start = point(sR, sel.s.col);
+  out.end = point(eR, sel.e.col);
+  out.bounds = bounds ? {x: bounds.x, y: bounds.y, w: bounds.x1 - bounds.x, h: bounds.y1 - bounds.y} : null;
+  out.view = {x: v.left, y: v.top, w: v.width, h: v.height};
+  out.cell = {w: g.cw, h: g.ch};
+  return out;
+}
+
+// Page-side changes reach native through here, at most once per frame and only when something it
+// shows actually moved.
+function _mshQueuePost() {
+  if (_mshPostQueued) {
+    return;
+  }
+  _mshPostQueued = true;
+  requestAnimationFrame(_mshPostNow);
+}
+
+function _mshPostNow(reason) {
+  _mshPostQueued = false;
+  var handler = window.webkit && window.webkit.messageHandlers
+    ? window.webkit.messageHandlers.wkScroller
+    : null;
+  if (!handler) {
+    return;
+  }
+  var geo = _mshGeometry(typeof reason === 'string' ? {reason: reason} : null);
+  var key = JSON.stringify([geo.state, geo.start, geo.end, geo.bounds, geo.rows, geo.view]);
+  if (key === _mshLastPostKey && typeof reason !== 'string') {
+    return;
+  }
+  _mshLastPostKey = key;
+  geo.op = 'selection';
+  handler.postMessage(geo);
+}
+
+function _mshClear(reason) {
+  if (!_mshSel) {
+    return;
+  }
+  _mshSel = null;
+  _mshPaint();
+  _mshPostNow(reason || 'cleared');
+}
+
+// -- Keeping it alive under output --
+
+function _mshQueueValidate() {
+  if (_mshValidateQueued) {
+    return;
+  }
+  _mshValidateQueued = true;
+  requestAnimationFrame(_mshValidate);
+}
+
+// Once per frame after output: the selected rows still hold the text they held, in order? Rows that
+// only moved (scrolling, a trim, a scroll region) are found by record and nothing happens. A row that
+// was rewritten is looked for nearby by content (mosh and tmux repaint whole regions, moving text
+// with them); if it cannot be found the selection becomes a CLIP: the highlight goes, and Copy still
+// gives the text the user selected.
+function _mshValidate() {
+  _mshValidateQueued = false;
+  var sel = _mshSel;
+  if (!sel || sel.state !== 'active') {
+    return;
+  }
+  if (t.isPrimaryScreen() !== sel.primary) {
+    _mshClear('screen');
+    return;
+  }
+  if (sel.snapDirty || !sel.snap) {
+    // Remade by the user since the last output: it describes the current text already.
+    _mshTakeSnapshot();
+    return;
+  }
+  var snap = sel.snap;
+  var n = snap.length;
+  var sbLen = t.scrollbackRows_.length;
+  var screenRows = t.screen_.rowsArray;
+  var onScreen = new Map();
+  for (var i = 0; i < screenRows.length; i++) {
+    onScreen.set(screenRows[i], sbLen + i);
+  }
+  var first = -1;
+  var intact = true;
+  for (i = 0; i < n; i++) {
+    var row = snap[i];
+    var idx = onScreen.get(row.rec);
+    if (idx === undefined) {
+      // Scrollback is never rewritten, only trimmed from the top.
+      idx = (first >= 0 && t.scrollbackRows_[first + i] === row.rec) ? first + i : t.scrollbackRows_.indexOf(row.rec);
+      if (idx < 0) {
+        _mshClear('trimmed');
+        return;
+      }
+    } else {
+      var range = _mshRowRange(sel, i, n);
+      if (_mshCellsText(_mshCells(row.rec), range[0], range[1]) !== row.txt) {
+        intact = false;
+        break;
+      }
+    }
+    if (i === 0) {
+      first = idx;
+    } else if (idx !== first + i) {
+      intact = false;
+      break;
+    }
+  }
+  if (intact) {
+    sel.s.R = first;
+    sel.e.R = first + n - 1;
+    _mshPaint();
+    return;
+  }
+  if (_mshReanchor(sel, first >= 0 ? first : _mshIndexOf(sel.s))) {
+    _mshPaint();
+    return;
+  }
+  sel.state = 'clip';
+  _mshPaint();
+  _mshPostNow('clip');
+}
+
+function _mshReanchor(sel, near) {
+  var snap = sel.snap;
+  var n = snap.length;
+  var g = t.scrollPort_;
+  var span = g.visibleRowCount;
+  if (n > span * 2) {
+    return false;
+  }
+  var chars = 0;
+  for (var i = 0; i < n; i++) {
+    chars += snap[i].txt.replace(/\s+/g, '').length;
+  }
+  if (chars < _mshReanchorMinChars) {
+    return false;
+  }
+  if (!(near >= 0)) {
+    near = Math.max(0, _mshRowCount() - span);
+  }
+  var count = _mshRowCount();
+  var lo = Math.max(0, near - span), hi = Math.min(count - n, near + span);
+  var found = -1;
+  for (var k = lo; k <= hi; k++) {
+    var match = true;
+    for (i = 0; i < n && match; i++) {
+      var range = _mshRowRange(sel, i, n);
+      match = _mshCellsText(_mshCells(t.getRowNode(k + i)), range[0], range[1]) === snap[i].txt;
+    }
+    if (match) {
+      if (found >= 0) {
+        return false;        // ambiguous: two places hold the same text
+      }
+      found = k;
+    }
+  }
+  if (found < 0) {
+    return false;
+  }
+  sel.s = _mshPos(found, sel.s.col);
+  sel.e = _mshPos(found + n - 1, sel.e.col);
+  sel.anc = {s: _mshPos(found, sel.s.col), e: _mshPos(found + n - 1, sel.e.col)};
+  for (i = 0; i < n; i++) {
+    snap[i].rec = t.getRowNode(found + i);
+  }
+  return true;
+}
+
+// Called around every interpret: the snapshot must describe the rows BEFORE output touches them.
+function _mshBeforeOutput() {
+  _mshSnapshotIfNeeded();
+}
+
+function _mshAfterOutput() {
+  _mshQueueValidate();
+}
+
+// -- The API native calls (each returns the geometry) --
+
+function _mshReady() {
+  return _mshSelEnabled && t && t.scrollPort_ && t.screen_;
+}
+
+function term_selWordAt(x, y) {
+  return _mshUnitSelection(x, y, 'word');
+}
+
+function term_selLineAt(x, y) {
+  return _mshUnitSelection(x, y, 'line');
+}
+
+function _mshUnitSelection(x, y, gran) {
+  if (!_mshReady()) {
+    return _mshGeometry();
+  }
+  var g = _mshGeom();
+  var R = _mshRowAtY(y, g);
+  var unit = null;
+  if (gran === 'word') {
+    var w = _mshWordAt(R, _mshCellAt(x, R, g));
+    unit = w ? _mshSpanFromLine(w.line, w.from, w.to) : null;
+  } else {
+    unit = _mshLineSpan(R);
+  }
+  if (unit) {
+    _mshNew(unit, gran, 'linear');
+  } else {
+    _mshSel = null;
+  }
+  _mshPaint();
+  return _mshGeometry();
+}
+
+// A press that starts a drag. opts: {rect, extend, gran}. extend (shift-click) keeps the anchor of
+// the selection there is and moves its focus here.
+function term_selBegin(x, y, opts) {
+  opts = opts || {};
+  if (!_mshReady()) {
+    return _mshGeometry();
+  }
+  var g = _mshGeom();
+  if (opts.extend && _mshSel && _mshSel.state === 'active' && _mshSel.mode === 'linear') {
+    if (_mshFocus(_mshUnitAt(x, y, _mshSel.gran, g))) {
+      _mshPaint();
+      return _mshGeometry();
+    }
+  }
+  var gran = opts.gran || 'char';
+  var unit = _mshUnitAt(x, y, opts.rect ? 'char' : gran, g);
+  _mshNew(unit, opts.rect ? 'char' : gran, opts.rect ? 'rect' : 'linear');
+  _mshPaint();
+  return _mshGeometry();
+}
+
+function term_selExtendTo(x, y) {
+  if (!_mshReady() || !_mshSel || _mshSel.state !== 'active') {
+    return _mshGeometry();
+  }
+  var g = _mshGeom();
+  if (_mshFocus(_mshUnitAt(x, y, _mshSel.mode === 'rect' ? 'char' : _mshSel.gran, g))) {
+    _mshPaint();
+  }
+  return _mshGeometry();
+}
+
+// A handle moved one endpoint. If it crosses the other the two swap, and the result says so
+// (`swapped`), so native can keep dragging the right handle.
+function term_selMoveHandle(which, x, y) {
+  if (!_mshReady() || !_mshSel || _mshSel.state !== 'active') {
+    return _mshGeometry();
+  }
+  var sel = _mshSel;
+  var g = _mshGeom();
+  var R = _mshRowAtY(y, g);
+  var col = _mshBoundaryAt(x, R, g);
+  var sR = _mshIndexOf(sel.s), eR = _mshIndexOf(sel.e);
+  var swapped = false;
+  if (sel.mode === 'rect') {
+    if (which === 'start') {
+      sel.s = _mshPos(Math.min(R, eR), Math.min(col, sel.e.col));
+      sel.e = _mshPos(Math.max(R, eR), Math.max(col, sel.e.col));
+      swapped = R > eR || col > sel.e.col;
+    } else {
+      sel.e = _mshPos(Math.max(R, sR), Math.max(col, sel.s.col));
+      sel.s = _mshPos(Math.min(R, sR), Math.min(col, sel.s.col));
+      swapped = R < sR || col < sel.s.col;
+    }
+  } else if (which === 'start') {
+    if (_mshCmp(R, col, eR, sel.e.col) >= 0) {
+      sel.s = _mshPos(eR, sel.e.col);
+      sel.e = _mshPos(R, col);
+      swapped = true;
+    } else {
+      sel.s = _mshPos(R, col);
+    }
+  } else {
+    if (_mshCmp(R, col, sR, sel.s.col) <= 0) {
+      sel.e = _mshPos(sR, sel.s.col);
+      sel.s = _mshPos(R, col);
+      swapped = true;
+    } else {
+      sel.e = _mshPos(R, col);
+    }
+  }
+  sel.gran = 'char';
+  sel.anc = {s: _mshPos(_mshIndexOf(sel.s), sel.s.col), e: _mshPos(_mshIndexOf(sel.e), sel.e.col)};
+  sel.snapDirty = true;
+  _mshPaint();
+  return _mshGeometry({swapped: swapped});
+}
+
+// Auto-scroll while a drag or a handle sits at the top or bottom edge: scroll the LOCAL buffer by
+// `rows` (negative = up; this never sends anything to the remote), then re-apply the drag at the
+// point. `what` is 'focus' (a drag), or 'start' / 'end' (a handle).
+function term_selAutoScroll(rows, x, y, what) {
+  if (!_mshReady()) {
+    return _mshGeometry();
+  }
+  var sp = t.scrollPort_;
+  var top = sp.getTopRowIndex();
+  var max = Math.max(0, _mshRowCount() - sp.visibleRowCount);
+  var next = Math.max(0, Math.min(top + (rows | 0), max));
+  if (next !== top) {
+    sp.scrollRowToTop(next);
+  }
+  if (!_mshSel || _mshSel.state !== 'active') {
+    return _mshGeometry();
+  }
+  if (what === 'start' || what === 'end') {
+    return term_selMoveHandle(what, x, y);
+  }
+  return term_selExtendTo(x, y);
+}
+
+// scope 'screen': what is on screen; 'buffer': everything, scrollback included. Blank rows at both
+// ends are left out.
+function term_selAll(scope) {
+  if (!_mshReady()) {
+    return _mshGeometry();
+  }
+  var count = _mshRowCount();
+  var from = scope === 'screen' ? t.scrollbackRows_.length : 0;
+  var to = count - 1;
+  var blank = function(R) {
+    return !/\S/.test(_mshCellsText(_mshCells(_mshRowAt(R)), 0, Infinity));
+  };
+  while (from <= to && blank(from)) {
+    from++;
+  }
+  while (to >= from && blank(to)) {
+    to--;
+  }
+  if (from > to) {
+    _mshSel = null;
+    _mshPaint();
+    return _mshGeometry();
+  }
+  var endCells = _mshCells(_mshRowAt(to));
+  var endCol = endCells.length;
+  while (endCol > 0 && !/\S/.test(endCells[endCol - 1].s)) {
+    endCol--;
+  }
+  _mshNew({sR: from, sC: 0, eR: to, eC: endCol}, 'line', 'linear');
+  _mshPaint();
+  return _mshGeometry();
+}
+
+// Grows the selection to the whole logical lines it touches.
+function term_selExpandLines() {
+  if (!_mshReady() || !_mshSel || _mshSel.state !== 'active') {
+    return _mshGeometry();
+  }
+  var sel = _mshSel;
+  var a = _mshLineSpan(_mshIndexOf(sel.s));
+  var b = _mshLineSpan(_mshIndexOf(sel.e));
+  var first = _mshLogicalLine(_mshIndexOf(sel.s));
+  var unit = {
+    sR: a ? a.sR : first.first,
+    sC: a ? a.sC : 0,
+    eR: b ? b.eR : _mshIndexOf(sel.e),
+    eC: b ? b.eC : sel.e.col,
+  };
+  _mshNew(unit, 'line', 'linear');
+  _mshPaint();
+  return _mshGeometry();
+}
+
+function term_selClear(reason) {
+  if (_mshSel) {
+    _mshSel = null;
+    _mshPaint();
+  }
+  return _mshGeometry({reason: reason || 'cleared'});
+}
+
+// opts: {raw, oneLine}. The selection's text, or '' when there is none.
+function term_selText(opts) {
+  opts = opts || {};
+  var sel = _mshSel;
+  if (!sel || (sel.state === 'active' && _mshIsEmpty(sel))) {
+    return '';
+  }
+  var rows = _mshRowsForText(sel);
+  if (opts.oneLine) {
+    return _mshOneLine(rows);
+  }
+  return _mshJoinRows(rows, sel.mode, !!opts.raw);
+}
+
+function term_selGeometry() {
+  return _mshGeometry();
+}
+
+// Repaint on any viewport change: our scroll path produces no DOM scroll event.
+window.addEventListener('resize', function() {
+  if (_mshSel) {
+    _mshPaint();
   }
 });
 
@@ -280,51 +1216,36 @@ function term_setup(accessibilityEnabled) {
     // is killed at the root by -webkit-user-modify:read-only below — the terminal is display-only.)
     t.setCursorColor('rgba(0, 0, 0, 0)');
 
-    // Moshroom: on touch devices the terminal is a scroll + keys surface, not a document —
-    // native text selection hijacks the pan gesture (a swipe selects instead of scrolling, and
-    // the selection cancels the scroll), so user-select is OFF there; the long-press word-select
-    // (term_selectWordAt) briefly re-enables it via .moshroom-selecting so the red ::selection
-    // styling applies (WebKit refuses ::selection on user-select:none content and paints the
-    // platform theme colour instead). On the Mac (Catalyst) it's the opposite: scrolling comes
-    // from the wheel/trackpad (DOM wheel events hterm handles itself), and a mouse drag or
-    // double-click is EXPECTED to select — so text stays selectable there all the time.
-    var _moshroomIsMac = /Mac/.test(navigator.platform);
-    // The terminal is a READ-ONLY display: you never type into it (special keys go straight through
-    // TermDevice; any text is composed in Moshkitor). hterm marks its <x-screen> contentEditable, so
-    // iOS WebKit focuses it on tap and paints an insertion caret there (and caret-color:transparent is
-    // NOT honored for that tap-positioned caret on iOS). Force -webkit-user-modify:read-only so the
-    // element is not an editing host at all — no caret ever, on any platform — while -webkit-user-select
-    // still allows selecting text (long-press on iOS, drag on the Mac) for Copy.
-    var _moshroomSelectRules = _moshroomIsMac
-      ? '*{-webkit-user-select:text!important;-webkit-user-modify:read-only!important;-webkit-touch-callout:none!important;caret-color:transparent!important;}'
-      : '*{-webkit-user-select:none!important;-webkit-user-modify:read-only!important;-webkit-touch-callout:none!important;caret-color:transparent!important;}.moshroom-selecting *{-webkit-user-select:text!important;}';
-    // …plus the Moshroom-red selection highlight. On iOS that's real ::selection CSS (and the
-    // grab handles follow the web view's tintColor, also Moshroom red). On the Mac, ::selection
-    // is made TRANSPARENT instead: WebKit's own selection painting there depends on a volatile
-    // window/responder activity state with at least three observed latch modes (page-red /
-    // UIKit-overlay / dead near-black box — the last one born whenever a selection is created
-    // while the window is still becoming key, and persisting after), so the red is painted by
-    // OUR overlay (see _moshroomPaintSelection), which only depends on the live Range geometry
-    // and never on WebKit's mood.
-    var _moshroomSelectionCss = _moshroomIsMac
-      ? '::selection{background-color:transparent!important;color:inherit!important;}::selection:window-inactive{background-color:transparent!important;color:inherit!important;}'
-      : '::selection{background-color:rgba(255,82,90,1)!important;color:inherit!important;}::selection:window-inactive{background-color:rgba(255,82,90,1)!important;color:inherit!important;}';
+    // The terminal is a READ-ONLY display that WebKit never selects in: you never type into it
+    // (special keys go straight through TermDevice; any text is composed in Moshkitor), and
+    // select-to-copy is Moshroom's own, on the row model (see "Selection" above). hterm marks its
+    // <x-screen> contentEditable, so iOS WebKit would focus it on tap and paint an insertion caret
+    // (caret-color:transparent is NOT honored for that tap-positioned caret on iOS):
+    // -webkit-user-modify:read-only makes it no editing host at all. user-select:none on BOTH
+    // platforms keeps WebKit from ever owning a selection: its own selection painting, its tint and
+    // its handles are what made the old highlight come and go in two shades, and a WebKit range
+    // collapsed whenever hterm re-rendered the rows under it.
+    var _moshroomNoSelect = '*{-webkit-user-select:none!important;-webkit-user-modify:read-only!important;' +
+      '-webkit-touch-callout:none!important;caret-color:transparent!important;}' +
+      '::selection{background-color:transparent!important;}';
     var _moshroomScreen = t.scrollPort_.screen_;
     if (_moshroomScreen) {
       var _moshroomDoc = _moshroomScreen.ownerDocument;
       var _moshroomStyle = _moshroomDoc.createElement('style');
-      _moshroomStyle.textContent = _moshroomSelectRules + _moshroomSelectionCss;
+      _moshroomStyle.textContent = _moshroomNoSelect;
       (_moshroomDoc.head || _moshroomDoc.documentElement).appendChild(_moshroomStyle);
     }
-
-    // No text caret anywhere in the terminal — input happens in Moshkitor, so the blinking
-    // insertion bar at the top-left is just a stray vestige. Hide it on the main document too.
     var _moshroomCaretStyle = document.createElement('style');
-    _moshroomCaretStyle.textContent = '*{caret-color:transparent!important;-webkit-user-modify:read-only!important;}' + (_moshroomIsMac ? '' : '.moshroom-selecting *{-webkit-user-select:text!important;}') + _moshroomSelectionCss;
+    _moshroomCaretStyle.textContent = _moshroomNoSelect;
     (document.head || document.documentElement).appendChild(_moshroomCaretStyle);
     document.body.style.caretColor = 'transparent';
 
     t.io.onTerminalResize = function(cols, rows) {
+      // hterm does not reflow: a new width re-cuts every row, so a selection made on the old one
+      // would describe columns that no longer hold its text.
+      if (_mshSel && _mshSel.cols !== cols) {
+        _mshClear('resize');
+      }
       _postMessage('sigwinch', {cols, rows});
       if (t.prompt) {
         t.prompt.resize();
@@ -351,6 +1272,7 @@ function term_setup(accessibilityEnabled) {
     // and can throw halfway (term_init catches that and carries on), and this must hold regardless.
     _moshroomBlendPaletteBlack();
     
+    _mshSelfTest();
     _postMessage('terminalReady', {size, bgColor});
 
     // Tell the native side who can use a swipe from the very first frame (normal screen, nothing
@@ -434,7 +1356,13 @@ window.term_apiRequest = term_apiRequest;
 window.term_apiResponse = term_apiResponse;
 
 function term_write(data) {
+  if (_mshSel) {
+    _mshBeforeOutput();
+  }
   t.interpret(data);
+  if (_mshSel) {
+    _mshAfterOutput();
+  }
 }
 
 // Moshroom: whether any row on screen shows text. Native asks this to decide whether a terminal it
@@ -459,7 +1387,7 @@ var _utf8TextDecoder = new TextDecoder('utf8');
 function term_write_b64(b64str) {
   var bytes = base64js.toByteArray(b64str);
   var data = _utf8TextDecoder.decode(bytes);
-  t.interpret(data);
+  term_write(data);
 };
 
 // Back at the local moshroom> prompt after a child command (ssh/mosh) returned: whatever modes
@@ -596,13 +1524,19 @@ hterm.VT.prototype.setDECMode = function(code, state) {
 
 var _moshroomBaseSetAlternateMode = hterm.Terminal.prototype.setAlternateMode;
 hterm.Terminal.prototype.setAlternateMode = function(state) {
+  var wasPrimary = typeof this.isPrimaryScreen === 'function' ? this.isPrimaryScreen() : true;
   _moshroomBaseSetAlternateMode.call(this, state);
+  // The other screen holds other rows: a selection never follows the user across.
+  if (_mshSel && wasPrimary !== this.isPrimaryScreen()) {
+    _mshClear('screen');
+  }
   _moshroomPostScrollMode();
 };
 
 var _moshroomBaseVTReset = hterm.VT.prototype.reset;
 hterm.VT.prototype.reset = function() {
   _moshroomBaseVTReset.call(this);
+  _mshClear('reset');
   _moshroomPostScrollMode();
 };
 
@@ -753,10 +1687,9 @@ hterm.ScrollPort.prototype.onScroll_ = function(e) {
   } else {
     _moshroomApplySubRowOffset(this);
   }
-  // Our scroll produces no DOM scroll event, and the red selection overlay is painted from live
-  // Range geometry, so it would sit still while the text moved under it.
-  if (_moshroomSelOverlay && _moshroomSelOverlay.firstChild) {
-    _moshroomPaintSelection();
+  // Our scroll produces no DOM scroll event: the selection highlight follows the rows from here.
+  if (_mshSel) {
+    _mshPaint();
   }
 };
 
@@ -766,6 +1699,10 @@ var _moshroomBaseSyncRowNodesDimensions = hterm.ScrollPort.prototype.syncRowNode
 hterm.ScrollPort.prototype.syncRowNodesDimensions_ = function() {
   _moshroomBaseSyncRowNodesDimensions.call(this);
   _moshroomApplySubRowOffset(this);
+  // Same frame as the shift, so the highlight never trails the text it covers.
+  if (_mshSel) {
+    _mshPaint();
+  }
 };
 
 // The native side quantises the finger into whole rows and passes the COUNT, because hterm's VT
@@ -844,16 +1781,6 @@ function _moshroomSendAltScrollKeys(up, count) {
   t.io.sendString(out);
 }
 
-// While a selection is alive, the selected text must be *selectable* in CSS terms: WebKit skips
-// `::selection` styling for `user-select: none` content and falls back to the platform theme
-// colour — on Mac Catalyst that's the system accent (blue), on an unfocused page a dull gray.
-// The blanket user-select:none (a swipe must scroll, never select) stays; this class scopes
-// text-selectability to exactly the lifetime of a Moshroom-made selection so the highlight is
-// always the Moshroom red.
-function _moshroomSetSelecting(on) {
-  document.documentElement.classList.toggle('moshroom-selecting', !!on);
-}
-
 // ---- Universal tap interactivity ------------------------------------------------------------
 // A tap on the terminal is dispatched through GENERIC terminal mechanisms only — nothing is
 // specific to any one TUI: OSC 8 hyperlinks, URLs in the rendered text (hterm's own expansion),
@@ -874,10 +1801,9 @@ function term_tapAt(x, y) {
   if (!t || !t.scrollPort_) {
     return none;
   }
-  // An existing selection owns the gesture (a tap dismisses it; a Mac dblclick just made one) —
-  // never probe or clobber it.
-  var sel = document.getSelection();
-  if (sel && sel.toString()) {
+  // An existing selection owns the gesture (native turns the tap into "dismiss" or "show the
+  // copy pill" before it gets here); never probe or clobber it.
+  if (_mshSel) {
     return none;
   }
 
@@ -930,76 +1856,29 @@ function _moshroomTapOnCursorRow(y) {
   return y >= r.top && y < r.bottom;
 }
 
-// Find a URL in the rendered text under (x, y). Pure DOM read — no selection is created, no
-// hterm internals touched (this hterm build models screen rows as records, so its own
-// expandSelectionForUrl machinery cannot run against a DOM caret). The tapped x-row's text is
-// assembled (joined with its wrapped continuation rows via the line-overflow attribute), the
-// tap's character offset located, and a URL match containing that offset wins. Only an EXPLICIT
-// link counts: a scheme (https://, mailto:) or a www. host — a tap must never invent links out
-// of random words.
-var _moshroomUrlRegex = /(?:[a-z][a-z0-9+.-]*:\/\/|www\.|mailto:)[^\s\[\](){}<>"'`]+/gi;
-
+// Find a URL in the rendered text under (x, y), read from the row model: the logical line through
+// the tapped row (rows hterm wrapped into one, joined through their overflow flag), so a URL wrapped
+// across rows opens WHOLE. No selection is created. Only an EXPLICIT link counts: a scheme
+// (https://, mailto:) or a www. host, so a tap never invents links out of random words.
 function _moshroomUrlAtPoint(x, y) {
-  var range = document.caretRangeFromPoint(x, y);
-  if (!range || range.startContainer.nodeType !== Node.TEXT_NODE) {
+  if (!_mshReady()) {
     return null;
   }
-  var node = range.startContainer;
-  var row = node.parentElement;
-  while (row && row.nodeName !== 'X-ROW') {
-    row = row.parentElement;
-  }
-  if (!row) {
+  var g = _mshGeom();
+  if (y < g.view.top || y >= g.view.bottom) {
     return null;
   }
-
-  // The logical line: walk back while the PREVIOUS row overflows into ours, then forward while
-  // the current row overflows into the next — so a URL wrapped across rows is seen whole.
-  var overflows = function(r) { return r && r.hasAttribute && r.hasAttribute('line-overflow'); };
-  var first = row;
-  while (first.previousSibling && overflows(first.previousSibling)) {
-    first = first.previousSibling;
-  }
-  var rows = [first];
-  var last = first;
-  while (overflows(last) && last.nextSibling && last.nextSibling.nodeName === 'X-ROW') {
-    last = last.nextSibling;
-    rows.push(last);
-  }
-
-  // Assemble the line text and locate the tapped character's offset within it.
-  var text = '';
-  var offset = -1;
-  for (var i = 0; i < rows.length; i++) {
-    var walker = document.createTreeWalker(rows[i], NodeFilter.SHOW_TEXT);
-    var n;
-    while ((n = walker.nextNode())) {
-      if (n === node) {
-        offset = text.length + range.startOffset;
-      }
-      text += n.textContent;
-    }
-  }
-  if (offset < 0) {
+  var R = _mshRowAtY(y, g);
+  var line = _mshLogicalLine(R);
+  var hit = _mshUrlInLine(line, _mshLineCellIndex(line, R, _mshCellAt(x, R, g)));
+  if (!hit) {
     return null;
   }
-
-  _moshroomUrlRegex.lastIndex = 0;
-  var m;
-  while ((m = _moshroomUrlRegex.exec(text))) {
-    if (offset >= m.index && offset < m.index + m[0].length) {
-      // Trailing punctuation belongs to the prose, not the link.
-      var url = m[0].replace(/[.,;:!?'")\]}>]+$/, '');
-      if (/^www\./i.test(url)) {
-        url = 'https://' + url;
-      }
-      if (url.length > 2048) {
-        return null;
-      }
-      return url;
-    }
+  var url = hit.url;
+  if (/^www\./i.test(url)) {
+    url = 'https://' + url;
   }
-  return null;
+  return url.length > 2048 ? null : url;
 }
 
 // Synthetic left press+release with the terminal cell stamped on, exactly like the wheel path —
@@ -1014,71 +1893,6 @@ function _moshroomReportClick(x, y) {
   var up = new MouseEvent('mouseup', {clientX: x, clientY: y, button: 0, buttons: 0});
   _setTermCoordinates(up, x, my);
   t.onMouse(up);
-}
-
-// Select the whole terminal word under (x, y) — used by the native long-press to offer Copy.
-// Works for any TUI because it just selects the rendered on-screen text. A `selectionchange`
-// then fires and the native side shows a single Copy item.
-function term_selectWordAt(x, y) {
-  var sel = document.getSelection();
-  if (!sel) {
-    return;
-  }
-  var range = document.caretRangeFromPoint(x, y);
-  if (!range) {
-    return;
-  }
-  _moshroomSetSelecting(true);
-  sel.removeAllRanges();
-  sel.addRange(range);
-  if (sel.modify) {
-    sel.modify('move', 'backward', 'word');
-    sel.modify('extend', 'forward', 'word');
-  }
-  // A long-press on an empty cell must select NOTHING: extending a caret in blank rows grabs a
-  // ghost whitespace selection spanning the whole screen (painted as a full-viewport highlight).
-  if (!sel.toString().trim()) {
-    sel.removeAllRanges();
-    _moshroomSetSelecting(false);
-  }
-}
-
-// Live mouse drag-selection (Mac Catalyst): WebKit there never turns a click-drag into a WebCore
-// drag selection on its own, so the native side drives one — anchor at mouse-down, extend on
-// every drag step, and settle on mouse-up (a drag that grabbed nothing but whitespace clears,
-// same rule as term_selectWordAt).
-function term_startSelectionAt(x, y) {
-  var sel = document.getSelection();
-  if (!sel) {
-    return;
-  }
-  var range = document.caretRangeFromPoint(x, y);
-  if (!range) {
-    return;
-  }
-  _moshroomSetSelecting(true);
-  sel.removeAllRanges();
-  sel.addRange(range);
-}
-
-function term_extendSelectionTo(x, y) {
-  var sel = document.getSelection();
-  if (!sel || sel.rangeCount === 0) {
-    return;
-  }
-  var range = document.caretRangeFromPoint(x, y);
-  if (!range) {
-    return;
-  }
-  sel.extend(range.startContainer, range.startOffset);
-}
-
-function term_endSelection() {
-  var sel = document.getSelection();
-  if (sel && !sel.toString().trim()) {
-    sel.removeAllRanges();
-    _moshroomSetSelecting(false);
-  }
 }
 
 function term_setWidth(cols) {
@@ -1120,161 +1934,6 @@ function term_appendUserCss(css) {
   style.appendChild(document.createTextNode(css));
 
   document.head.appendChild(style);
-}
-
-function term_getCurrentSelection() {
-  const selection = document.getSelection();
-    if (!selection || selection.rangeCount === 0 || selection.type === 'Caret') {
-    return {text: ''};
-  }
-
-  const r = selection.getRangeAt(0).getBoundingClientRect();
-
-  const rect = `{{${r.x}, ${r.y}},{${r.width},${r.height}}}`;
-
-  // Only what native reads (TermView: the text for Copy, the rect for the edit menu). This posts on
-  // every step of a drag, so it carries nothing else.
-  return {
-    text: selection.toString() || "",
-    rect,
-  };
-}
-
-function _modifySelectionByLine(direction) {
-  var selection = document.getSelection();
-  var fNode = selection.focusNode;
-  var fOffset = selection.focusOffset;
-  var aNode = selection.anchorNode;
-  var aOffset = selection.anchorOffset;
-
-  var dy =
-    direction === 'left'
-      ? -t.scrollPort_.characterSize.height
-      : t.scrollPort_.characterSize.height;
-  var dx = t.scrollPort_.characterSize.width;
-  var range = selection.getRangeAt(0);
-
-  var topLeft = true;
-  if (fNode === aNode) {
-    topLeft = fOffset < aOffset;
-  } else {
-    topLeft = range.compareNode(selection.focusNode) !== Range.NODE_AFTER;
-  }
-
-  if (topLeft) {
-    // top left
-    var rect = _filteredRects(range)[0];
-    var point = {x: rect.left, y: rect.top + Math.abs(dy) * 0.5};
-    var newRange = document.caretRangeFromPoint(point.x, point.y + dy);
-    if (!newRange) {
-      selection.modify('extend', direction, 'line');
-    } else {
-      if (newRange.startContainer.textContent.length <= newRange.startOffset) {
-        if (
-          newRange.startContainer.nodeName === 'X-ROW' &&
-          newRange.startOffset === 0
-        ) {
-          selection.setBaseAndExtent(
-            aNode,
-            aOffset,
-            newRange.startContainer,
-            newRange.startOffset,
-          );
-          selection.modify('extend', 'left', 'character');
-        } else {
-          selection.setBaseAndExtent(
-            aNode,
-            aOffset,
-            newRange.startContainer,
-            Math.max(newRange.startOffset - 1, 0),
-          );
-        }
-      } else {
-        selection.setBaseAndExtent(
-          aNode,
-          aOffset,
-          newRange.startContainer,
-          newRange.startOffset,
-        );
-      }
-    }
-  } else {
-    // bottom right
-    var rects = _filteredRects(range);
-    var rect = rects[rects.length - 1];
-    var point = {x: rect.right, y: rect.bottom - Math.abs(dy) * 0.5};
-    var newRange = document.caretRangeFromPoint(point.x, point.y + dy);
-    if (newRange == null) {
-      point.x -= dx * 0.5;
-    }
-    newRange = document.caretRangeFromPoint(point.x, point.y + dy);
-    selection.setBaseAndExtent(
-      aNode,
-      aOffset,
-      newRange.startContainer,
-      newRange.startOffset,
-    );
-  }
-}
-
-function _filteredRects(range) {
-  var res = [];
-  var rects = range.getClientRects();
-  for (var i = 0; i < rects.length; i++) {
-    var r = rects[i];
-    if (r.width > 0) {
-      res.push(r);
-    }
-  }
-  return res;
-}
-
-function term_modifySelection(direction, granularity) {
-  var selection = document.getSelection();
-  if (!selection || selection.rangeCount === 0) {
-    return;
-  }
-
-  var fNode = selection.focusNode;
-  var fOffset = selection.focusOffset;
-  var aNode = selection.anchorNode;
-  var aOffset = selection.anchorOffset;
-
-  if (granularity === 'line') {
-    _modifySelectionByLine(direction);
-    if (selection.isCollapsed) {
-      selection.setBaseAndExtent(fNode, fOffset, aNode, aOffset);
-      _modifySelectionByLine(direction);
-    }
-
-    return;
-  }
-
-  selection.modify('extend', direction, granularity);
-
-  // we collapse selection, so swap direction and rerun modification again
-  if (selection.isCollapsed) {
-    selection.setBaseAndExtent(fNode, fOffset, aNode, aOffset);
-    selection.modify('extend', direction, granularity);
-  }
-}
-
-function term_modifySideSelection() {
-  var selection = document.getSelection();
-  if (!selection || selection.rangeCount === 0) {
-    return;
-  }
-
-  selection.setBaseAndExtent(
-    selection.focusNode,
-    selection.focusOffset,
-    selection.anchorNode,
-    selection.anchorOffset,
-  );
-}
-
-function term_cleanSelection() {
-  document.getSelection().removeAllRanges();
 }
 
 function waitForFontFamily(callback) {
@@ -1341,3 +2000,33 @@ function _moshroomBlendPaletteBlack() {
 function term_setAutoCarriageReturn(state) {
   t.setAutoCarriageReturn(state);
 }
+
+// ---- Moshroom tmux: scrollback tail (owned by the tmux child session, Moshroom/Commands/tmux) ----
+// The last `n` lines the primary screen has scrolled off into its scrollback, oldest first, trailing
+// blanks trimmed, wrapped rows joined back into their line. A tmux tab that re-attaches matches these
+// against tmux's own history to append only what this terminal has not seen. Answers JSON:
+// {primary: Bool, lines: [String]}; primary is false while the alternate screen is showing (it banks no
+// history of the session's shell).
+function term_moshroomScrollbackTail(n) {
+  try {
+    if (!t || !t.isPrimaryScreen()) {
+      return JSON.stringify({primary: false, lines: []});
+    }
+    var rows = t.scrollbackRows_ ? t.scrollbackRows_.length : 0;
+    if (rows === 0) {
+      return JSON.stringify({primary: true, lines: []});
+    }
+    // A line may span several rows: read enough of them, then drop a first line that may have started
+    // before the window.
+    var from = Math.max(0, rows - n * 8);
+    var lines = t.getRowsText(from, rows).split('\n');
+    if (from > 0) {
+      lines.shift();
+    }
+    lines = lines.slice(-n).map(function(line) { return line.replace(/\s+$/, ''); });
+    return JSON.stringify({primary: true, lines: lines});
+  } catch (e) {
+    return JSON.stringify({primary: false, lines: []});
+  }
+}
+// ---- end Moshroom tmux ----
