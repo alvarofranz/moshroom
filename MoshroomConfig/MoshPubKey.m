@@ -38,44 +38,75 @@
 //#import "Moshroom-Swift.h"
 
 NSMutableArray *__identities;
+// YES while the keys blob exists on disk but could not be READ (protected data not available yet).
+// The in-memory list is empty then, and saving it would overwrite every identity the file holds,
+// which the cloud mirror would then read as "all deleted" and tombstone on every device.
+static BOOL __identitiesUnreadable = NO;
 
-// Keychain service for private keys: derived from the build's KEYCHAIN_ID1
-// (e.g. com.alvarofranz.moshroom.pkcard) — never a hardcoded foreign namespace.
+// Keychain service suffix for private keys: the service is the build's KEYCHAIN_ID1 plus this
+// (e.g. com.alvarofranz.moshroom.pkcard), never a hardcoded foreign namespace.
+static NSString *const kPrivateKeyServiceSuffix = @"pkcard";
+
 static NSString *__keychainService() {
-  return [NSString stringWithFormat:@"%@.pkcard", [XCConfig infoPlistKeyChainID1]];
+  return [NSString stringWithFormat:@"%@.%@", [XCConfig infoPlistKeyChainID1], kPrivateKeyServiceSuffix];
 }
 
-// The single global "Sync with iCloud" toggle governs whether secrets ride the iCloud Keychain.
-// Its value lives in the app-group user defaults (written by MoshroomDefaults in the app target;
-// importing it here would be a dependency cycle). Key + suite are identical in MoshHosts.m and
-// MoshroomDefaults.m.
-static NSString *const kMoshroomICloudSyncEnabledKey = @"MoshroomICloudSyncEnabled";
-static BOOL __icloud_sync_enabled() {
+#pragma mark - Shared keychain plumbing (declared in MoshPubKey.h)
+
+// The single global "Sync with iCloud" toggle governs whether secrets ride the iCloud Keychain. Its
+// value lives in the app-group user defaults: MoshroomDefaults (app target) writes it, and this
+// framework cannot import the app target, so the key is defined HERE once and everyone else uses it.
+NSString *const MoshroomICloudSyncEnabledKey = @"MoshroomICloudSyncEnabled";
+
+BOOL MoshroomICloudSyncEnabled(void) {
   NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:[XCConfig infoPlistFullGroupID]];
-  return [d boolForKey:kMoshroomICloudSyncEnabledKey];
+  return [d boolForKey:MoshroomICloudSyncEnabledKey];
 }
 
-// When sync is ON, private keys ride the iCloud Keychain (kSecAttrSynchronizable, end-to-end
-// encrypted): they survive an app reinstall and follow the user's devices. When OFF, they are
-// written local to this device. Secure Enclave keys are unaffected either way — hardware-bound by
-// design (SEKey.swift), never synced.
-static UICKeyChainStore *__get_keychain() {
-  UICKeyChainStore *keychain = [UICKeyChainStore keyChainStoreWithService: __keychainService()];
-  keychain.synchronizable = __icloud_sync_enabled();
+// When sync is ON, secrets ride the iCloud Keychain (kSecAttrSynchronizable, end-to-end encrypted):
+// they survive an app reinstall and follow the user's devices. When OFF, they are written local to
+// this device. Secure Enclave keys are unaffected either way: hardware-bound by design (SEKey.swift).
+UICKeyChainStore *MoshroomKeychainStore(NSString *serviceSuffix) {
+  NSString *service = [NSString stringWithFormat:@"%@.%@", [XCConfig infoPlistKeyChainID1], serviceSuffix];
+  UICKeyChainStore *keychain = [UICKeyChainStore keyChainStoreWithService:service];
+  keychain.synchronizable = MoshroomICloudSyncEnabled();
   return keychain;
+}
+
+// The base of every raw query below: the same service, both sync flavors, the data-protection
+// keychain (what UICKeyChainStore uses too, see its -query).
+static NSMutableDictionary *__kc_query(UICKeyChainStore *keychain) {
+  NSMutableDictionary *q = [NSMutableDictionary dictionary];
+  q[(__bridge id)kSecClass] = (__bridge id)kSecClassGenericPassword;
+  q[(__bridge id)kSecAttrService] = keychain.service ?: @"";
+  q[(__bridge id)kSecUseDataProtectionKeychain] = @YES;
+  q[(__bridge id)kSecAttrSynchronizable] = (__bridge id)kSecAttrSynchronizableAny;
+  if (keychain.accessGroup) {
+    q[(__bridge id)kSecAttrAccessGroup] = keychain.accessGroup;
+  }
+  return q;
 }
 
 // Write a keychain string so the item always takes the CURRENT sync flavor. SecItemUpdate cannot
 // change an existing item's kSecAttrSynchronizable, so delete any existing variant first (the lookup
-// matches both flavors via kSecAttrSynchronizableAny) and add fresh.
+// matches both flavors) and add fresh.
 //
-// That delete-then-add opens a window where the only copy of a private key lives nowhere but this
-// stack frame: if the add fails (locked before first unlock, keychain busy, quota) the old value is
-// already gone and the key is destroyed. So the previous value is read first and PUT BACK when the
-// write fails, and the outcome is returned instead of dropped — nothing can quietly leave an
-// identity holding a public half and no private one.
-static BOOL __kc_set(UICKeyChainStore *keychain, NSString *value, NSString *key) {
-  NSString *previous = [keychain stringForKey:key];
+// That delete-then-add opens a window where the only copy of a secret lives nowhere but this stack
+// frame: if the add fails (locked before first unlock, keychain busy, quota) the old value is already
+// gone. So the previous item is read first (data AND its own flavor + accessibility) and PUT BACK as
+// it was when the write fails, and the outcome is returned instead of dropped.
+BOOL MoshroomKeychainSetString(UICKeyChainStore *keychain, NSString *value, NSString *key) {
+  NSMutableDictionary *read = __kc_query(keychain);
+  read[(__bridge id)kSecAttrAccount] = key;
+  read[(__bridge id)kSecReturnData] = @YES;
+  read[(__bridge id)kSecReturnAttributes] = @YES;
+  read[(__bridge id)kSecMatchLimit] = (__bridge id)kSecMatchLimitOne;
+  CFTypeRef found = NULL;
+  NSDictionary *previous = nil;
+  if (SecItemCopyMatching((__bridge CFDictionaryRef)read, &found) == errSecSuccess && found) {
+    previous = CFBridgingRelease(found);
+  }
+
   [keychain removeItemForKey:key];
 
   NSError *error = nil;
@@ -83,13 +114,51 @@ static BOOL __kc_set(UICKeyChainStore *keychain, NSString *value, NSString *key)
     return YES;
   }
 
-  if (previous) {
-    // Best effort: the value survives, even if it lands in the current flavor rather than its own.
-    [keychain setString:previous forKey:key];
+  BOOL restored = NO;
+  NSData *previousData = previous[(__bridge id)kSecValueData];
+  if (previousData) {
+    NSMutableDictionary *add = __kc_query(keychain);
+    add[(__bridge id)kSecAttrAccount] = key;
+    add[(__bridge id)kSecValueData] = previousData;
+    add[(__bridge id)kSecAttrSynchronizable] = previous[(__bridge id)kSecAttrSynchronizable] ?: @NO;
+    add[(__bridge id)kSecAttrAccessible] =
+      previous[(__bridge id)kSecAttrAccessible] ?: (__bridge id)kSecAttrAccessibleAfterFirstUnlock;
+    restored = SecItemAdd((__bridge CFDictionaryRef)add, NULL) == errSecSuccess;
   }
-  NSLog(@"[MoshPubKey] Keychain write failed for %@: %@%@", key, error,
-        previous ? @" (previous value restored)" : @"");
+  NSLog(@"[Moshroom] Keychain write failed for %@: %@%@", key, error,
+        restored ? @" (previous value restored)" : (previousData ? @" (restore failed)" : @""));
   return NO;
+}
+
+NSSet<NSString *> *MoshroomKeychainAccounts(UICKeyChainStore *keychain) {
+  NSMutableDictionary *q = __kc_query(keychain);
+  q[(__bridge id)kSecReturnAttributes] = @YES;
+  q[(__bridge id)kSecMatchLimit] = (__bridge id)kSecMatchLimitAll;
+  CFTypeRef found = NULL;
+  OSStatus status = SecItemCopyMatching((__bridge CFDictionaryRef)q, &found);
+  if (status == errSecItemNotFound) {
+    return [NSSet set];
+  }
+  if (status != errSecSuccess || !found) {
+    return nil;
+  }
+  NSArray *items = CFBridgingRelease(found);
+  NSMutableSet<NSString *> *accounts = [NSMutableSet set];
+  for (NSDictionary *item in items) {
+    NSString *account = item[(__bridge id)kSecAttrAccount];
+    if ([account isKindOfClass:NSString.class]) {
+      [accounts addObject:account];
+    }
+  }
+  return accounts;
+}
+
+static UICKeyChainStore *__get_keychain() {
+  return MoshroomKeychainStore(kPrivateKeyServiceSuffix);
+}
+
+static BOOL __kc_set(UICKeyChainStore *keychain, NSString *value, NSString *key) {
+  return MoshroomKeychainSetString(keychain, value, key);
 }
 
 @implementation MoshPubKey {
@@ -130,6 +199,10 @@ static BOOL __kc_set(UICKeyChainStore *keychain, NSString *value, NSString *key)
 }
 
 + (BOOL)saveIDS {
+  if (__identitiesUnreadable) {
+    NSLog(@"[MoshPubKey] Refusing to save: the keys file exists but could not be read this run");
+    return NO;
+  }
   NSError *error = nil;
   NSData *data = [NSKeyedArchiver archivedDataWithRootObject:__identities
                                        requiringSecureCoding:YES
@@ -167,9 +240,14 @@ static BOOL __kc_set(UICKeyChainStore *keychain, NSString *value, NSString *key)
                                         options:NSDataReadingMappedIfSafe
                                           error:&error];
   if (error || !data) {
+    // A missing file is a fresh install. Anything else means the file is there and this run cannot
+    // see it, so the empty list must never be written over it.
+    BOOL missing = [error.domain isEqualToString:NSCocoaErrorDomain] && error.code == NSFileReadNoSuchFileError;
+    __identitiesUnreadable = !missing;
     NSLog(@"[MoshPubKey] Failed to load data: %@", error);
     return;
   }
+  __identitiesUnreadable = NO;
 
   NSArray *result =
     [NSKeyedUnarchiver unarchivedArrayOfObjectsOfClasses:[NSSet setWithObjects:MoshPubKey.class, nil]
@@ -178,6 +256,11 @@ static BOOL __kc_set(UICKeyChainStore *keychain, NSString *value, NSString *key)
   
   if (error || !result) {
     NSLog(@"[MoshPubKey] Failed to unarchive data: %@", error);
+    // Keep the bytes before anything can overwrite them: a copy beside the file, made once.
+    NSString *aside = [[MoshroomPaths moshroomKeysFile] stringByAppendingString:@".unreadable"];
+    if (![[NSFileManager defaultManager] fileExistsAtPath:aside]) {
+      [data writeToFile:aside options:NSDataWritingAtomic | NSDataWritingFileProtectionCompleteUntilFirstUserAuthentication error:nil];
+    }
     return;
   }
   
@@ -324,43 +407,38 @@ static BOOL __kc_set(UICKeyChainStore *keychain, NSString *value, NSString *key)
 }
 
 // Is this identity's private half actually ON this device? Answered WITHOUT reading the secret out
-// of the keychain (an account listing, not a value fetch), because it is asked for every row of the
-// keys list and for the sync health readout. Non-Keychain identities (Secure Enclave, passkeys)
-// carry their material elsewhere by design and are always complete.
+// of the keychain (an attributes-only account listing, not a value fetch), because it is asked for
+// every row of the keys list and for the sync health readout. Non-Keychain identities (Secure
+// Enclave, passkeys) carry their material elsewhere by design and are always complete.
 - (BOOL)hasPrivateKeyMaterial {
+  return [self _hasPrivateKeyMaterialIn:MoshroomKeychainAccounts(__get_keychain())];
+}
+
+// `accounts` is a listing taken by the caller, or nil when the keychain could not answer. Only then
+// is the authoritative value read used, so a transient listing failure can never mark a working key
+// as broken, and a successful listing never pulls a secret just to answer yes or no.
+- (BOOL)_hasPrivateKeyMaterialIn:(nullable NSSet<NSString *> *)accounts {
   if (_storageType != MoshPubKeyStorageTypeKeyChain) {
     return YES;
   }
-  UICKeyChainStore *keychain = __get_keychain();
   NSString *ref = [self _privateKeyRefName];
-  if ([[keychain allKeys] containsObject:ref]) {
-    return YES;
+  if (accounts) {
+    return [accounts containsObject:ref];
   }
-  // A listing can come back empty on a keychain that isn't readable yet; the authoritative read is
-  // the fallback so a transient listing failure can never mark a working key as broken.
-  return [keychain stringForKey:ref] != nil;
+  return [__get_keychain() stringForKey:ref] != nil;
 }
 
-// The same question for every identity at once, from ONE listing instead of one per row — this is
-// asked while building the keys list and while drawing the sync status. The per-card value read is
-// only reached for a card the listing did not mention, which is exactly the case worth being sure
-// about. Main thread, like every other +all-based call: it touches the shared identities array.
+// The same question for every identity at once, from ONE listing instead of one per row: this is
+// asked while building the keys list and while drawing the sync status. Main thread, like every
+// other +all-based call: it touches the shared identities array.
 + (NSArray<MoshPubKey *> *)identitiesMissingPrivateMaterial {
-  NSArray *accounts = [__get_keychain() allKeys];
-  NSSet *present = accounts.count ? [NSSet setWithArray:accounts] : [NSSet set];
+  NSSet<NSString *> *accounts = MoshroomKeychainAccounts(__get_keychain());
 
   NSMutableArray<MoshPubKey *> *missing = [NSMutableArray array];
   for (MoshPubKey *card in [MoshPubKey all]) {
-    if (card.storageType != MoshPubKeyStorageTypeKeyChain) {
-      continue;
+    if (![card _hasPrivateKeyMaterialIn:accounts]) {
+      [missing addObject:card];
     }
-    if ([present containsObject:[card _privateKeyRefName]]) {
-      continue;
-    }
-    if ([card hasPrivateKeyMaterial]) {
-      continue;
-    }
-    [missing addObject:card];
   }
   return missing;
 }
@@ -368,19 +446,20 @@ static BOOL __kc_set(UICKeyChainStore *keychain, NSString *value, NSString *key)
 - (BOOL)storeCertificateInKeychain:(nullable NSString *) certificate {
   UICKeyChainStore *keychain = __get_keychain();
   NSString *certRef = [self _certificateKeychainRef];
-  BOOL ok = YES;
   if (certificate) {
+    if (!__kc_set(keychain, certificate, certRef)) {
+      // Refused, and the previous value is back: nothing changed, so nothing is restamped or saved.
+      return NO;
+    }
     _certType = [MoshPubKey _shortKeyTypeNameFromSshKeyTypeName:[[certificate componentsSeparatedByString:@" "] firstObject]];
-    ok = __kc_set(keychain, certificate, certRef);
   } else {
     [keychain removeItemForKey:certRef];
     _certType = nil;
   }
-  // A certificate change is a metadata change — restamp so an iCloud merge tie-breaks in its favour,
+  // A certificate change is a metadata change: restamp so an iCloud merge tie-breaks in its favour,
   // and persist (certType + lastModified live in the keys blob).
   _lastModified = [NSDate date];
-  [MoshPubKey saveIDS];
-  return ok;
+  return [MoshPubKey saveIDS];
 }
 
 - (nullable NSString *)privateKey {
@@ -448,6 +527,10 @@ static BOOL __kc_set(UICKeyChainStore *keychain, NSString *value, NSString *key)
     UICKeyChainStore * kc = __get_keychain();
     [kc removeItemForKey:[self _certificateKeychainRef]];
     [kc removeItemForKey:[self _privateKeyKeychainRef]];
+    // Older records file their private half under an explicit ref; it goes with the identity too.
+    if (_privateKeyRef && ![_privateKeyRef isEqualToString:[self _privateKeyKeychainRef]]) {
+      [kc removeItemForKey:_privateKeyRef];
+    }
   }
   [__identities removeObject:self];
   [MoshPubKey saveIDS];

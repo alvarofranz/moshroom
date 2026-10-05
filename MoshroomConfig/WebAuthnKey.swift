@@ -348,18 +348,6 @@ enum WebAuthnError: Error {
 }
 
 extension Data {
-  struct HexEncodingOptions: OptionSet {
-    let rawValue: Int
-    static let upperCase = HexEncodingOptions(rawValue: 1 << 0)
-  }
-  
-  func hexEncodedString(options: HexEncodingOptions = []) -> String {
-    let format = options.contains(.upperCase) ? "%02hhX" : "%02hhx"
-    return self.map { String(format: format, $0) }.joined()
-  }
-}
-
-extension Data {
     init?(hex: String) {
         guard hex.count.isMultiple(of: 2) else {
             return nil

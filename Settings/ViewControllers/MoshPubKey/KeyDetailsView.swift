@@ -58,6 +58,8 @@ struct KeyDetailsView: View {
   @State private var _passphrase = ""
   @State private var _pendingPrivateKeyBlob: Data? = nil
   @State private var _pendingDelete: MoshDeletePrompt? = nil
+  // The clipboard's change count when a private key was pasted from it (see _clearClipboardIfStillOurs).
+  @State private var _clipboardChangeCount: Int? = nil
 
   private enum FileImportMode { case certificate, privateKey }
   
@@ -176,7 +178,9 @@ struct KeyDetailsView: View {
       else {
         return
       }
-      UIPasteboard.general.string = privateKey
+      // The vault's clipboard rules: this device only (no Universal Clipboard to every Mac and iPad
+      // nearby) and cleared by the OS after the password window, never left for the next app to read.
+      MoshClipboard.copy(privateKey, clearAfter: MoshClipboard.passwordSeconds)
       withAnimation {
         _privateKeyCopied = true
       }
@@ -205,13 +209,25 @@ struct KeyDetailsView: View {
     guard let blob = SSHKey.sanitize(key: str).data(using: .utf8) else {
       return _showError(message: "Can't convert to string with UTF8 encoding")
     }
+    _clipboardChangeCount = UIPasteboard.general.changeCount
     _restorePrivateKey(from: blob)
+  }
+
+  // Once a private key pasted from the clipboard is safely stored, it should not stay there for the
+  // next app to read. Only cleared if the clipboard still holds what we read (nothing copied since).
+  private func _clearClipboardIfStillOurs() {
+    guard let count = _clipboardChangeCount else { return }
+    _clipboardChangeCount = nil
+    if UIPasteboard.general.changeCount == count {
+      UIPasteboard.general.items = []
+    }
   }
 
   private func _restorePrivateKey(from blob: Data, passphrase: String = "") {
     do {
       let key = try SSHKey(fromFileBlob: SSHKey.sanitize(key: blob), passphrase: passphrase)
       try MoshPubKey.attachPrivateKey(key, to: card)
+      _clearClipboardIfStillOurs()
 
       _pendingPrivateKeyBlob = nil
       _passphrase = ""
@@ -247,10 +263,19 @@ struct KeyDetailsView: View {
       guard success, let privateKey = card.loadPrivateKey() else {
         return
       }
-      let name = card.id.trimmingCharacters(in: .whitespacesAndNewlines)
-      let url = URL(fileURLWithPath: NSTemporaryDirectory())
-        .appendingPathComponent(name.isEmpty ? "id_key" : name)
+      // The key's name is user text: keep only a plain file name out of it, so "a/b" or "../x" can
+      // never point the write anywhere but the export folder.
+      let name = (card.id.trimmingCharacters(in: .whitespacesAndNewlines) as NSString).lastPathComponent
+        .replacingOccurrences(of: ":", with: "_")
+      let safeName = (name.isEmpty || name == "." || name == "..") ? "id_key" : name
+      // Each export gets its own folder under one parent, and the parent is emptied first: a key file
+      // left by an export that never finished (the app was killed mid-share) does not outlive the next.
+      let exportRoot = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("key-export", isDirectory: true)
+      try? FileManager.default.removeItem(at: exportRoot)
+      let folder = exportRoot.appendingPathComponent(UUID().uuidString, isDirectory: true)
+      let url = folder.appendingPathComponent(safeName)
       do {
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         try privateKey.write(to: url, atomically: true, encoding: .utf8)
         // Same permissions ssh itself insists on, in case it lands somewhere that keeps them.
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
@@ -266,7 +291,7 @@ struct KeyDetailsView: View {
       activityController.popoverPresentationController?.sourceView = _nav.navController.view
       activityController.popoverPresentationController?.sourceRect = frame
       activityController.completionWithItemsHandler = { _, _, _, _ in
-        try? FileManager.default.removeItem(at: url)
+        try? FileManager.default.removeItem(at: folder)
       }
       _nav.navController.present(activityController, animated: true, completion: nil)
     }, reason: "to export the private key.")
@@ -312,10 +337,12 @@ struct KeyDetailsView: View {
         }
       }
       
+      let previousID = _card.wrappedValue.id
       _card.wrappedValue.id = keyID
       guard _card.wrappedValue.storeCertificate(inKeychain: _certificate) else {
-        // The keychain refused the write and put back what was there; say so instead of popping back
-        // as if the certificate had been saved.
+        // The keychain refused the write and put back what was there, and nothing was saved: undo the
+        // rename too, and say so instead of popping back as if it had worked.
+        _card.wrappedValue.id = previousID
         return _showError(message: MoshPubKeyError.keychainWriteFailed.localizedDescription)
       }
       
@@ -489,6 +516,7 @@ struct KeyDetailsView: View {
       Button("Cancel", role: .cancel) {
         _pendingPrivateKeyBlob = nil
         _passphrase = ""
+        _clipboardChangeCount = nil
       }
     } message: {
       Text("This private key is protected with a passphrase.")

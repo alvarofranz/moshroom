@@ -170,8 +170,6 @@ private struct StoreData: Codable {
   @objc func setStyleFontName(_ name: String)  { updateSelectedStyle { $0.fontName = name } }
   @objc func setStyleFontSize(_ size: NSNumber) { updateSelectedStyle { $0.fontSize = CGFloat(size.intValue) } }
   @objc func setStyleCursorBlink(_ value: Bool) { updateSelectedStyle { $0.cursorBlink = value } }
-  @objc func setStyleEnableBold(_ value: UInt)  { updateSelectedStyle { $0.boldMode = TerminalStyle.BoldMode(rawValue: Int(value)) ?? .auto } }
-  @objc func setStyleBoldAsBright(_ value: Bool) { updateSelectedStyle { $0.boldAsBright = value } }
 
   private func updateSelectedStyle(_ mutate: (inout TerminalStyle) -> Void) {
     guard selectedStyleID != nil,

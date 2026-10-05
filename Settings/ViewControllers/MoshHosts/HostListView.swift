@@ -249,7 +249,14 @@ fileprivate class HostsObservable: ObservableObject {
     for h in hostsToDelete {
       allHosts?.remove(h.host)
     }
-    MoshHosts.forceSave()
+    // The saved password goes with its host (the delete prompt already says it is gone everywhere),
+    // but only once the list without the host is on disk, and never while another host still uses it.
+    if MoshHosts.forceSave() {
+      let stillUsed = Set(MoshHosts.allHosts().compactMap { $0.passwordRef }.filter { !$0.isEmpty })
+      for h in hostsToDelete where !(h.host.passwordRef ?? "").isEmpty && !stillUsed.contains(h.host.passwordRef) {
+        h.host.removePasswordFromKeychain()
+      }
+    }
     filteredList.remove(atOffsets: indexSet)
     reloadHosts()
   }

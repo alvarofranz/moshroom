@@ -326,6 +326,23 @@ struct KeyListView: View {
         MoshSettingsList(
           footer: "Secure Enclave keys never leave this device. Keychain keys live in your iCloud Keychain — end-to-end encrypted, they survive reinstalls and follow your devices.",
           header: {
+            if !_state.duplicateNames.isEmpty {
+              // Two devices that each made "id_ed25519" end up with both once sync merges them: they
+              // are different identities (merged by their hidden tag, never by name), and ssh picks
+              // whichever comes first. Nothing is renamed behind the user's back; this says so.
+              VStack(alignment: .leading, spacing: 4) {
+                HStack(alignment: .top, spacing: 6) {
+                  Image(systemName: "exclamationmark.triangle.fill").foregroundColor(.orange)
+                  Text(_state.duplicateNames.count == 1
+                       ? "Two keys share the name \u{201C}\(_state.duplicateNames[0])\u{201D}."
+                       : "Some keys share a name: " + _state.duplicateNames.map { "\u{201C}\($0)\u{201D}" }.joined(separator: ", ") + ".")
+                }
+                Text("They are different keys, usually one made on each device. A host that asks for that name gets whichever comes first, so rename one to choose.")
+                  .font(.footnote)
+                  .foregroundColor(.secondary)
+                  .fixedSize(horizontal: false, vertical: true)
+              }
+            }
             if _state.list.contains(where: { !$0.isAccessible }) {
               VStack(alignment: .leading, spacing: 4) {
                 HStack(alignment: .top, spacing: 6) {
@@ -340,7 +357,9 @@ struct KeyListView: View {
             }
           },
           rows: {
-            ForEach(_state.list, id: \.name) {
+            // Identified by the tag: two keys can share a name after a sync merge, and duplicate ids
+            // make SwiftUI draw (and delete) the wrong row.
+            ForEach(_state.list, id: \.key.tag) {
               KeyRow(card: $0, reloadCards: _state.reloadCards)
             }
             .onDelete { indexSet in
@@ -487,11 +506,16 @@ fileprivate class KeysObservable: ObservableObject {
   }
 
   @Published var list: [KeyCard] = KeyCard.all().sorted(by: KeySortType.nameAsc.sortFn)
-  @Published var actionSheetIsPresented: Bool = false
   @Published var filePickerIsPresented: Bool = false
   @Published var modal: KeyModals? = nil
-  var addKeyObservable: ImportKeyObservable? = nil
   @Published var errorMessage: String? = nil
+  // The clipboard's change count when a key was imported from it; see onModalSuccess.
+  private var clipboardChangeCount: Int? = nil
+
+  /// Names carried by more than one identity, sorted.
+  var duplicateNames: [String] {
+    Dictionary(grouping: list, by: \.name).filter { $0.value.count > 1 }.keys.sorted()
+  }
   var proposedKeyName = ""
 
   init() { }
@@ -525,6 +549,7 @@ fileprivate class KeysObservable: ObservableObject {
       }
 
       let blob = try Data(contentsOf: url, options: .alwaysMapped)
+      clipboardChangeCount = nil
       _importKeyFromBlob(blob: blob, proposedKeyName: url.lastPathComponent)
     } catch {
       _showError(message: error.localizedDescription)
@@ -545,15 +570,23 @@ fileprivate class KeysObservable: ObservableObject {
       return _showError(message: "Can't convert to data")
     }
 
+    clipboardChangeCount = UIPasteboard.general.changeCount
     _importKeyFromBlob(blob: blob, proposedKeyName: "")
   }
 
   func onModalCancel() {
     self.modal = nil
+    clipboardChangeCount = nil
   }
 
   func onModalSuccess() {
     self.modal = nil
+    // A private key imported from the clipboard is in the keychain now; it should not stay on the
+    // clipboard for the next app to read. Only if nothing was copied since (same change count).
+    if let count = clipboardChangeCount, UIPasteboard.general.changeCount == count {
+      UIPasteboard.general.items = []
+    }
+    clipboardChangeCount = nil
     reloadCards()
   }
 

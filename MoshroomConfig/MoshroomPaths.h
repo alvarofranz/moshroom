@@ -26,7 +26,6 @@
 @interface MoshroomPaths : NSObject
 
 + (NSString *) homePath;
-+ (NSURL *)homeURL;
 
 + (NSString *) groupContainerPath;
 + (NSString *) documentsPath;

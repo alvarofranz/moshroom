@@ -43,12 +43,17 @@ struct MoshQRScannerView: UIViewControllerRepresentable {
     let onFound: (String) -> Void
     let onError: (String) -> Void
     private var last: String?
+    private var lastAt = Date.distantPast
     init(onFound: @escaping (String) -> Void, onError: @escaping (String) -> Void) {
       self.onFound = onFound; self.onError = onError
     }
     func scanner(_ c: MoshQRScannerController, didFind payload: String) {
-      guard payload != last else { return }   // de-dupe the same code frame after frame
+      // De-dupe the same code frame after frame, but only for a moment: a code that was refused (not
+      // a 2FA code, or the keychain said no) must be retryable by holding it in view again.
+      let now = Date()
+      guard payload != last || now.timeIntervalSince(lastAt) > 2 else { return }
       last = payload
+      lastAt = now
       onFound(payload)
     }
     func scannerDidFail(_ c: MoshQRScannerController, reason: String) { onError(reason) }
@@ -74,8 +79,9 @@ final class MoshQRScannerController: UIViewController, AVCaptureMetadataOutputOb
     case .notDetermined:
       AVCaptureDevice.requestAccess(for: .video) { [weak self] ok in
         DispatchQueue.main.async {
-          if ok { self?.configure() }
-          else { self?.delegate?.scannerDidFail(self!, reason: "Camera access denied") }
+          guard let self else { return }
+          if ok { self.configure() }
+          else { self.delegate?.scannerDidFail(self, reason: "Camera access denied") }
         }
       }
     default:

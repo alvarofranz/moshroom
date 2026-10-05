@@ -32,6 +32,7 @@ struct SettingsView: View {
   @State private var _moshroomVersion = UIApplication.moshroomShortVersion() ?? ""
   @State private var _iCloudSyncOn = MoshroomDefaults.isICloudSyncEnabled()
   @State private var _requireBiometric = MoshroomDefaults.isRequireBiometricUnlock()
+  @State private var _lockError = ""
   @AppStorage(MoshxploreStyle.textSizeKey) private var _moshxploreTextSize: Int = MoshxploreStyle.defaultTextSize
   @AppStorage(Moshify.cacheGBKey) private var _moshifyCacheGB: Int = 2
   private var _iCloudAvailable: Bool { FileManager.default.ubiquityIdentityToken != nil }
@@ -131,6 +132,12 @@ struct SettingsView: View {
           Label("Require Face ID / passcode", systemImage: "faceid")
         }
         .onChange(of: _requireBiometric) { on in
+          // A lock this device cannot open (no passcode set) would shut the user out of the app.
+          if on && !MoshAppLock.canAuthenticate {
+            _requireBiometric = false
+            _lockError = "Set a device passcode first: without one there is nothing to unlock Moshroom with."
+            return
+          }
           MoshroomDefaults.setRequireBiometricUnlock(on)
           MoshroomDefaults.save()
         }
@@ -279,6 +286,7 @@ struct SettingsView: View {
     .onReceive(_clock) { now in
       _now = now   // keeps the "2m ago" label honest while the screen sits open
     }
+    .alert(errorMessage: $_lockError)
     .listStyle(.insetGrouped)
     // Sections need a visible gap: the default spacing ran them together into one grey slab.
     .listSectionSpacing(26)

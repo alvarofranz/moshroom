@@ -101,7 +101,9 @@ public struct MoshSSHHost {
         case "ciphers":                       self.ciphers                      = try castValue(value)
         case "compression":                   self.compression                  = try castValue(value)
         case "compressionlevel":              self.compressionLevel             = try castValue(value)
-        case "connectiontimeout":             self.connectionTimeout            = try castValue(value)
+        // OpenSSH spells it ConnectTimeout; the older spelling stays as an alias for configs that used it.
+        case "connecttimeout", "connectiontimeout":
+                                              self.connectionTimeout            = try castValue(value)
         case "controlmaster":                 self.controlMaster                = try castValue(value)
         case "dynamicforward":                self.dynamicForward               = try castList(value)
         case "exitonforwardfailure":          self.exitOnForwardFailure         = try castValue(value)

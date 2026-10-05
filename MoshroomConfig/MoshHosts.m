@@ -25,57 +25,26 @@
 #import "UICKeyChainStore.h"
 #import "MoshroomPaths.h"
 #import "XCConfig.h"
+#import "MoshPubKey.h"
 #import <MoshroomConfig/MoshroomConfig-Swift.h>
 
 NSMutableArray *__hosts;
 
-// The single global "Sync with iCloud" toggle governs whether secrets ride the iCloud Keychain.
-// Its value lives in the app-group user defaults, written by MoshroomDefaults (which is compiled in
-// the app target and can't be imported here — that would be a dependency cycle, since MoshroomDefaults
-// imports MoshroomConfig). Reading the shared default directly is the clean seam. Key + suite are
-// kept identical in MoshPubKey.m and MoshroomDefaults.m.
-static NSString *const kMoshroomICloudSyncEnabledKey = @"MoshroomICloudSyncEnabled";
-static BOOL __icloud_sync_enabled() {
-  NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:[XCConfig infoPlistFullGroupID]];
-  return [d boolForKey:kMoshroomICloudSyncEnabledKey];
-}
+// YES while the hosts blob exists on disk but could not be READ (protected data not available yet).
+// Same contract as the keys blob in MoshPubKey.m: an empty list is never written over a file this run
+// could not see.
+static BOOL __hostsUnreadable = NO;
 
-// Keychain service for host passwords: derived from the build's KEYCHAIN_ID1
-// (e.g. com.alvarofranz.moshroom.pwd) — never a hardcoded foreign namespace. When sync is ON,
-// passwords ride the iCloud Keychain (kSecAttrSynchronizable, end-to-end encrypted): they survive an
-// app reinstall and follow the user's devices. When OFF, they are written local to this device.
+// Host passwords live under the build's KEYCHAIN_ID1 plus ".pwd" (e.g. com.alvarofranz.moshroom.pwd),
+// never a hardcoded foreign namespace. The store and the write that never loses the old value are the
+// shared ones in MoshPubKey.m (declared in MoshPubKey.h): when sync is ON passwords ride the iCloud
+// Keychain, when OFF they stay on this device, and each item keeps the flavor of its last write.
 static UICKeyChainStore *__get_keychain() {
-  NSString *service = [NSString stringWithFormat:@"%@.pwd", [XCConfig infoPlistKeyChainID1]];
-  UICKeyChainStore *keychain = [UICKeyChainStore keyChainStoreWithService:service];
-  keychain.synchronizable = __icloud_sync_enabled();
-  return keychain;
+  return MoshroomKeychainStore(@"pwd");
 }
 
-// Write a keychain string so the item always takes the CURRENT sync flavor. SecItemUpdate cannot
-// change an existing item's kSecAttrSynchronizable, so we delete any existing variant first (the
-// lookup matches both flavors via kSecAttrSynchronizableAny) and add fresh. Net effect: each item's
-// sync state equals the toggle value at its last write; items you never touch keep the flavor they
-// already had ("lo que hay es lo que hay").
-//
-// The delete-then-add is also the only moment a stored password exists nowhere but this stack frame,
-// so the previous value is read first and PUT BACK if the write is refused (locked before first
-// unlock, keychain busy, quota). A failed write must cost you a re-entry, never the password you
-// already had. Same contract as MoshPubKey's copy.
 static BOOL __kc_set(UICKeyChainStore *keychain, NSString *value, NSString *key) {
-  NSString *previous = [keychain stringForKey:key];
-  [keychain removeItemForKey:key];
-
-  NSError *error = nil;
-  if ([keychain setString:value forKey:key error:&error]) {
-    return YES;
-  }
-
-  if (previous) {
-    [keychain setString:previous forKey:key];
-  }
-  NSLog(@"[MoshHosts] Keychain write failed for %@: %@%@", key, error,
-        previous ? @" (previous value restored)" : @"");
-  return NO;
+  return MoshroomKeychainSetString(keychain, value, key);
 }
 
 @implementation MoshHosts
@@ -257,14 +226,43 @@ sshConfigAttachment:(NSString *)sshConfigAttachment
       agentForwardPrompt:(enum MoshAgentForward)agentForwardPrompt
         agentForwardKeys:(NSArray *)agentForwardKeys
 {
-  NSString *pwdRef = @"";
-  if (password) {
-    pwdRef = [newHost stringByAppendingString:@".pwd"];
-    __kc_set(__get_keychain(), password, pwdRef);
+  MoshHosts *bkHost = [MoshHosts withHost:host];
+
+  // The password, in three cases (the editor only passes a value when the user changed it):
+  //   nil   -> unchanged. A password this device cannot read yet (still arriving through the iCloud
+  //            Keychain, or the keychain is locked) is NEVER overwritten by an untouched field.
+  //   @""   -> cleared on purpose: the stored item goes.
+  //   value -> stored under <alias>.pwd; a previous item under another name (a renamed host) goes
+  //            only once the new one is safely written.
+  UICKeyChainStore *keychain = __get_keychain();
+  NSString *oldRef = bkHost.passwordRef.length ? bkHost.passwordRef : nil;
+  NSString *pwdRef = oldRef ?: @"";
+  NSString *staleRef = nil;
+  if (password.length) {
+    NSString *newRef = [newHost stringByAppendingString:@".pwd"];
+    if (!__kc_set(keychain, password, newRef)) {
+      // The keychain refused it and the previous value is back. Saving the rest would tell the user
+      // the password was stored when it was not.
+      return nil;
+    }
+    pwdRef = newRef;
+    if (oldRef && ![oldRef isEqualToString:newRef]) {
+      staleRef = oldRef;
+    }
+  } else if (password) {
+    staleRef = oldRef;
+    pwdRef = @"";
+  } else if (oldRef && bkHost && ![bkHost.host isEqualToString:newHost]) {
+    // Renamed with the password untouched: move it to the new alias's name so a future host that
+    // takes the old alias cannot overwrite it. If it cannot be read right now, the old name stays.
+    NSString *newRef = [newHost stringByAppendingString:@".pwd"];
+    NSString *current = [keychain stringForKey:oldRef];
+    if (current && __kc_set(keychain, current, newRef)) {
+      pwdRef = newRef;
+      staleRef = oldRef;
+    }
   }
 
-  MoshHosts *bkHost = [MoshHosts withHost:host];
-  // Save password to keychain if it changed
   if (!bkHost) {
     bkHost = [[MoshHosts alloc] initWithAlias:newHost
                                    hostName:hostName
@@ -323,7 +321,18 @@ sshConfigAttachment:(NSString *)sshConfigAttachment
   if (![MoshHosts saveHosts]) {
     return nil;
   }
+  // Only now, with the host saved pointing at its new ref, can the old item go.
+  if (staleRef) {
+    [keychain removeItemForKey:staleRef];
+  }
   return bkHost;
+}
+
+- (void)removePasswordFromKeychain {
+  if (_passwordRef.length) {
+    [__get_keychain() removeItemForKey:_passwordRef];
+  }
+  _passwordRef = @"";
 }
 
 + (BOOL)saveHosts {
@@ -340,6 +349,11 @@ sshConfigAttachment:(NSString *)sshConfigAttachment
   // Then the user would load the app, and the Hosts would be empty, overwriting a never read hosts file.
   // This way we differentiate if saving is due to user, or part of the UI flow.
   if (!__hosts && !force) {
+    return NO;
+  }
+  // The file is there and this run could not read it: the in-memory list is empty, not the truth.
+  if (__hostsUnreadable) {
+    NSLog(@"[MoshHosts] Refusing to save: the hosts file exists but could not be read this run");
     return NO;
   }
   
@@ -383,9 +397,13 @@ sshConfigAttachment:(NSString *)sshConfigAttachment
                                           error:&error];
   
   if (error || !data) {
+    // A missing file is a fresh install; anything else is a file this run cannot see yet.
+    BOOL missing = [error.domain isEqualToString:NSCocoaErrorDomain] && error.code == NSFileReadNoSuchFileError;
+    __hostsUnreadable = !missing;
     NSLog(@"[MoshHosts] Failed to load data: %@", error);
     return;
   }
+  __hostsUnreadable = NO;
   NSArray *result =
     [NSKeyedUnarchiver unarchivedArrayOfObjectsOfClass:[MoshHosts class]
                                               fromData:data
@@ -393,6 +411,11 @@ sshConfigAttachment:(NSString *)sshConfigAttachment
   
   if (error || !result) {
     NSLog(@"[MoshHosts] Failed to unarchive data: %@", error);
+    // Keep the bytes before anything can overwrite them: a copy beside the file, made once.
+    NSString *aside = [[MoshroomPaths moshroomHostsFile] stringByAppendingString:@".unreadable"];
+    if (![[NSFileManager defaultManager] fileExistsAtPath:aside]) {
+      [data writeToFile:aside options:NSDataWritingAtomic | NSDataWritingFileProtectionCompleteUntilFirstUserAuthentication error:nil];
+    }
     return;
   }
   

@@ -55,11 +55,9 @@ public class MoshGlobalSSHConfig: NSObject, NSSecureCoding {
     do {
       let config = SSHConfig()
 
-      // TODO If we decide to add values, we need to figure out when to overwrite it.
-      // Probably as part of the Default config.
-      // Not sure if now it was happening on every run.
-      try config.add(alias: "*", cfg: [("User", self.user),
-                                       ("ControlMaster", "auto"),
+      // Regenerated on every launch and every settings save (MoshroomDefaults). No global User: a host without its own user connects as whatever the command line or its
+      // ssh config says, never as a hidden name derived from the device.
+      try config.add(alias: "*", cfg: [("ControlMaster", "auto"),
                                        ("SendEnv", "LANG"),
                                        ("Compression", "yes"),
                                        ("CompressionLevel", "6")])
@@ -78,7 +76,8 @@ Include ../.ssh/config
         return
       }
 
-      try data.write(to: url)
+      // Readable after the first unlock, like the ssh_config it includes (see MoshHosts.saveAllToSSHConfig).
+      try data.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
     } catch(let error) {
       // TODO We could/should rely on a Log + Alert mechanism.
       print(error.localizedDescription)

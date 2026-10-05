@@ -102,6 +102,9 @@ enum MoshAgentForward {
       agentForwardPrompt:(enum MoshAgentForward)agentForwardPrompt
         agentForwardKeys:(NSArray<NSString *> *)agentForwardKeys
 ;
+// Drops this host's saved password from the keychain (with sync on, from every device) and clears
+// the reference. Called when the host itself is deleted, so no unreachable secret is left behind.
+- (void)removePasswordFromKeychain;
 + (NSMutableArray<MoshHosts *> *)all;
 + (NSArray<MoshHosts *> *)allHosts;
 + (NSInteger)count;

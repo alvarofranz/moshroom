@@ -98,7 +98,10 @@ extension MoshHosts {
         return
       }
       
-      try data.write(to: url)
+      // Same protection class as the hosts blob it is generated from: readable after the first unlock,
+      // so a connect made while the device is locked (Moshify fetching the next track, a background
+      // redial) can still parse it. The container default (Complete) made it unreadable then.
+      try data.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
       
     } catch {
       // TODO Throw and capture somewhere else.

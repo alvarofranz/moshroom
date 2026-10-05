@@ -35,10 +35,8 @@ import MoshroomConfig
 // MARK: - The shared "Sync with iCloud" flag (mirrored by MoshroomDefaults into the app group)
 
 enum MoshKeychainSync {
-  // Kept in lockstep with kMoshroomICloudSyncEnabledKey in MoshHosts.m / MoshPubKey.m.
-  static var enabled: Bool {
-    UserDefaults(suiteName: XCConfig.infoPlistFullGroupID())?.bool(forKey: "MoshroomICloudSyncEnabled") ?? false
-  }
+  // The one reader every store shares (MoshroomConfig, MoshPubKey.m).
+  static var enabled: Bool { MoshroomICloudSyncEnabled() }
 }
 
 // MARK: - Records
@@ -113,7 +111,7 @@ final class MoshSecretStore<T: MoshVaultRecord> {
   // `serviceSuffix` is appended to the build's KEYCHAIN_ID1 so the service is namespaced to Moshroom
   // exactly like the SSH key / host-password services (".pkcard" / ".pwd") — never a foreign namespace.
   init(serviceSuffix: String) {
-    self.service = "\(XCConfig.infoPlistKeyChainID1() ?? "").\(serviceSuffix)"
+    self.service = "\(XCConfig.infoPlistKeyChainID1()).\(serviceSuffix)"
   }
 
   private static var encoder: JSONEncoder {
@@ -147,6 +145,18 @@ final class MoshSecretStore<T: MoshVaultRecord> {
       guard let data = item[kSecValueData as String] as? Data else { return nil }
       return try? Self.decoder.decode(T.self, from: data)
     }
+  }
+
+  // How many records there are, from an attributes-only query: counting the vault never decrypts or
+  // decodes it.
+  func count() -> Int {
+    var q = baseQuery()
+    q[kSecMatchLimit as String] = kSecMatchLimitAll
+    q[kSecReturnAttributes as String] = true
+    var result: CFTypeRef?
+    guard SecItemCopyMatching(q as CFDictionary, &result) == errSecSuccess,
+          let items = result as? [[String: Any]] else { return 0 }
+    return items.count
   }
 
   func get(id: String) -> T? {
@@ -229,7 +239,8 @@ final class MoshVaultStore {
   func all() -> [MoshVaultEntry] {
     store.all().sorted { $0.service.localizedCaseInsensitiveCompare($1.service) == .orderedAscending }
   }
-  func count() -> Int { store.all().count }
+  func count() -> Int { store.count() }
+  func contains(id: String) -> Bool { store.get(id: id) != nil }
   @discardableResult func save(_ e: MoshVaultEntry) -> Bool {
     var e = e; e.lastModified = Date(); return store.upsert(e)
   }
@@ -247,7 +258,7 @@ final class MoshTOTPStore {
       return a.localizedCaseInsensitiveCompare(b) == .orderedAscending
     }
   }
-  func count() -> Int { store.all().count }
+  func count() -> Int { store.count() }
   @discardableResult func save(_ a: MoshTOTPAccount) -> Bool {
     var a = a; a.lastModified = Date(); return store.upsert(a)
   }
@@ -258,10 +269,11 @@ final class MoshTOTPStore {
   @discardableResult func importAccounts(_ incoming: [MoshTOTPAccount]) -> Int {
     let existing = all()
     func key(_ a: MoshTOTPAccount) -> String { "\(a.issuer)\u{1}\(a.account)\u{1}\(a.secret)".lowercased() }
-    let seen = Set(existing.map(key))
+    var seen = Set(existing.map(key))
     var added = 0
+    // `seen` grows as we go, so the same account appearing twice in one import lands once.
     for acc in incoming where !seen.contains(key(acc)) {
-      if store.upsert(acc) { added += 1 }
+      if store.upsert(acc) { added += 1; seen.insert(key(acc)) }
     }
     return added
   }

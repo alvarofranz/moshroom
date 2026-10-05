@@ -39,11 +39,6 @@ NSString *__iCloudsDriveDocumentsPath = nil;
   return __homePath;
 }
 
-+ (NSURL *)homeURL
-{
-  return [NSURL fileURLWithPath:[self homePath]];
-}
-
 + (NSString *)documentsPath
 {
   if (__documentsPath == nil) {

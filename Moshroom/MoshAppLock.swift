@@ -22,26 +22,42 @@
 ////////////////////////////////////////////////////////////////////////////////
 
 import UIKit
+import LocalAuthentication
 
 // Optional app lock: when "Require Face ID / passcode" is on (Settings › Security), a cover is shown
-// whenever the app leaves the foreground — so its contents never appear in the app switcher — and
+// whenever the app leaves the foreground, so its contents never appear in the app switcher, and
 // Face ID / passcode is required to get back in (and once at launch). Off by default. Built on the
 // same LocalAuth (deviceOwnerAuthentication = biometry OR passcode) that already gates key reveals,
 // so a device without biometrics falls back to the passcode automatically.
+//
+// The cover goes over EVERY window the app has (Moshroom runs several scenes on the Mac and the
+// iPad) and each cover is made the KEY window: a cover that is merely visible still lets hardware
+// keys and menu commands reach the terminal behind it.
 @objc final class MoshAppLock: NSObject {
   @objc static let shared = MoshAppLock()
 
-  private var coverWindow: UIWindow?
+  private var coverWindows: [ObjectIdentifier: UIWindow] = [:]   // scene → its cover
+  private var coverShown = false
   private var locked = false
   private var authenticating = false
 
   private var isEnabled: Bool { MoshroomDefaults.isRequireBiometricUnlock() }
+
+  /// Can this device ask for Face ID or a passcode at all? The Settings switch checks it before
+  /// turning the lock on, so it can never be enabled on a device that has no way to unlock it.
+  @objc static var canAuthenticate: Bool {
+    LAContext().canEvaluatePolicy(.deviceOwnerAuthentication, error: nil)
+  }
 
   @objc func install() {
     let nc = NotificationCenter.default
     nc.addObserver(self, selector: #selector(_willResignActive), name: UIApplication.willResignActiveNotification, object: nil)
     nc.addObserver(self, selector: #selector(_didEnterBackground), name: UIApplication.didEnterBackgroundNotification, object: nil)
     nc.addObserver(self, selector: #selector(_didBecomeActive), name: UIApplication.didBecomeActiveNotification, object: nil)
+    // A window opened (or reconnected) while the cover is up gets one too; a closed one drops its own.
+    nc.addObserver(self, selector: #selector(_sceneDidChange), name: UIScene.willEnterForegroundNotification, object: nil)
+    nc.addObserver(self, selector: #selector(_sceneDidChange), name: UIScene.didActivateNotification, object: nil)
+    nc.addObserver(self, selector: #selector(_sceneDidDisconnect(_:)), name: UIScene.didDisconnectNotification, object: nil)
     if isEnabled { locked = true; _showCover() }
   }
 
@@ -58,8 +74,28 @@ import UIKit
     if locked { _authenticate() } else { _hideCover() }
   }
 
+  @objc private func _sceneDidChange() {
+    if coverShown { _showCover() }
+  }
+
+  @objc private func _sceneDidDisconnect(_ note: Notification) {
+    guard let scene = note.object as? UIScene else { return }
+    coverWindows.removeValue(forKey: ObjectIdentifier(scene))?.isHidden = true
+  }
+
   private func _authenticate() {
     guard !authenticating else { return }
+    // A device that can no longer ask (its passcode was removed after the lock was turned on) has
+    // nothing left to protect the app with, and failing closed here would lock the user out of their
+    // own data for good. Let them in; Settings will not let the lock be turned on again until it can.
+    var policyError: NSError?
+    if !LAContext().canEvaluatePolicy(.deviceOwnerAuthentication, error: &policyError),
+       policyError?.domain == LAErrorDomain, policyError?.code == LAError.Code.passcodeNotSet.rawValue {
+      MoshLog.log("lock", "no device passcode: app lock cannot ask, unlocking")
+      locked = false
+      _hideCover()
+      return
+    }
     authenticating = true
     _showCover()
     LocalAuth.shared.authenticate(callback: { [weak self] ok in
@@ -73,28 +109,31 @@ import UIKit
     }, reason: "to unlock Moshroom.")
   }
 
-  // MARK: - Cover window
+  // MARK: - Cover windows
 
   private func _showCover() {
-    guard coverWindow == nil,
-          let scene = _activeScene() else { return }
-    let window = UIWindow(windowScene: scene)
-    window.windowLevel = .alert + 1
-    window.rootViewController = MoshLockScreen { [weak self] in self?._authenticate() }
-    window.isHidden = false
-    coverWindow = window
+    coverShown = true
+    for case let scene as UIWindowScene in UIApplication.shared.connectedScenes
+    where coverWindows[ObjectIdentifier(scene)] == nil {
+      let window = UIWindow(windowScene: scene)
+      window.windowLevel = .alert + 1
+      window.rootViewController = MoshLockScreen { [weak self] in self?._authenticate() }
+      window.makeKeyAndVisible()
+      coverWindows[ObjectIdentifier(scene)] = window
+    }
   }
 
   private func _hideCover() {
-    coverWindow?.isHidden = true
-    coverWindow = nil
-  }
-
-  private func _activeScene() -> UIWindowScene? {
-    let scenes = UIApplication.shared.connectedScenes
-    return (scenes.first { $0.activationState == .foregroundActive } as? UIWindowScene)
-        ?? (scenes.first { $0.activationState == .foregroundInactive } as? UIWindowScene)
-        ?? (scenes.first as? UIWindowScene)
+    coverShown = false
+    let covers = Set(coverWindows.values.map(ObjectIdentifier.init))
+    for cover in coverWindows.values {
+      cover.isHidden = true
+      // Hand the keyboard back to the window the cover took it from.
+      cover.windowScene?.windows
+        .first { !covers.contains(ObjectIdentifier($0)) && !$0.isHidden && $0.windowLevel == .normal }?
+        .makeKey()
+    }
+    coverWindows.removeAll()
   }
 }
 
@@ -130,7 +169,7 @@ private final class MoshLockScreen: UIViewController {
     config.baseBackgroundColor = .moshroomTint
     config.cornerStyle = .large
     let button = UIButton(configuration: config, primaryAction: UIAction { [weak self] _ in self?.onUnlock() })
-    button.preferredBehavioralStyle = .pad   // Catalyst: honor the configured look (see CLAUDE.md)
+    button.preferredBehavioralStyle = .pad   // Catalyst: honor the configured look
     button.translatesAutoresizingMaskIntoConstraints = false
 
     let stack = UIStackView(arrangedSubviews: [icon, title, button])

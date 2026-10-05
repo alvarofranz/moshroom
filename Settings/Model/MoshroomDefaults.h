@@ -78,7 +78,6 @@ typedef NS_ENUM(NSInteger, MoshLayoutMode) {
 + (NSUInteger)enableBold;
 + (BOOL)isBoldAsBright;
 + (BOOL)disableCustomKeyboards;
-+ (void)setDefaultUserName:(NSString*)name;
 + (void)saveGlobalSSHConfig;
 + (NSString*)defaultUserName;
 + (MoshLayoutMode)layoutMode;

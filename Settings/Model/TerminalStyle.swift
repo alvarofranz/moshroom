@@ -107,12 +107,12 @@ extension TerminalStyle {
     let themeContent = effectiveTheme?.content()
 
     // Font resolution
-    let fontResource = MoshFont.withName(fontName) as? MoshFont
+    let fontResource = MoshFont.withName(fontName)
     if fontResource == nil {
       warnings.append(.fontNotFound(name: fontName))
     }
 
-    let fallbackFont = MoshFont.withName(Self.defaultFontName) as? MoshFont
+    let fallbackFont = MoshFont.withName(Self.defaultFontName)
     let effectiveFont = fontResource ?? fallbackFont
     let fontContent = effectiveFont?.content()
     let fontFamily = effectiveFont?.name ?? Self.defaultFontName

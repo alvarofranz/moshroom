@@ -29,6 +29,7 @@
 #import "Moshroom-Swift.h"
 #import "LayoutConstraintManager.h"
 #import <MoshroomConfig/XCConfig.h>
+#import <MoshroomConfig/MoshPubKey.h>
 
 
 MoshroomDefaults *defaults;
@@ -37,11 +38,11 @@ NSString *const MoshAppearanceChanged = @"MoshAppearanceChanged";
 
 // Mirror the "Sync with iCloud" flag into the app-group user defaults so MoshroomConfig
 // (MoshHosts/MoshPubKey) can read it synchronously without importing this class — that would be a
-// dependency cycle. The vault/2FA stores in the app target read the same key. Kept in lockstep with
-// kMoshroomICloudSyncEnabledKey in MoshHosts.m / MoshPubKey.m.
+// dependency cycle. The key is defined once, in MoshroomConfig (MoshroomICloudSyncEnabledKey), and
+// every reader uses MoshroomICloudSyncEnabled().
 static void __mirrorICloudSyncFlag(BOOL enabled) {
   NSUserDefaults *d = [[NSUserDefaults alloc] initWithSuiteName:[XCConfig infoPlistFullGroupID]];
-  [d setBool:enabled forKey:@"MoshroomICloudSyncEnabled"];
+  [d setBool:enabled forKey:MoshroomICloudSyncEnabledKey];
 }
 
 @implementation MoshroomDefaults
@@ -213,9 +214,9 @@ static void __mirrorICloudSyncFlag(BOOL enabled) {
     [defaults setDefaultUser:[UIDevice getInfoTypeFromDeviceName:MoshDeviceInfoTypeUserName]];
   }
 
-  if(!defaults.globalSSHConfig) {
-    [MoshroomDefaults saveGlobalSSHConfig];
-  }
+  // Rewritten every launch: the file is generated, never edited by hand, and an older build's copy
+  // (it carried a hidden `User` for every host) must not outlive the code that wrote it.
+  [MoshroomDefaults saveGlobalSSHConfig];
 
   // Publish the loaded sync flag to the app group so MoshroomConfig sees the authoritative value
   // from the very first keychain access this launch.
@@ -240,11 +241,6 @@ static void __mirrorICloudSyncFlag(BOOL enabled) {
 + (void)setFontSize:(NSNumber *)fontSize
 {
   [TerminalStyleStore.shared setStyleFontSize:fontSize];
-}
-
-+ (void)setDefaultUserName:(NSString*)name
-{
-  defaults.defaultUser = name;
 }
 
 + (void)saveGlobalSSHConfig

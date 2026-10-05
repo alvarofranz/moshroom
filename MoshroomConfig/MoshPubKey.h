@@ -24,6 +24,34 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 
+// MARK: - Shared keychain plumbing
+//
+// One home for what MoshPubKey.m, MoshHosts.m, MoshroomDefaults.m and the Swift stores used to copy
+// by hand: the "Sync with iCloud" flag (kept in the app-group defaults so this framework can read it
+// without importing the app target) and the delete-then-add write that never loses the old value.
+// Implemented in MoshPubKey.m.
+
+// The app-group defaults key that carries the "Sync with iCloud" toggle.
+FOUNDATION_EXPORT NSString * _Nonnull const MoshroomICloudSyncEnabledKey;
+// The toggle as the keychain stores see it: YES means new secrets are written synchronizable.
+FOUNDATION_EXPORT BOOL MoshroomICloudSyncEnabled(void);
+
+@class UICKeyChainStore;
+// A store for `<KEYCHAIN_ID1>.<serviceSuffix>` whose writes take the CURRENT sync flavor.
+FOUNDATION_EXPORT UICKeyChainStore * _Nonnull MoshroomKeychainStore(NSString * _Nonnull serviceSuffix)
+  NS_SWIFT_UNAVAILABLE("ObjC keychain plumbing");
+// Write a string so the item takes the current sync flavor. SecItemUpdate cannot change
+// kSecAttrSynchronizable, so any existing variant is deleted and the value added fresh; the previous
+// value is read first and put back, in its OWN flavor and accessibility, if the add is refused.
+FOUNDATION_EXPORT BOOL MoshroomKeychainSetString(UICKeyChainStore * _Nonnull keychain,
+                                                 NSString * _Nonnull value,
+                                                 NSString * _Nonnull key)
+  NS_SWIFT_UNAVAILABLE("ObjC keychain plumbing");
+// The account names under a service, from an attributes-only query (no secret is read). nil when the
+// keychain could not answer (locked before first unlock, busy), an empty set when there is nothing.
+FOUNDATION_EXPORT NSSet<NSString *> * _Nullable MoshroomKeychainAccounts(UICKeyChainStore * _Nonnull keychain)
+  NS_SWIFT_UNAVAILABLE("ObjC keychain plumbing");
+
 
 typedef enum: NSUInteger {
   MoshPubKeyStorageTypeKeyChain = 0,

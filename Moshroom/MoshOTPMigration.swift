@@ -32,9 +32,10 @@ enum MoshOTPMigration {
 
   struct Result {
     var accounts: [MoshTOTPAccount]   // TOTP accounts recovered from this one QR
-    var skippedHOTP: Int              // HOTP entries in this QR (not supported by a TOTP authenticator)
+    var skippedUnsupported: Int       // entries in this QR we cannot generate codes for (HOTP, MD5)
     var batchSize: Int                // how many QR codes make up the whole export (>= 1)
     var batchIndex: Int               // which one this is (0-based)
+    var batchID: Int?                 // the export these batches belong to, when the payload says
   }
 
   // Parse ONE migration QR / URI. Returns nil only if it isn't a valid migration payload.
@@ -63,29 +64,34 @@ enum MoshOTPMigration {
     var skipped = 0
     var batchSize = 1
     var batchIndex = 0
+    var batchID: Int?
 
     while let (field, wire) = reader.tag() {
       switch (field, wire) {
       case (1, 2):                                    // repeated OtpParameters otp_parameters
         guard let sub = reader.lengthDelimited() else { return finalize() }
         if let params = parseOtpParameters(sub) {
-          if params.isHOTP { skipped += 1 } else if let acc = params.account { accounts.append(acc) }
+          if params.unsupported { skipped += 1 } else if let acc = params.account { accounts.append(acc) }
         }
-      case (3, 0): batchSize = Int(reader.varint() ?? 1)   // int32 batch_size
-      case (4, 0): batchIndex = Int(reader.varint() ?? 0)  // int32 batch_index
+      // The int32 fields go through the clamping reader: a crafted QR can carry any 64-bit varint
+      // (a negative int32 is a 10-byte one), and a plain Int(_:) of it traps.
+      case (3, 0): batchSize = reader.int32() ?? 1        // int32 batch_size
+      case (4, 0): batchIndex = reader.int32() ?? 0       // int32 batch_index
+      case (5, 0): batchID = reader.int32()               // int32 batch_id
       default:
         if !reader.skip(wire: wire) { return finalize() }
       }
     }
     func finalize() -> Result {
-      Result(accounts: accounts, skippedHOTP: skipped, batchSize: max(1, batchSize), batchIndex: max(0, batchIndex))
+      Result(accounts: accounts, skippedUnsupported: skipped, batchSize: max(1, batchSize),
+             batchIndex: max(0, batchIndex), batchID: batchID)
     }
     return finalize()
   }
 
   // MARK: - OtpParameters
 
-  private struct ParsedParams { var account: MoshTOTPAccount?; var isHOTP: Bool }
+  private struct ParsedParams { var account: MoshTOTPAccount?; var unsupported: Bool }
 
   private static func parseOtpParameters(_ data: Data) -> ParsedParams? {
     var reader = PBReader(data)
@@ -95,6 +101,7 @@ enum MoshOTPMigration {
     var algorithm: MoshOTPAlgorithm = .sha1
     var digits = 6
     var isHOTP = false
+    var isMD5 = false
 
     while let (field, wire) = reader.tag() {
       switch (field, wire) {
@@ -102,7 +109,14 @@ enum MoshOTPMigration {
       case (2, 2): name = string(reader.lengthDelimited())                     // string name
       case (3, 2): issuer = string(reader.lengthDelimited())                   // string issuer
       case (4, 0):                                                             // enum algorithm
-        switch reader.varint() ?? 1 { case 2: algorithm = .sha256; case 3: algorithm = .sha512; default: algorithm = .sha1 }
+        // SHA1=1, SHA256=2, SHA512=3, MD5=4. MD5 codes cannot be generated here; mapping it to SHA1
+        // would import an account that shows wrong codes, so it is reported as unsupported instead.
+        switch reader.varint() ?? 1 {
+        case 2: algorithm = .sha256
+        case 3: algorithm = .sha512
+        case 4: isMD5 = true
+        default: algorithm = .sha1
+        }
       case (5, 0): digits = (reader.varint() ?? 1) == 2 ? 8 : 6               // enum digits (SIX/EIGHT)
       case (6, 0): isHOTP = (reader.varint() ?? 2) == 1                        // enum type (HOTP=1, TOTP=2)
       default:
@@ -110,7 +124,7 @@ enum MoshOTPMigration {
       }
     }
 
-    if isHOTP { return ParsedParams(account: nil, isHOTP: true) }
+    if isHOTP || isMD5 { return ParsedParams(account: nil, unsupported: true) }
     guard !secret.isEmpty else { return nil }
 
     // Google's label often carries the issuer as "Issuer:account" or via the separate issuer field.
@@ -129,7 +143,7 @@ enum MoshOTPMigration {
       digits: digits,
       period: 30                               // Google migration payloads are always 30s TOTP
     )
-    return ParsedParams(account: account, isHOTP: false)
+    return ParsedParams(account: account, unsupported: false)
   }
 
   private static func string(_ data: Data?) -> String {
@@ -157,16 +171,25 @@ enum MoshOTPMigration {
       return nil
     }
 
+    // An int32 field: protobuf sign-extends negatives to 64 bits, so the low 32 bits are the value.
+    mutating func int32() -> Int? {
+      guard let v = varint() else { return nil }
+      return Int(Int32(truncatingIfNeeded: v))
+    }
+
     // A field tag: (fieldNumber, wireType). nil at end / on malformed input.
     mutating func tag() -> (Int, Int)? {
       guard !atEnd, let t = varint() else { return nil }
-      return (Int(t >> 3), Int(t & 0x07))
+      return (Int(truncatingIfNeeded: t >> 3), Int(t & 0x07))
     }
 
+    // Bounds-checked without ever converting an untrusted length that does not fit: a declared
+    // length past the end of the buffer is malformed input, not a crash.
     mutating func lengthDelimited() -> Data? {
-      guard let len = varint(), i + Int(len) <= bytes.count else { return nil }
-      let slice = Data(bytes[i..<i + Int(len)])
-      i += Int(len)
+      guard let len = varint(), len <= UInt64(max(0, bytes.count - i)) else { return nil }
+      let n = Int(len)
+      let slice = Data(bytes[i..<i + n])
+      i += n
       return slice
     }
 

@@ -113,22 +113,5 @@ public struct MoshConfig {
       signer(forIdentity: $0)
     }
   }
-  
-  public func defaultKeys() -> [(String, String)] {
-    return _allIdentities
-      .filter {
-        defaultKeyNames.contains($0.id)
-      }
-      .map {
-        ($0.loadPrivateKey(), $0.id)
-      }
-      .compactMap {
-        guard
-          let privateKey = $0.0
-        else {
-          return nil
-        }
-        return (privateKey, $0.1)
-      }
-  }
+
 }

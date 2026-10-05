@@ -85,16 +85,20 @@ struct MoshvaultRootView: View {
     .fullScreenCover(isPresented: $showingManualTOTP, onDismiss: bumpReload) { MoshTOTPManualEntry() }
     .fullScreenCover(isPresented: $showingScan, onDismiss: bumpReload) {
       MoshTOTPScanSheet { uri in
-        guard let acc = MoshTOTP.parse(uri: uri) else { return false }
-        // Only a stored account counts as scanned — otherwise the sheet closes on a code that went
+        guard let acc = MoshTOTP.parse(uri: uri) else {
+          return "That isn't a 2FA setup code. Point the camera at the QR the service shows."
+        }
+        // Only a stored account counts as scanned: otherwise the sheet closes on a code that went
         // nowhere, and the QR is usually gone by the time anyone notices.
         return MoshTOTPStore.shared.save(acc)
+          ? nil
+          : "The keychain refused to save this account. Unlock the device and scan again."
       }
     }
     .fullScreenCover(isPresented: $showingMigrate, onDismiss: bumpReload) {
       MoshTOTPMigrateSheet { added, skipped in
         totpBanner = "Imported \(added) account\(added == 1 ? "" : "s")"
-          + (skipped > 0 ? " · \(skipped) HOTP skipped" : "")
+          + (skipped > 0 ? " · \(skipped) not supported (HOTP or MD5)" : "")
       }
     }
   }
@@ -360,7 +364,10 @@ private struct MoshVaultCopyButton: View {
       EmptyView()
     } else {
       Button {
-        MoshClipboard.copyWithFeedback(trimmed, clearAfter: clearAfter)
+        // The raw value: a password may really begin or end with a space. Trimming only decides
+        // whether there is anything to copy.
+        guard !trimmed.isEmpty else { return }
+        MoshClipboard.copyWithFeedback(value, clearAfter: clearAfter)
         withAnimation { copied = true }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.3) { withAnimation { copied = false } }
       } label: {
@@ -484,16 +491,21 @@ private struct MoshvaultPasswordEditor: View {
   @State var entry: MoshVaultEntry
   @State private var revealPassword = false
   @State private var saveError = ""
+  // Derived "new vs edit" from the store, not a passed-in flag (the flag raced with the sheet
+  // presentation and showed "Edit Password" on a brand-new entry). Asked ONCE, for one item: as a
+  // computed property it re-read and decoded the whole vault on every keystroke.
+  private let isNew: Bool
+
+  init(entry: MoshVaultEntry) {
+    _entry = State(initialValue: entry)
+    isNew = !MoshVaultStore.shared.contains(id: entry.id)
+  }
 
   // A vault entry has no home outside the keychain, so a refused write is the whole edit — or, for a
   // new entry, the whole entry. The editor stays open and says so rather than closing on a save that
   // did not happen.
   private static let writeRefused =
     "The keychain refused to save this. Nothing was changed — unlock the device and try again." 
-
-  // Derive "new vs edit" from the store, not a passed-in flag — the flag raced with the sheet
-  // presentation and showed "Edit Password" on a brand-new entry.
-  private var isNew: Bool { !MoshVaultStore.shared.all().contains { $0.id == entry.id } }
 
   var body: some View {
     VStack(spacing: 0) {
@@ -712,10 +724,14 @@ private struct MoshTOTPManualEntry: View {
   @Environment(\.dismiss) private var dismiss
   @State private var account: MoshTOTPAccount
   @State private var saveError = ""
+  // The setup key of a stored account is the whole 2FA secret: it hides behind the same Face ID /
+  // passcode reveal as a vault password. A new account shows it, since the user is typing it.
+  @State private var revealSecret: Bool
   private let isNew: Bool
 
   init(existing: MoshTOTPAccount? = nil) {
     _account = State(initialValue: existing ?? MoshTOTPAccount())
+    _revealSecret = State(initialValue: existing == nil)
     isNew = existing == nil
   }
 
@@ -738,9 +754,28 @@ private struct MoshTOTPManualEntry: View {
           field("Account", text: $account.account)
         }
         Section("Secret") {
-          TextField("Base32 key", text: $account.secret)
-            .autocorrectionDisabled().textInputAutocapitalization(.characters)
-            .font(.system(.body, design: .monospaced))
+          HStack {
+            if revealSecret {
+              TextField("Base32 key", text: $account.secret)
+                .autocorrectionDisabled().textInputAutocapitalization(.characters)
+                .font(.system(.body, design: .monospaced))
+            } else {
+              Text(String(repeating: "\u{2022}", count: min(max(account.secret.count, 8), 24)))
+                .font(.system(.body, design: .monospaced))
+                .foregroundColor(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            if !isNew {
+              Button {
+                if revealSecret { revealSecret = false }
+                else { LocalAuth.shared.authenticate(callback: { ok in if ok { revealSecret = true } }, reason: "to reveal the setup key.") }
+              } label: {
+                Image(systemName: revealSecret ? "eye.slash" : "eye").foregroundColor(.secondary)
+              }
+              .buttonStyle(.plain)
+              .accessibilityLabel(revealSecret ? "Hide setup key" : "Reveal setup key")
+            }
+          }
           if !account.secret.isEmpty && !MoshTOTP.isValidSecret(account.secret) {
             Label("Not a valid Base32 key", systemImage: "exclamationmark.triangle")
               .font(.footnote).foregroundColor(.orange)
@@ -771,7 +806,7 @@ private struct MoshTOTPManualEntry: View {
 // Single-QR scan: keeps the camera up until a valid otpauth:// code is read.
 private struct MoshTOTPScanSheet: View {
   @Environment(\.dismiss) private var dismiss
-  let onScan: (String) -> Bool   // return true when accepted → dismiss
+  let onScan: (String) -> String?   // nil when accepted (the sheet closes), else what went wrong
   @State private var error: String?
 
   var body: some View {
@@ -779,7 +814,9 @@ private struct MoshTOTPScanSheet: View {
       MoshSheetHeader(title: "Scan QR Code", onClose: { dismiss() })
       ZStack {
         MoshQRScannerView(
-          onFound: { payload in if onScan(payload) { dismiss() } },
+          onFound: { payload in
+            if let problem = onScan(payload) { error = problem } else { dismiss() }
+          },
           onError: { error = $0 }
         )
         VStack {
@@ -801,8 +838,10 @@ private struct MoshTOTPMigrateSheet: View {
   let onDone: (_ added: Int, _ skipped: Int) -> Void
 
   @State private var collected: [Int: [MoshTOTPAccount]] = [:]   // batchIndex → accounts
-  @State private var skipped = 0
+  @State private var skippedByBatch: [Int: Int] = [:]             // batchIndex → unsupported entries
   @State private var batchSize = 0
+  @State private var batchID: Int?                                // which export the batches belong to
+  private var skipped: Int { skippedByBatch.values.reduce(0, +) }
   @State private var status = "Point the camera at the Google Authenticator export QR"
   @State private var error: String?
   @State private var done = false   // once the batch is complete, ignore further scans + show the result
@@ -835,13 +874,20 @@ private struct MoshTOTPMigrateSheet: View {
       return
     }
     error = nil
+    // A code from a DIFFERENT export (Google stamps each export with its own batch id) starts over:
+    // mixing batch 1 of one export with batch 2 of another would import a set nobody chose.
+    if let id = result.batchID, let current = batchID, id != current {
+      collected = [:]
+      skippedByBatch = [:]
+    }
+    if let id = result.batchID { batchID = id }
     // A batch can span several QR codes; ignore a re-scan of one we already have, but give a haptic
-    // + a fresh "Scanned X of Y" the moment a NEW code lands — the last QR used to trigger the import
+    // + a fresh "Scanned X of Y" the moment a NEW code lands. The last QR used to trigger the import
     // and close instantly, so it read as "nothing happened" (fixed 2026-07-18).
     let isNew = collected[result.batchIndex] == nil
     batchSize = result.batchSize
     collected[result.batchIndex] = result.accounts
-    skipped = max(skipped, result.skippedHOTP)
+    skippedByBatch[result.batchIndex] = result.skippedUnsupported
     guard isNew else { return }
     UIImpactFeedbackGenerator(style: .medium).impactOccurred()
     if collected.count >= batchSize {

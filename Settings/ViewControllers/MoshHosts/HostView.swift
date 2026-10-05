@@ -251,6 +251,9 @@ struct HostView: View {
   @State private var _port: String = ""
   @State private var _user: String = ""
   @State private var _password: String = ""
+  // What the password field was loaded with, nil when nothing could be read (no password, or one that
+  // has not arrived on this device yet). Saving an untouched field must not write it back.
+  @State private var _loadedPassword: String? = nil
   @State private var _sshKeyName: [String] = []
   @State private var _proxyCmd: String = ""
   @State private var _proxyJump: String = ""
@@ -391,7 +394,10 @@ struct HostView: View {
       Button(action: {
         // A validation failure shows the alert and keeps the editor open — never save a bad host.
         guard _validate() else { return }
-        _saveHost()
+        guard _saveHost() else {
+          _errorMessage = "The host could not be saved. If you changed the password, the keychain refused it: unlock the device and try again."
+          return
+        }
         _reloadList()
         _nav.navController.popViewController(animated: true)
       }) { MoshNavLabel(title: "Save") }
@@ -417,7 +423,8 @@ struct HostView: View {
     _hostName = host.hostName ?? ""
     _port = host.port == nil ? "" : host.port.stringValue
     _user = host.user ?? ""
-    _password = host.password ?? ""
+    _loadedPassword = host.password
+    _password = _loadedPassword ?? ""
     _sshKeyName = (host.key == nil || host.key.isEmpty) ? [] : [host.key]
     _proxyCmd = host.proxyCmd ?? ""
     _proxyJump = host.proxyJump ?? ""
@@ -485,14 +492,21 @@ struct HostView: View {
     return true
   }
 
-  private func _saveHost() {
+  // The password travels only when the user changed it: nil leaves the stored one alone (see
+  // MoshHosts saveHost:), "" clears it. A new host (or a duplicate) sends whatever the field holds.
+  private var _passwordToSave: String? {
+    if _host == nil { return _password.isEmpty ? nil : _password }
+    return _password == (_loadedPassword ?? "") ? nil : _password
+  }
+
+  private func _saveHost() -> Bool {
     let savedHost = MoshHosts.saveHost(
       _host?.host.trimmingCharacters(in: .whitespacesAndNewlines),
       withNewHost: _cleanAlias,
       hostName: _hostName.trimmingCharacters(in: .whitespacesAndNewlines),
       sshPort: _port.trimmingCharacters(in: .whitespacesAndNewlines),
       user: _user.trimmingCharacters(in: .whitespacesAndNewlines),
-      password: _password,
+      password: _passwordToSave,
       hostKey: _sshKeyName.isEmpty ? "" : _sshKeyName[0],
       moshServer: _moshServer,
       moshPredictOverwrite: _moshPredictOverwrite ? "yes" : nil,
@@ -509,9 +523,7 @@ struct HostView: View {
       agentForwardKeys: _agentForwardPrompt == MoshAgentForwardNo ? [] : _agentForwardKeys
     )
 
-    guard savedHost != nil else {
-      return
-    }
+    return savedHost != nil
   }
 }
 

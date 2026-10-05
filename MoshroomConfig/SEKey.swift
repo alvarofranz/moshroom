@@ -180,19 +180,6 @@ public class SEPublicKey: PublicKey {
     self.publicKey = publicKey
   }
 
-  // For the Agent interface, we don't need to verify. But it helps with the tests.
-  public func verifyDER(signature bytes: Data, of data: Data) throws -> Bool {
-    var error: Unmanaged<CFError>?
-    
-    let result = SecKeyVerifySignature(publicKey, SEKey.signatureType,
-                               data as CFData, bytes as CFData, &error)
-    if error != nil {
-      throw error!.takeRetainedValue() as Error
-    }
-    
-    return result
-  }
-
   public func encode() throws -> Data {
     var error: Unmanaged<CFError>?
     // For ECDSA, this outputs the proper key point encoded as octet (04||X||Y)
