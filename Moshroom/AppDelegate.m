@@ -52,9 +52,7 @@ void __setupProcessEnv(void) {
   
   NSBundle *mainBundle = [NSBundle mainBundle];
   int forceOverwrite = 1;
-  NSString *SSL_CERT_FILE = [mainBundle pathForResource:@"cacert" ofType:@"pem"];
-  setenv("SSL_CERT_FILE", SSL_CERT_FILE.UTF8String, forceOverwrite);
-  
+
   NSString *locales_path = [mainBundle pathForResource:@"locales" ofType:@"bundle"];
   setenv("PATH_LOCALE", locales_path.UTF8String, forceOverwrite);
   setlocale(LC_ALL, "UTF-8");

@@ -10,7 +10,7 @@
 # The rest are fixed, non-secret build flags and are written literally below.
 #
 # The binary xcframeworks (mosh/SSH/crypto/ios_system) are SPM binaryTargets in
-# the LOCAL xcfs package, hosted on this repo's own `deps-v1` GitHub release.
+# the LOCAL xcfs package, hosted on this repo's own `deps-v3` GitHub release.
 # Locally, get_frameworks.sh downloads them into xcfs/.build/artifacts via
 # `swift package resolve`. Xcode Cloud does NOT run get_frameworks.sh and
 # xcfs/.build is not in the repo, so we MUST resolve xcfs here (see the bottom of
@@ -37,16 +37,8 @@ CLOUD_ID = ${CLOUD_ID}
 KEYCHAIN_ID1 = ${KEYCHAIN_ID1}
 EOF
 
-# --- fixed build settings (literal — must match developer_setup.xcconfig) ---
-# NOTE: the "/$()/" in the URLs is the xcconfig trick that stops "//" being read
-# as a comment; it must survive verbatim, hence this quoted heredoc.
+# --- fixed build settings (literal, must match template_setup.xcconfig) ---
 cat >> "$CFG" <<'EOF'
-SWIFT_ACTIVE_COMPILATION_CONDITIONS[config=Debug]   = MOSHROOM_PUBLISHING_OPTION_DEVELOPER
-SWIFT_ACTIVE_COMPILATION_CONDITIONS[config=Release] = MOSHROOM_PUBLISHING_OPTION_TESTFLIGHT
-MOSHROOM_MIGRATION_SCHEME = moshroomv15
-WHATS_NEW_URL = http:/$()/localhost/whats-new
-CONVERSION_OPPORTUNITY_URL = http:/$()/localhost/conversionOpportunity
-WHATS_NEW_GITHUB_URL = http:/$()/localhost/conversionOpportunity
 MOSHROOM_APP_FONT = JetBrains Mono
 MOSHROOM_OTHER_LDFLAGS = -Xlinker -export_dynamic
 ENABLE_DEBUG_DYLIB = NO
@@ -56,7 +48,7 @@ echo "ci_post_clone: wrote $CFG"
 cat "$CFG"
 
 # --- fetch the binary xcframeworks + resolve the xcfs sub-package's deps ---
-# Mirrors get_frameworks.sh: downloads the 8 xcframeworks (from the deps-v1
+# Mirrors get_frameworks.sh: downloads the 7 xcframeworks (from the deps-v3
 # release) into xcfs/.build/artifacts and resolves swift-argument-parser. Without
 # this, xcodebuild can't find the xcframeworks or the ArgumentParser product.
 echo "ci_post_clone: resolving xcfs binary frameworks (this downloads ~104 MB)…"

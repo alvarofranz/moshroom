@@ -23,18 +23,25 @@
 
 
 #include "UIApplication+Version.h"
-#include "Moshroom-Swift.h"
 
 @implementation UIApplication (MoshroomVersion)
 
 + (NSString *)moshroomVersion {
   NSString *compileDate = [NSString stringWithUTF8String:__DATE__];
-  
+
   NSDictionary *infoDictionary = [[NSBundle mainBundle] infoDictionary];
   NSString *appDisplayName = [infoDictionary objectForKey:@"CFBundleName"];
- 
-  return [NSString stringWithFormat:@"%@: %@ %@. %@",
-          appDisplayName, [UIApplication moshroomShortVersion], [FeatureFlags currentPublishingOptions] , compileDate];
+
+  // A build can only tell Debug from Release at compile time; TestFlight and the App Store
+  // ship the same Release binary, so a Release build carries no channel label at all.
+#if DEBUG
+  NSString *channel = @" (Developer)";
+#else
+  NSString *channel = @"";
+#endif
+
+  return [NSString stringWithFormat:@"%@: %@%@. %@",
+          appDisplayName, [UIApplication moshroomShortVersion], channel, compileDate];
 }
 
 + (NSString *)moshroomShortVersion {

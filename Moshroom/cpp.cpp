@@ -22,4 +22,6 @@
 ////////////////////////////////////////////////////////////////////////////////
 
 
+// One C++ source in the app target makes Xcode link with the C++ driver, which pulls in libc++
+// for the static mosh framework (it references the C++ standard library). Do not delete.
 #include <stdio.h>

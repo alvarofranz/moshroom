@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<document type="com.apple.InterfaceBuilder3.CocoaTouch.Storyboard.XIB" version="3.0" toolsVersion="24412" targetRuntime="iOS.CocoaTouch" propertyAccessControl="none" useAutolayout="YES" useTraitCollections="YES" colorMatched="YES" initialViewController="hAE-Bj-MeI">
+<document type="com.apple.InterfaceBuilder3.CocoaTouch.Storyboard.XIB" version="3.0" toolsVersion="24412" targetRuntime="iOS.CocoaTouch" propertyAccessControl="none" useAutolayout="YES" useTraitCollections="YES" colorMatched="YES">
     <device id="ipad9_7" orientation="portrait" layout="fullscreen" appearance="light"/>
     <dependencies>
         <plugIn identifier="com.apple.InterfaceBuilder.IBCocoaTouchPlugin" version="24405"/>
@@ -159,21 +159,6 @@
             </objects>
             <point key="canvasLocation" x="475" y="1189"/>
         </scene>
-        <!--Navigation Controller-->
-        <scene sceneID="vTj-9m-I1A">
-            <objects>
-                <navigationController storyboardIdentifier="NavSettingsController" automaticallyAdjustsScrollViewInsets="NO" modalPresentationStyle="formSheet" useStoryboardIdentifierAsRestorationIdentifier="YES" id="hAE-Bj-MeI" sceneMemberID="viewController">
-                    <toolbarItems/>
-                    <navigationBar key="navigationBar" contentMode="scaleToFill" largeTitles="YES" id="a12-bl-P5f">
-                        <rect key="frame" x="0.0" y="20" width="768" height="106"/>
-                        <autoresizingMask key="autoresizingMask"/>
-                    </navigationBar>
-                    <nil name="viewControllers"/>
-                </navigationController>
-                <placeholder placeholderIdentifier="IBFirstResponder" id="x95-2a-9fs" userLabel="First Responder" sceneMemberID="firstResponder"/>
-            </objects>
-            <point key="canvasLocation" x="475" y="395"/>
-        </scene>
         <!--Add a new font-->
         <scene sceneID="JUW-H8-yiS">
             <objects>
@@ -301,66 +286,6 @@
                 <placeholder placeholderIdentifier="IBFirstResponder" id="ceR-3O-eS0" userLabel="First Responder" sceneMemberID="firstResponder"/>
             </objects>
             <point key="canvasLocation" x="475" y="1874"/>
-        </scene>
-        <!--Default User View Controller-->
-        <scene sceneID="zXp-HH-ho9">
-            <objects>
-                <tableViewController storyboardIdentifier="MoshDefaultUserViewController" id="oCY-N8-jaj" customClass="MoshDefaultUserViewController" sceneMemberID="viewController">
-                    <tableView key="view" clipsSubviews="YES" contentMode="scaleToFill" alwaysBounceVertical="YES" dataMode="static" style="grouped" separatorStyle="default" allowsSelection="NO" rowHeight="44" sectionHeaderHeight="18" sectionFooterHeight="18" id="DhD-lm-tmB">
-                        <rect key="frame" x="0.0" y="0.0" width="768" height="1024"/>
-                        <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>
-                        <color key="backgroundColor" systemColor="systemGroupedBackgroundColor"/>
-                        <sections>
-                            <tableViewSection headerTitle="" footerTitle="Used as the SSH user whenever a host doesn't set its own — so you can save hosts with just an alias and an address. Spaces are stripped." id="B5S-0q-LuE">
-                                <cells>
-                                    <tableViewCell clipsSubviews="YES" contentMode="scaleToFill" preservesSuperviewLayoutMargins="YES" selectionStyle="none" indentationWidth="10" id="Dfc-q9-NMu">
-                                        <rect key="frame" x="0.0" y="35" width="768" height="44"/>
-                                        <autoresizingMask key="autoresizingMask"/>
-                                        <tableViewCellContentView key="contentView" opaque="NO" clipsSubviews="YES" multipleTouchEnabled="YES" contentMode="center" preservesSuperviewLayoutMargins="YES" tableViewCell="Dfc-q9-NMu" id="FvS-aL-uJk">
-                                            <rect key="frame" x="0.0" y="0.0" width="768" height="44"/>
-                                            <autoresizingMask key="autoresizingMask"/>
-                                            <subviews>
-                                                <label opaque="NO" userInteractionEnabled="NO" contentMode="left" horizontalHuggingPriority="251" verticalHuggingPriority="251" text="Default User" textAlignment="natural" lineBreakMode="tailTruncation" baselineAdjustment="alignBaselines" adjustsFontSizeToFit="NO" translatesAutoresizingMaskIntoConstraints="NO" id="O7E-p5-1yk">
-                                                    <rect key="frame" x="20" y="11.5" width="95" height="21"/>
-                                                    <fontDescription key="fontDescription" type="system" pointSize="17"/>
-                                                    <nil key="highlightedColor"/>
-                                                </label>
-                                                <textField opaque="NO" clipsSubviews="YES" contentMode="scaleToFill" contentHorizontalAlignment="left" contentVerticalAlignment="center" textAlignment="right" minimumFontSize="17" translatesAutoresizingMaskIntoConstraints="NO" id="ABr-sq-ALH">
-                                                    <rect key="frame" x="455" y="0.0" width="294" height="44"/>
-                                                    <constraints>
-                                                        <constraint firstAttribute="width" constant="294" id="aCY-zv-Ftj"/>
-                                                    </constraints>
-                                                    <fontDescription key="fontDescription" type="system" pointSize="14"/>
-                                                    <textInputTraits key="textInputTraits" autocorrectionType="no" spellCheckingType="no"/>
-                                                    <connections>
-                                                        <outlet property="delegate" destination="oCY-N8-jaj" id="yzG-Ob-K2E"/>
-                                                    </connections>
-                                                </textField>
-                                            </subviews>
-                                            <constraints>
-                                                <constraint firstItem="ABr-sq-ALH" firstAttribute="top" secondItem="FvS-aL-uJk" secondAttribute="top" id="5ry-3p-CcW"/>
-                                                <constraint firstItem="ABr-sq-ALH" firstAttribute="centerY" secondItem="O7E-p5-1yk" secondAttribute="centerY" id="7hI-cS-BkI"/>
-                                                <constraint firstItem="O7E-p5-1yk" firstAttribute="leading" secondItem="FvS-aL-uJk" secondAttribute="leadingMargin" id="95w-X9-S4Z"/>
-                                                <constraint firstAttribute="trailingMargin" secondItem="ABr-sq-ALH" secondAttribute="trailing" constant="-1" id="EnI-VH-bWH"/>
-                                                <constraint firstItem="O7E-p5-1yk" firstAttribute="centerY" secondItem="FvS-aL-uJk" secondAttribute="centerY" id="bgk-oa-nLt"/>
-                                            </constraints>
-                                        </tableViewCellContentView>
-                                    </tableViewCell>
-                                </cells>
-                            </tableViewSection>
-                        </sections>
-                        <connections>
-                            <outlet property="dataSource" destination="oCY-N8-jaj" id="CBx-eg-L8l"/>
-                            <outlet property="delegate" destination="oCY-N8-jaj" id="TXC-Lh-2Ds"/>
-                        </connections>
-                    </tableView>
-                    <connections>
-                        <outlet property="userNameField" destination="ABr-sq-ALH" id="kpO-0o-ySN"/>
-                    </connections>
-                </tableViewController>
-                <placeholder placeholderIdentifier="IBFirstResponder" id="nTc-Rr-tUu" userLabel="First Responder" sceneMemberID="firstResponder"/>
-            </objects>
-            <point key="canvasLocation" x="474" y="-330"/>
         </scene>
     </scenes>
     <resources>

@@ -6,7 +6,7 @@ import PackageDescription
 // into .build/artifacts, which the Xcode project references. See FRAMEWORKS.md for what each is, its
 // version, upstream source, and when to update.
 //
-// 100% self-hosted: every xcframework is mirrored to THIS repo's own GitHub release (deps-v2), slimmed
+// 100% self-hosted: every xcframework is mirrored to THIS repo's own GitHub release (deps-v3), slimmed
 // to the iOS-device (arm64) + Mac Catalyst (arm64 macabi) slices only — no simulator/tvOS/watchOS/macOS,
 // no dSYMs — so the app builds for both iPhone/iPad and native Mac Catalyst. No third-party hosting.
 // The lone source dependency is Apple's own swift-argument-parser; SSHConfig is vendored in-tree

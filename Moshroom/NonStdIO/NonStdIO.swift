@@ -32,24 +32,8 @@ public struct InputStream {
     self.file = file
     self.fd = fileno(file)
   }
-  
-  
-  public func readLine() -> String? {
-    var char: UInt8 = 0
-    let newLineChar: UInt8 = 0x0a
-    var data = Data()
-    while Darwin.read(fd, &char, 1) == 1 {
-      if char == newLineChar {
-        break
-      }
-      data.append(char)
-    }
-    
-    return String(data: data, encoding: .utf8)
-  }
-  
+
   static var stdin:  InputStream  { .init(file: Darwin.stdin) }
-  
 }
 
 public struct OutputStream: TextOutputStream {
@@ -100,10 +84,6 @@ public class NonStdIO: Codable {
   public static let standard = NonStdIO()
 }
 
-public protocol WithNonStdIO {
-  var io: NonStdIO { get }
-}
-
 public extension NonStdIO {
   func print(_ items: Any..., separator: String = " ", terminator: String = "\n") {
     guard !quiet else {
@@ -119,17 +99,5 @@ public extension NonStdIO {
   }
 }
 
-
-public extension WithNonStdIO {
-  func print(_ items: Any..., separator: String = " ", terminator: String = "\n") {
-    let s = items.map(String.init(describing:)).joined(separator: separator)
-    io.print(s, terminator: terminator)
-  }
-  
-  func printError(_ items: Any..., separator: String = " ", terminator: String = "\n") {
-    let s = items.map(String.init(describing:)).joined(separator: separator)
-    io.printError(s, terminator: terminator)
-  }
-}
 
 

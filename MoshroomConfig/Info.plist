@@ -8,12 +8,6 @@
 	<string>$(GROUP_ID)</string>
 	<key>MOSHROOM_KEYCHAIN_ID1</key>
 	<string>$(KEYCHAIN_ID1)</string>
-	<key>MOSHROOM_WHATS_NEW_URL</key>
-	<string>$(WHATS_NEW_URL)</string>
-	<key>MOSHROOM_WHATS_NEW_GITHUB_URL</key>
-	<string>$(WHATS_NEW_GITHUB_URL)</string>
-	<key>MOSHROOM_CONVERSION_OPPORTUNITY_URL</key>
-	<string>$(CONVERSION_OPPORTUNITY_URL)</string>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleExecutable</key>

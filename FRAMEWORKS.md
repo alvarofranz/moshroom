@@ -11,7 +11,7 @@ the iOS-device (arm64) + Mac-Catalyst (arm64 macabi) slices** — no simulator /
 
 `./get_frameworks.sh` runs `swift package resolve` inside [`xcfs/`](xcfs/Package.swift). That:
 
-1. Downloads the 7 binary `.xcframework`s below from **this repo's own release** (`deps-v2`) into
+1. Downloads the 7 binary `.xcframework`s below from **this repo's own release** (`deps-v3`) into
    `xcfs/.build/artifacts/` (git-ignored). The Xcode project links them from there.
 2. Checks out Apple's **swift-argument-parser** into `xcfs/.build/checkouts/`.
 
@@ -20,7 +20,7 @@ the iOS-device (arm64) + Mac-Catalyst (arm64 macabi) slices** — no simulator /
 There is **no build-from-source step and no framework-builder tooling** — the manifest just points at
 prebuilt, self-hosted zips.
 
-## The 7 binary frameworks (release `deps-v2`)
+## The 7 binary frameworks (release `deps-v3`)
 
 The SSH/Mosh/crypto engine + the ios_system command runtime. Moshroom's own features are the only things
 that use them (audited — see the API-surface notes at the bottom). Every one now carries a **Mac Catalyst
@@ -226,6 +226,6 @@ To refresh, bump, or re-slice a framework:
    iOS-only keep `ios-arm64`; for Catalyst ALSO keep `ios-arm64_x86_64-maccatalyst`** — delete the rest and
    any `dSYMs`/`.bcsymbolmap`.
 3. `zip -r name.xcframework.zip name.xcframework`, then `swift package compute-checksum name.xcframework.zip`.
-4. `gh release upload deps-v2 name.xcframework.zip --repo alvarofranz/moshroom --clobber`.
+4. `gh release upload deps-v3 name.xcframework.zip --repo alvarofranz/moshroom --clobber`.
 5. Update the version/URL/checksum in [`xcfs/Package.swift`](xcfs/Package.swift).
 6. `./get_frameworks.sh && ./deploy.sh`.

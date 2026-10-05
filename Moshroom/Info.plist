@@ -12,10 +12,6 @@
 	<dict>
 		<key>CFBundlePrimaryIcon</key>
 		<dict>
-			<key>CFBundleIconFiles</key>
-			<array>
-				<string>iPhone-App-60pt</string>
-			</array>
 			<key>CFBundleIconName</key>
 			<string>AppIcon</string>
 			<key>UIPrerenderedIcon</key>
@@ -26,10 +22,6 @@
 	<dict>
 		<key>CFBundlePrimaryIcon</key>
 		<dict>
-			<key>CFBundleIconFiles</key>
-			<array>
-				<string>iPhone-App-60pt</string>
-			</array>
 			<key>CFBundleIconName</key>
 			<string>AppIcon</string>
 			<key>UIPrerenderedIcon</key>
@@ -59,11 +51,7 @@
 			<string>Moshroom</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
-				<string>https</string>
-				<string>http</string>
 				<string>ssh</string>
-				<string>moshroomshell</string>
-				<string>${MOSHROOM_MIGRATION_SCHEME}</string>
 			</array>
 		</dict>
 	</array>
@@ -73,10 +61,6 @@
 	<false/>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.developer-tools</string>
-	<key>LSApplicationQueriesSchemes</key>
-	<array>
-		<string>moshroomshell</string>
-	</array>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>LSSupportsOpeningDocumentsInPlace</key>
@@ -89,8 +73,6 @@
 	<string>Moshroom uses the camera to scan two-factor (2FA) QR codes into your vault.</string>
 	<key>NSFaceIDUsageDescription</key>
 	<string>Face ID protects your saved keys, passwords and 2FA codes, and can lock the app.</string>
-	<key>NSSiriUsageDescription</key>
-	<string>storing commands</string>
 	<key>NSUbiquitousContainers</key>
 	<dict>
 		<key>iCloud.$(CLOUD_ID)</key>
@@ -133,8 +115,6 @@
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>
-		<string>fetch</string>
-		<string>remote-notification</string>
 	</array>
 	<key>UIFileSharingEnabled</key>
 	<true/>
@@ -155,13 +135,6 @@
 	</array>
 	<key>UISupportsDocumentBrowser</key>
 	<true/>
-	<key>UTExportedTypeDeclarations</key>
-	<array>
-		<dict>
-			<key>UTTypeIdentifier</key>
-			<string>public.item</string>
-		</dict>
-	</array>
 	<key>UTImportedTypeDeclarations</key>
 	<array>
 		<dict>

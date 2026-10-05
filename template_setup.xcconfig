@@ -2,14 +2,12 @@
 //  template_setup.xcconfig
 //     --> copied to developer_setup.xcconfig
 //
-//  Created by Jan Iversen on 20/03/2021.
-//
 
 // Configuration settings file format documentation can be found at:
 // https://help.apple.com/xcode/#/dev745c5c974
 
-// update TEAM_ID with your apple developer id
-TEAM_ID = A2H2CL32AG
+// Replace with your own 10-character Apple Developer Team ID.
+TEAM_ID = YOUR_TEAM_ID
 
 // BUNDLE_ID is used as name for BUNDLE_IDENTIFIER
 BUNDLE_ID = com.example.moshroom
@@ -23,27 +21,13 @@ CLOUD_ID = com.example.moshroom
 KEYCHAIN_ID1 = com.example.moshroom
 // if you want to build without keychain, please remove the section in xCode
 
-
-// MOSHROOM_PUBLISHING_OPTION_DEVELOPER
-// MOSHROOM_PUBLISHING_OPTION_TESTFLIGHT
-// MOSHROOM_PUBLISHING_OPTION_APPSTORE
-
-SWIFT_ACTIVE_COMPILATION_CONDITIONS[config=Debug]   = MOSHROOM_PUBLISHING_OPTION_DEVELOPER
-SWIFT_ACTIVE_COMPILATION_CONDITIONS[config=Release] = MOSHROOM_PUBLISHING_OPTION_TESTFLIGHT
-
-MOSHROOM_MIGRATION_SCHEME = moshroomv15
-
-WHATS_NEW_URL = http:/$()/localhost/whats-new
-CONVERSION_OPPORTUNITY_URL = http:/$()/localhost/conversionOpportunity
-WHATS_NEW_GITHUB_URL = http:/$()/localhost/conversionOpportunity
-
 MOSHROOM_APP_FONT = JetBrains Mono
 
 // --- Build compatibility flags for modern Xcode (15+/16+/26) ---
 
 // Export the executable's global symbols so dlsym(RTLD_MAIN_ONLY, ...) can resolve
-// the built-in command entry points (config_main, moshroom_ssh_main, ...). Required
-// with the newer linker; the original project was built with an older toolchain.
+// the built-in command entry points (help_main, moshroom_ssh_main, ...). Required
+// with the newer linker.
 MOSHROOM_OTHER_LDFLAGS = -Xlinker -export_dynamic
 
 // Xcode 16+ wraps the app code in a "debug dylib" (Moshroom.debug.dylib) and leaves a
