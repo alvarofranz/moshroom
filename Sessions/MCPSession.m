@@ -452,7 +452,7 @@
     [allowedPaths addObject: iCloudDriveDocumentsPath];
     NSString *resolvedPath = [fm destinationOfSymbolicLinkAtPath:[MoshroomPaths iCloudDriveDocuments] error:nil];
     if (resolvedPath != NULL) {
-      [allowedPaths addObject: iCloudDriveDocumentsPath];
+      [allowedPaths addObject: resolvedPath];
     }
   }
 
@@ -540,14 +540,15 @@
     _moshroomReconnectCommand = nil;
     child = _childSession;
   }
+  // Whatever is running is stopped, then the tab's device and ios_system session are released in
+  // every case: an early return here used to leave a closed ssh tab's session and device holding each
+  // other for the rest of the run.
   if (_sshClients.count > 0) {
     dispatch_sync(_sshQueue, ^{
       for (id client in _sshClients) {
         [client kill];
       }
     });
-    
-    return;
   } else if (child) {
     [child kill];
   } else if (_cmdStream) {

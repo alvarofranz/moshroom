@@ -42,7 +42,6 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)onCommand:(NSString *)command;
 - (void)setHasSelection:(BOOL)value;
 - (void)removeAssistantsFromView;
-- (void)removeAssistantsFromContentView;
 - (void)report:(NSString *)cmd arg:(NSObject *)arg;
 - (void)ready;
 - (void)onMods;

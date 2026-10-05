@@ -89,7 +89,9 @@ let MoshroomTerminalTailingNotification = "MoshroomTerminalTailingNotification"
  */
 
 @objc class WKWebViewGesturesInteraction: NSObject, UIInteraction {
-  var view: UIView? = nil
+  // Weak: the web view owns its interactions, and its content controller holds this object as a
+  // message handler, so a strong reference back would keep the pair alive by themselves.
+  weak var view: UIView? = nil
   private weak var _wkWebView: WKWebView? = nil
   private let _scrollView = UIScrollViewWithoutHitTest()
   private let _termScrollView = UIScrollViewWithoutHitTest()
@@ -115,6 +117,10 @@ let MoshroomTerminalTailingNotification = "MoshroomTerminalTailingNotification"
   /// The viewport is at the live end of the transcript. Read by TermView to skip a pointless
   /// scroll-to-bottom on every keystroke, and mirrored to SpaceController's "back to live" chip.
   @objc private(set) var isTailing = true
+
+  /// The program asked for application cursor keys (DECCKM), as last reported by the page. The
+  /// native arrow keys read it to send SS3 (ESC O A) instead of CSI (ESC [ A), like any terminal.
+  @objc private(set) var applicationCursor = false
 
   @objc var focused: Bool = false;
   @objc var hasSelection: Bool = false {
@@ -190,7 +196,7 @@ let MoshroomTerminalTailingNotification = "MoshroomTerminalTailingNotification"
       _wkWebView?.configuration.userContentController.removeScriptMessageHandler(forName: _handlerName)
 
       for r in allRecognizers {
-        _wkWebView?.addGestureRecognizer(r)
+        _wkWebView?.removeGestureRecognizer(r)
       }
 
       if let interaction = _pointerInteraction as? UIPointerInteraction {
@@ -575,6 +581,7 @@ extension WKWebViewGesturesInteraction: WKScriptMessageHandler {
     case "scrollmode":
       _isPrimaryScreen = msg["isPrimary"] as? Bool ?? true
       _mouseReportOn = msg["mouseReport"] as? Bool ?? false
+      applicationCursor = msg["appCursor"] as? Bool ?? false
       _applyScrollMode()
 
 
@@ -590,5 +597,13 @@ extension WKWebViewGesturesInteraction: UIPointerInteractionDelegate {
 
   func pointerInteraction(_ interaction: UIPointerInteraction, styleFor region: UIPointerRegion) -> UIPointerStyle? {
     return nil
+  }
+}
+extension TermDevice {
+  /// Whether the terminal's program is in application cursor-key mode (DECCKM), so the native arrow
+  /// keys (quick keys and hardware keyboard) can encode themselves the way it expects.
+  var moshroomApplicationCursor: Bool {
+    view?.webView?.interactions
+      .lazy.compactMap { $0 as? WKWebViewGesturesInteraction }.first?.applicationCursor ?? false
   }
 }

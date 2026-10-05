@@ -306,6 +306,19 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
   [_webView loadFileURL:url allowingReadAccessToURL:url];
 }
 
+// The terminal page may only ever be term.html itself (the first load, and the reload after a
+// jettison). Anything else a page could try (a link, a script setting location, a form) is
+// cancelled: links reach the device through the native openLink path, never by navigating here.
+- (void)webView:(WKWebView *)webView decidePolicyForNavigationAction:(WKNavigationAction *)navigationAction decisionHandler:(void (^)(WKNavigationActionPolicy))decisionHandler
+{
+  NSURL *url = navigationAction.request.URL;
+  NSString *termPath = [[NSBundle mainBundle] pathForResource:@"term" ofType:@"html"];
+  BOOL ownPage = url.isFileURL && termPath
+    && [url.URLByResolvingSymlinksInPath.path isEqualToString:[NSURL fileURLWithPath:termPath].URLByResolvingSymlinksInPath.path];
+  BOOL blank = [url.absoluteString isEqualToString:@"about:blank"];
+  decisionHandler((ownPage || blank) ? WKNavigationActionPolicyAllow : WKNavigationActionPolicyCancel);
+}
+
 // WebKit silently killed this terminal's web content process (memory pressure — typically it
 // picks a hidden background tab). The native session is untouched: only the RENDERER died,
 // taking hterm and the on-screen transcript with it — without recovery the tab stays blank
@@ -890,11 +903,24 @@ static NSString * _sanitizeTextForClipboard(NSString *text) {
 
 // The paste goes through the page (hterm frames it as a bracketed paste when the program asked for
 // that), the Enter natively a beat later so it lands outside the paste's end marker and the program
-// does not read it as part of the same burst. Both leave from HERE, in that order: evaluated into a
-// page that is being rebuilt, the text used to vanish while its Enter still reached the program.
+// does not read it as part of the same burst. The beat starts only once the text is OUT: the
+// evaluation's completion arrives after the page has already handed the text over (its sendString
+// message travels first on the same connection), so the Enter can never overtake its text, however
+// busy the page is. It used to leave on a timer started next to the evaluation, which a page busy
+// drawing output could outlast. An evaluation that fails (the page died under it) sends no Enter:
+// submitting text that never arrived is worse than not submitting. A page being rebuilt holds both.
 // Main thread (the composer).
 - (void)pasteString:(NSString *)str submit:(BOOL)submit {
+  [self _pasteString:str submit:submit then:nil];
+}
+
+// `then` runs once this paste (and its Enter) has gone out, or straight away when there was nothing
+// to send. Not called for a paste that had to be held.
+- (void)_pasteString:(NSString *)str submit:(BOOL)submit then:(void (^)(void))then {
   if (!str) {
+    if (then) {
+      then();
+    }
     return;
   }
   if (!_isReady) {
@@ -904,28 +930,58 @@ static NSString * _sanitizeTextForClipboard(NSString *text) {
     [_pendingPastes addObject:@[str, @(submit)]];
     return;
   }
-  [_webView evaluateJavaScript:term_paste(str) completionHandler:nil];
-  if (submit) {
-    __weak typeof(self) weakSelf = self;
+  __weak typeof(self) weakSelf = self;
+  // Ends on a plain value, so success never depends on how an undefined result is reported.
+  NSString *script = [term_paste(str) stringByAppendingString:@"true;"];
+  [_webView evaluateJavaScript:script completionHandler:^(id result, NSError *error) {
+    if (!submit || error) {
+      if (then) {
+        then();
+      }
+      return;
+    }
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
       [weakSelf.device viewSendString:@"\r"];
+      if (then) {
+        then();
+      }
     });
-  }
+  }];
 }
 
-// Deliver the held composer sends, one after another. After a rebuild the page only knows the
-// program's paste mode once the session has redrawn, hence the delay before the first.
+// Deliver the held composer sends, one after another, each only once the previous one (Enter
+// included) has gone out. After a rebuild the page only knows the program's paste mode once the
+// session has redrawn, hence the delay before the first.
 - (void)_deliverPendingPastesAfter:(NSTimeInterval)delay {
   NSArray<NSArray *> *pending = _pendingPastes;
   _pendingPastes = nil;
-  NSTimeInterval at = delay;
-  for (NSArray *paste in pending) {
-    __weak typeof(self) weakSelf = self;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(at * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-      [weakSelf pasteString:paste[0] submit:[paste[1] boolValue]];
-    });
-    at += 0.25;
+  if (pending.count == 0) {
+    return;
   }
+  __weak typeof(self) weakSelf = self;
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    [weakSelf _deliverPastes:pending from:0];
+  });
+}
+
+- (void)_deliverPastes:(NSArray<NSArray *> *)pastes from:(NSUInteger)index {
+  if (index >= pastes.count) {
+    return;
+  }
+  if (!_isReady) {
+    // The page went away again: hold what is left, in order, for the next ready.
+    NSArray *rest = [pastes subarrayWithRange:NSMakeRange(index, pastes.count - index)];
+    if (!_pendingPastes) {
+      _pendingPastes = [[NSMutableArray alloc] init];
+    }
+    [_pendingPastes addObjectsFromArray:rest];
+    return;
+  }
+  NSArray *paste = pastes[index];
+  __weak typeof(self) weakSelf = self;
+  [self _pasteString:paste[0] submit:[paste[1] boolValue] then:^{
+    [weakSelf _deliverPastes:pastes from:index + 1];
+  }];
 }
 
 - (NSString *)_detectFontFamilyFromContent:(NSString *)content

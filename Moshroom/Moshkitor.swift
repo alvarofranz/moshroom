@@ -39,8 +39,10 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
   private let controls = UIView()
 
   // The unsent draft survives closing the composer; it's cleared once the text is sent. It's
-  // attributed so inline Moshdrop attachments ride along with the typed text.
-  private static var draft = NSAttributedString()
+  // attributed so inline Moshdrop attachments ride along with the typed text. One per TAB: a draft
+  // written for one session must not turn up in another (and upload its files to that tab's host).
+  private static var drafts: [UUID: NSAttributedString] = [:]
+  private let tabKey: UUID?
   private var didSend = false
 
   // Deferred Moshdrop uploads run on send; these hold the uploader + progress overlay alive.
@@ -73,8 +75,9 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
   // `ssh`/`mosh` connect and record its host as the next upload target.
   var onSend: ((String) -> Void)?
 
-  init(device: TermDevice, seed: String = "", connectedHost: String? = nil, pasteOnAppear: Bool = false) {
+  init(device: TermDevice, tabKey: UUID?, seed: String = "", connectedHost: String? = nil, pasteOnAppear: Bool = false) {
     self.device = device
+    self.tabKey = tabKey
     self.seed = seed
     self.connectedHost = connectedHost
     self._pastesOnAppear = pasteOnAppear
@@ -82,6 +85,32 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
   }
 
   required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+  private var _draft: NSAttributedString {
+    get { tabKey.flatMap { Self.drafts[$0] } ?? NSAttributedString() }
+    set {
+      guard let tabKey else { return }
+      Self.drafts[tabKey] = newValue.length > 0 ? newValue : nil
+    }
+  }
+
+  /// Forget the drafts of tabs that are gone (their staged files then become sweepable).
+  static func pruneDrafts(keeping tabKeys: Set<UUID>) {
+    drafts = drafts.filter { tabKeys.contains($0.key) }
+  }
+
+  /// The staged files every saved draft still points at: the staging sweep must leave them alone, or
+  /// a draft kept open for a while (or holding a file whose copied modification date is old) sends
+  /// with a chip whose file is gone.
+  private static func _draftAttachmentURLs(excluding excludedTab: UUID? = nil) -> Set<URL> {
+    var urls = Set<URL>()
+    for (key, draft) in drafts where key != excludedTab {
+      draft.enumerateAttribute(.attachment, in: NSRange(location: 0, length: draft.length), options: []) { value, _, _ in
+        if let a = value as? MoshdropAttachment { urls.insert(a.localURL) }
+      }
+    }
+    return urls
+  }
 
   // The composer's baseline text style — kept on `typingAttributes` so typing never inherits an
   // attachment's styling and inserted runs match the rest of the prose.
@@ -92,7 +121,8 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
   override func viewDidLoad() {
     super.viewDidLoad()
     view.backgroundColor = .systemBackground
-    Moshdrop.sweepStaging()   // drop staging files orphaned by a previous abandoned/relaunched draft
+    // Drop staging files orphaned by an abandoned/relaunched draft, never one a saved draft still uses.
+    Moshdrop.sweepStaging(keeping: Self._draftAttachmentURLs())
 
     textView.delegate = self
     textView.font = .monospacedSystemFont(ofSize: 17, weight: .regular)
@@ -166,7 +196,7 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
 
     _buildControls()
 
-    let initial = NSMutableAttributedString(attributedString: Self.draft)
+    let initial = NSMutableAttributedString(attributedString: _draft)
     if !seed.isEmpty {
       initial.append(NSAttributedString(string: seed, attributes: _defaultTypingAttributes))
     }
@@ -204,8 +234,9 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
     guard let key = presses.first(where: { $0.key != nil })?.key,
           !key.modifierFlags.contains(.command) else { return false }
     textView.becomeFirstResponder()
+    // Only real characters: an arrow pressed mid-transition must not insert "UIKeyInputUpArrow".
     let text = key.characters
-    if !text.isEmpty, !(text.first?.isNewline ?? true) {
+    if MoshroomKeyboard.isTypable(text) {
       textView.insertText(text)
     }
     return true
@@ -230,7 +261,7 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
     super.viewWillDisappear(animated)
     isClosing = true
     // Keep the unsent draft so it's still there next time; clear it once sent.
-    Self.draft = didSend ? NSAttributedString() : (textView.attributedText ?? NSAttributedString())
+    _draft = didSend ? NSAttributedString() : (textView.attributedText ?? NSAttributedString())
     // Hand the first responder back to SpaceController so chain-dispatched commands
     // (config, etc.) keep working after the composer closes.
     navigationController?.presentingViewController?.becomeFirstResponder()
@@ -479,9 +510,22 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
       // else: a foreign attachment (e.g. a system-pasted image) — drop its U+FFFC placeholder.
     }
     // Bullets are an editor nicety — the agent receives a plain "- " list.
-    var cmd = out
+    var cmd = Self._visibleOnly(out)
     if cmd.hasPrefix("• ") { cmd = "- " + String(cmd.dropFirst(2)) }
     return cmd.replacingOccurrences(of: "\n• ", with: "\n- ")
+  }
+
+  // What you see is what is sent: control characters (a pasted ESC sequence, ^U, ^C, DEL, the C1
+  // range) draw as NOTHING in the editor, yet a program without bracketed paste would act on them.
+  // Tab and line breaks are the only ones that show, so they are the only ones kept.
+  private static func _visibleOnly(_ text: String) -> String {
+    var scalars = String.UnicodeScalarView()
+    for s in text.unicodeScalars {
+      let v = s.value
+      let control = v < 0x20 || (v >= 0x7F && v <= 0x9F)
+      if !control || v == 0x09 || v == 0x0A || v == 0x0D { scalars.append(s) }
+    }
+    return String(scalars)
   }
 
   // Inline attachments in document (left-to-right, top-to-bottom) order.
@@ -505,9 +549,12 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
   private func _uploadStep(_ attachments: [MoshdropAttachment], index: Int, host: String) {
     // Bail if the composer is gone / closing / cancelled mid-upload, so a command never fires after
     // the fact and a late completion can't silently resume an already-cancelled send.
-    guard isSending, !isClosing, view.window != nil, let device = device else { _endSending(); return }
+    guard isSending, !isClosing, view.window != nil, device != nil else { _endSending(); return }
     if index >= attachments.count {
-      attachments.forEach { try? FileManager.default.removeItem(at: $0.localURL) }
+      // Same content stages under the same name, so another tab's draft may hold this very file.
+      let stillUsed = Self._draftAttachmentURLs(excluding: tabKey)
+      attachments.filter { !stillUsed.contains($0.localURL) }
+        .forEach { try? FileManager.default.removeItem(at: $0.localURL) }
       _hideProgress()
       _writeAndDismiss(_composeCommand())
       return
@@ -517,7 +564,9 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
     progressBar?.setProgress(0, animated: false)
     let up = MoshdropUploader()
     uploader = up
-    up.upload(localURL: a.localURL, hostAlias: host, device: device, remoteName: a.remoteName,
+    // Headless (no device): the upload connects on the user's behalf, so a question it cannot answer
+    // must fail with a reason instead of printing a prompt into the terminal hidden behind us.
+    up.upload(localURL: a.localURL, hostAlias: host, device: nil, remoteName: a.remoteName,
               progress: { [weak self] frac in self?._setProgressFraction(frac) }) { [weak self] result in
       guard let self else { return }
       switch result {
@@ -1068,21 +1117,62 @@ final class MoshkitorSnipEditor: UIViewController {
     guard !name.isEmpty, !name.contains("/") else {
       _alert(title: "Use one level", message: "Name it \"name\" or \"folder/name\"."); return
     }
+    // "." and ".." would land the file outside the snips folder (or hide it).
+    let nameParts = [folder, name].compactMap { $0?.trimmingCharacters(in: .whitespaces) }
+    guard !nameParts.contains(where: { $0.isEmpty || $0.hasPrefix(".") }) else {
+      _alert(title: "Pick another name", message: "A name can't be empty or start with a dot."); return
+    }
     let dir = folder.map { root.appendingPathComponent($0) } ?? root
     let newURL = dir.appendingPathComponent(name + ".sh")
 
+    // The same snip under a new spelling ("Deploy" → "deploy" on a case-insensitive disk) is a rename,
+    // not a collision: writing the new name and deleting the old one there deleted the snip itself.
+    let fm = FileManager.default
+    let isSelf = existingURL.map { Self._sameFile($0, newURL) } ?? false
+    if fm.fileExists(atPath: newURL.path), !isSelf {
+      let alert = UIAlertController(title: "Replace \"\(raw)\"?",
+                                    message: "A snip with that name already exists. Saving replaces it.",
+                                    preferredStyle: .alert)
+      alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+      alert.addAction(UIAlertAction(title: "Replace", style: .destructive) { [weak self] _ in
+        self?._write(to: newURL, in: dir, isSelf: false)
+      })
+      present(alert, animated: true)
+      return
+    }
+    _write(to: newURL, in: dir, isSelf: isSelf)
+  }
+
+  private func _write(to newURL: URL, in dir: URL, isSelf: Bool) {
+    let fm = FileManager.default
+    let content = contentView.text ?? ""
     do {
-      try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-      try (contentView.text ?? "").write(to: newURL, atomically: true, encoding: .utf8)
+      try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+      if isSelf, let old = existingURL, old.standardizedFileURL.path != newURL.standardizedFileURL.path {
+        // Case-only rename of the same file: update it in place, then rename it.
+        try content.write(to: old, atomically: true, encoding: .utf8)
+        try fm.moveItem(at: old, to: newURL)
+      } else {
+        try content.write(to: newURL, atomically: true, encoding: .utf8)
+        // Renamed/moved: drop the old file.
+        if !isSelf, let old = existingURL, old.standardizedFileURL != newURL.standardizedFileURL {
+          try? fm.removeItem(at: old)
+        }
+      }
     } catch {
       _alert(title: "Couldn't save", message: error.localizedDescription); return
     }
-    // Renamed/moved: drop the old file.
-    if let old = existingURL, old.standardizedFileURL != newURL.standardizedFileURL {
-      try? FileManager.default.removeItem(at: old)
-    }
     onSaved()
     navigationController?.popViewController(animated: true)
+  }
+
+  // Two URLs naming one file on disk (what a case-insensitive volume does with "A.sh" and "a.sh").
+  private static func _sameFile(_ a: URL, _ b: URL) -> Bool {
+    if a.standardizedFileURL == b.standardizedFileURL { return true }
+    let key: Set<URLResourceKey> = [.fileResourceIdentifierKey]
+    guard let ia = try? a.resourceValues(forKeys: key).fileResourceIdentifier,
+          let ib = try? b.resourceValues(forKeys: key).fileResourceIdentifier else { return false }
+    return ia.isEqual(ib)
   }
 
   private func _alert(title: String, message: String? = nil) {
@@ -1106,7 +1196,8 @@ extension SpaceController {
     // Catalyst beeps (and drops the key). See moshroomPresentFullScreen for the rest of the rules.
     moshroomPresentFullScreen(from: self) {
       guard let device = currentDevice else { return nil }
-      let composer = MoshkitorComposer(device: device, seed: seed,
+      MoshkitorComposer.pruneDrafts(keeping: Set(moshroomTabs().map { $0.key }))
+      let composer = MoshkitorComposer(device: device, tabKey: currentTerm()?.meta.key, seed: seed,
                                        connectedHost: currentTerm()?.moshroomUploadHost,
                                        pasteOnAppear: pasteOnOpen)
       composer.onSend = { [weak self] command in
@@ -1161,6 +1252,17 @@ enum MoshroomKeyboard {
     // Leave ⌘ shortcuts (new tab, etc.) to the terminal core.
     if mods.contains(.command) { return false }
 
+    // Arrows, navigation and function keys, by KEY CODE and with their modifiers encoded the xterm
+    // way. First, because for these keys UIKit reports names ("UIKeyInputLeftArrow") or private-use
+    // characters as their text: read as text, Ctrl+Left became ^U (erase the line) and PageUp typed
+    // its own name into the session.
+    if let bytes = navigationBytes(for: key.keyCode, modifiers: mods,
+                                   applicationCursor: device?.moshroomApplicationCursor ?? false) {
+      device?.write(bytes)
+      _clearPending()
+      return true
+    }
+
     // Ctrl-combos pass through as their control byte.
     if mods.contains(.control) {
       guard let bytes = _controlBytes(for: key) else { return false }
@@ -1178,7 +1280,7 @@ enum MoshroomKeyboard {
 
     // Printable text.
     let text = key.characters
-    guard !text.isEmpty, !(text.first?.isNewline ?? true) else { return false }
+    guard isTypable(text) else { return false }
 
     if let first = pendingChar {
       // Second keystroke: hand off to Moshkitor, erasing the probe char already sent.
@@ -1191,6 +1293,69 @@ enum MoshroomKeyboard {
       _setPending(text)
     }
     return true
+  }
+
+  /// Text a key may type: not empty, not a line break, and never one of the names or private-use
+  /// characters UIKit reports for keys that have no character (F-keys, Home, an unmapped key).
+  static func isTypable(_ text: String) -> Bool {
+    guard !text.isEmpty, !(text.first?.isNewline ?? true), !text.hasPrefix("UIKeyInput") else { return false }
+    return !text.unicodeScalars.contains { (0xE000...0xF8FF).contains($0.value) }
+  }
+
+  /// The xterm sequence for an arrow, navigation or function key, or nil for any other key.
+  /// Modifiers ride as xterm's parameter (1 + Shift 1 + Alt 2 + Ctrl 4, e.g. Ctrl+Left = ESC[1;5D).
+  /// Unmodified arrows (and Home/End) follow the cursor-key mode the program asked for: SS3 in
+  /// application mode, CSI otherwise. Shared by the hardware keyboard and the quick-key arrows.
+  static func navigationBytes(for code: UIKeyboardHIDUsage, modifiers: UIKeyModifierFlags,
+                              applicationCursor: Bool) -> String? {
+    let isArrow = [.keyboardUpArrow, .keyboardDownArrow, .keyboardLeftArrow, .keyboardRightArrow,
+                   .keyboardHome, .keyboardEnd].contains(code)
+    let relevant = modifiers.intersection([.shift, .alternate, .control])
+    // Option+Left/Right is word motion, as the Mac terminals send it: ESC b / ESC f is bound by
+    // readline and understood by the agent TUIs, while an unbound ESC[1;3D prints ";3D" at a bash
+    // prompt. Shift alone on an arrow stays a plain arrow (what it always sent), for the same reason.
+    if relevant == .alternate, code == .keyboardLeftArrow { return "\u{1B}b" }
+    if relevant == .alternate, code == .keyboardRightArrow { return "\u{1B}f" }
+    var m = 1
+    if modifiers.contains(.shift), !(isArrow && relevant == .shift) { m += 1 }
+    if modifiers.contains(.alternate) { m += 2 }
+    if modifiers.contains(.control) { m += 4 }
+
+    // CSI <final> / SS3 <final> keys: arrows, Home, End and F1-F4.
+    func letter(_ final: String, ss3WhenPlain: Bool) -> String {
+      if m > 1 { return "\u{1B}[1;\(m)\(final)" }
+      return ss3WhenPlain ? "\u{1B}O\(final)" : "\u{1B}[\(final)"
+    }
+    // CSI <n> ~ keys: Insert, Delete, PageUp/Down and F5-F12.
+    func tilde(_ n: Int) -> String {
+      m > 1 ? "\u{1B}[\(n);\(m)~" : "\u{1B}[\(n)~"
+    }
+
+    switch code {
+    case .keyboardUpArrow: return letter("A", ss3WhenPlain: applicationCursor)
+    case .keyboardDownArrow: return letter("B", ss3WhenPlain: applicationCursor)
+    case .keyboardRightArrow: return letter("C", ss3WhenPlain: applicationCursor)
+    case .keyboardLeftArrow: return letter("D", ss3WhenPlain: applicationCursor)
+    case .keyboardHome: return letter("H", ss3WhenPlain: applicationCursor)
+    case .keyboardEnd: return letter("F", ss3WhenPlain: applicationCursor)
+    case .keyboardF1: return letter("P", ss3WhenPlain: true)
+    case .keyboardF2: return letter("Q", ss3WhenPlain: true)
+    case .keyboardF3: return letter("R", ss3WhenPlain: true)
+    case .keyboardF4: return letter("S", ss3WhenPlain: true)
+    case .keyboardInsert: return tilde(2)
+    case .keyboardDeleteForward: return tilde(3)
+    case .keyboardPageUp: return tilde(5)
+    case .keyboardPageDown: return tilde(6)
+    case .keyboardF5: return tilde(15)
+    case .keyboardF6: return tilde(17)
+    case .keyboardF7: return tilde(18)
+    case .keyboardF8: return tilde(19)
+    case .keyboardF9: return tilde(20)
+    case .keyboardF10: return tilde(21)
+    case .keyboardF11: return tilde(23)
+    case .keyboardF12: return tilde(24)
+    default: return nil
+    }
   }
 
   private static func _setPending(_ s: String) {
@@ -1207,22 +1372,23 @@ enum MoshroomKeyboard {
     pendingChar = nil
   }
 
+  // Return / Tab / Esc / Backspace (the arrows live in navigationBytes). Shift+Tab is the backtab
+  // agent TUIs use to cycle backwards.
   private static func _specialBytes(for key: UIKey) -> String? {
     switch key.keyCode {
     case .keyboardReturnOrEnter, .keypadEnter: return "\r"
-    case .keyboardTab: return "\t"
+    case .keyboardTab: return key.modifierFlags.contains(.shift) ? "\u{1B}[Z" : "\t"
     case .keyboardEscape: return "\u{1B}"
     case .keyboardDeleteOrBackspace: return "\u{7F}"
-    case .keyboardUpArrow: return "\u{1B}[A"
-    case .keyboardDownArrow: return "\u{1B}[B"
-    case .keyboardRightArrow: return "\u{1B}[C"
-    case .keyboardLeftArrow: return "\u{1B}[D"
     default: return nil
     }
   }
 
   private static func _controlBytes(for key: UIKey) -> String? {
-    guard let scalar = key.charactersIgnoringModifiers.uppercased().unicodeScalars.first else { return nil }
+    // One real character only: a key with no character reports a name ("UIKeyInput…") whose first
+    // letter would otherwise be folded into a control byte.
+    let chars = key.charactersIgnoringModifiers
+    guard chars.unicodeScalars.count == 1, let scalar = chars.uppercased().unicodeScalars.first else { return nil }
     let v = scalar.value
     // Ctrl+6 is Ctrl-^ on every terminal (the key the caret shares): mosh's own escape, so a session
     // that lost its server can be quit the way mosh's banner says ("Ctrl-^ .").

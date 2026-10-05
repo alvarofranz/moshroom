@@ -133,10 +133,16 @@ enum Moshlight {
     // --- Pass 1: comments + strings (a tiny state machine beats regex on escapes) ---
     var i = 0
     let n = units.count
-    func matches(_ token: String, at pos: Int) -> Bool {
-      let t = Array(token.utf16)
+    // The tokens as UTF-16 once per pass: this loop runs per character, and converting a token on
+    // every probe allocated a few arrays per character of the file.
+    let blockOpen = rules.blockComment.map { Array($0.open.utf16) }
+    let blockClose = rules.blockComment.map { Array($0.close.utf16) }
+    let lineTokens = rules.lineComments.map { Array($0.utf16) }
+    let hashToken = Array("#".utf16)
+    let stringDelims = Set(rules.stringDelimiters.compactMap { $0.utf16.count == 1 ? $0.utf16.first : nil })
+    func matches(_ t: [UInt16], at pos: Int) -> Bool {
       guard pos + t.count <= n else { return false }
-      for (k, u) in t.enumerated() where units[pos + k] != u { return false }
+      for k in 0..<t.count where units[pos + k] != t[k] { return false }
       return true
     }
 
@@ -144,20 +150,20 @@ enum Moshlight {
       let u = units[i]
 
       // Block comment
-      if let block = rules.blockComment, matches(block.open, at: i) {
+      if let open = blockOpen, let close = blockClose, matches(open, at: i) {
         let start = i
-        i += block.open.utf16.count
-        while i < n, !matches(block.close, at: i) { i += 1 }
-        i = min(n, i + block.close.utf16.count)
+        i += open.count
+        while i < n, !matches(close, at: i) { i += 1 }
+        i = min(n, i + close.count)
         let r = NSRange(location: start, length: i - start)
         paint(r, Palette.comment); masked.append(r)
         continue
       }
 
       // Line comment (and markdown headings, which reuse the same shape)
-      var lineToken: String? = nil
-      for token in rules.lineComments where matches(token, at: i) {
-        if token == "#" && rules.hashCommentNeedsBoundary {
+      var lineToken: [UInt16]? = nil
+      for token in lineTokens where matches(token, at: i) {
+        if token == hashToken && rules.hashCommentNeedsBoundary {
           let atBoundary = i == 0 || units[i - 1] == 0x20 || units[i - 1] == 0x09 || units[i - 1] == 0x0A
           if !atBoundary { continue }
         }
@@ -173,12 +179,14 @@ enum Moshlight {
       }
 
       // String
-      if let scalar = Unicode.Scalar(u), rules.stringDelimiters.contains(Character(scalar)) {
+      if stringDelims.contains(u) {
         let delim = u
         let start = i
         i += 1
         while i < n {
-          if units[i] == 0x5C { i += 2; continue }        // backslash escape
+          // Backslash escape. Clamped: a backslash as the file's LAST character would otherwise push
+          // the span one past the end and the attribute call would raise.
+          if units[i] == 0x5C { i = min(n, i + 2); continue }
           if units[i] == delim || units[i] == 0x0A { break }
           i += 1
         }

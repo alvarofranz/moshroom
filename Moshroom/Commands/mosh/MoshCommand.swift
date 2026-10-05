@@ -44,14 +44,14 @@ struct MoshCommand: ParsableCommand {
     transform: { try MoshMoshPrediction(parsing: $0) })
   var predict: MoshMoshPrediction?
 
-  @Flag (
+  @Flag(
     name: [.customShort("o")]
   )
   var predictOverwrite: Bool = false
 
   @Flag var verbose: Bool = false
 
-  @Flag (
+  @Flag(
     name: [.customShort("T")],
     help: "Do not start a TTY"
   )

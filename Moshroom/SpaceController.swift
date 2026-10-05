@@ -227,9 +227,8 @@ class SpaceController: UIViewController {
     }
   }
   
-  override var canBecomeFirstResponder: Bool {
-    Moshroom.scratchOnly ? true : super.canBecomeFirstResponder
-  }
+  // Always: SpaceController is the keyboard's owner of last resort (see moshroomClaimKeyboardIfPageHasNoInput).
+  override var canBecomeFirstResponder: Bool { true }
 
   override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
     // Moshroom: a hardware keystroke means the user is using the terminal — clear the
@@ -413,31 +412,25 @@ class SpaceController: UIViewController {
     
     if let v = _viewportsController.view {
       v.layoutMargins = .zero
-      if Moshroom.scratchOnly {
-        // Moshroom: the terminal fills the safe area, reserving a strip top and bottom for the
-        // floating Moshkeys bars (Tabs/Settings up top, quick-keys below) so terminal text is
-        // never hidden behind the round buttons — with extra breathing room up top.
-        // On the Mac there ARE no bottom quick-keys (hardware keyboard + tap dispatch cover
-        // everything), so no strip is reserved at all — the terminal runs to the bottom, kept
-        // off the very edge only by LayoutConstraintManager's small uniform margin.
-        #if targetEnvironment(macCatalyst)
-        let bottomStrip: CGFloat = 0
-        #else
-        let bottomStrip: CGFloat = 56
-        #endif
-        v.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(v)
-        NSLayoutConstraint.activate([
-          v.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 76),
-          v.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
-          v.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
-          v.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -bottomStrip),
-        ])
-      } else {
-        v.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        v.frame = view.bounds
-        view.addSubview(v)
-      }
+      // Moshroom: the terminal fills the safe area, reserving a strip top and bottom for the
+      // floating Moshkeys bars (Tabs/Settings up top, quick-keys below) so terminal text is
+      // never hidden behind the round buttons — with extra breathing room up top.
+      // On the Mac there ARE no bottom quick-keys (hardware keyboard + tap dispatch cover
+      // everything), so no strip is reserved at all — the terminal runs to the bottom, kept
+      // off the very edge only by LayoutConstraintManager's small uniform margin.
+      #if targetEnvironment(macCatalyst)
+      let bottomStrip: CGFloat = 0
+      #else
+      let bottomStrip: CGFloat = 56
+      #endif
+      v.translatesAutoresizingMaskIntoConstraints = false
+      view.addSubview(v)
+      NSLayoutConstraint.activate([
+        v.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 76),
+        v.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
+        v.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
+        v.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -bottomStrip),
+      ])
     }
     
     _viewportsController.didMove(toParent: self)
@@ -457,7 +450,10 @@ class SpaceController: UIViewController {
       } else {
         _newShellAction(animated: false)
       }
-    } else if let key = _currentKey {
+    } else if let key = _currentKey.flatMap({ _viewportsKeys.contains($0) ? $0 : nil }) ?? _viewportsKeys.first {
+      // A restored current key that is missing or no longer a tab lands on the first tab instead of
+      // installing nothing (a blank page) or fabricating a terminal that is not in the list.
+      _currentKey = key
       MoshLog.log("tabs", "bootstrap: current kind=\(moshroomTabKind(for: key).rawValue) kinds=\(_tabKinds.count) keys=\(_viewportsKeys.count)")
       if let page = _pageController(for: key) {
         _viewportsController.setViewControllers([page], direction: .forward, animated: false)
@@ -749,24 +745,33 @@ class SpaceController: UIViewController {
     _removeCurrentSpace()
   }
   
-  private func _removeCurrentSpace(attachInput: Bool = true) {
+  // Kind-aware forget: a terminal leaves the registry (its archive too, unless it is only moving to
+  // another window); any other kind gets its close hook (stop the music, tear the SFTP session down)
+  // and leaves the local page map. The key leaves the tab list either way.
+  private func _forgetTab(_ key: UUID, keepArchive: Bool = false) {
+    if moshroomTabKind(for: key) == .term {
+      let term: TermController? = SessionRegistry.shared.sessionFromIndexWith(key: key)
+      term?.delegate = nil
+      SessionRegistry.shared.remove(forKey: key, keepArchive: keepArchive)
+    } else {
+      _pageControllers[key]?.moshroomTabWillClose()
+      _pageControllers[key] = nil
+    }
+    _tabKinds[key] = nil
+    _viewportsKeys.removeAll { $0 == key }
+    if _pendingMoveKey == key {
+      _pendingMoveKey = nil
+    }
+  }
+
+  private func _removeCurrentSpace(attachInput: Bool = true, keepArchive: Bool = false) {
     guard
       let currentKey = _currentKey,
       let idx = _viewportsKeys.firstIndex(of: currentKey)
     else {
       return
     }
-    // Kind-aware close: a terminal leaves the registry; any other kind gets its close hook
-    // (stop the music, tear the SFTP session down) and leaves the local page map.
-    if moshroomTabKind(for: currentKey) == .term {
-      currentTerm()?.delegate = nil
-      SessionRegistry.shared.remove(forKey: currentKey)
-    } else {
-      _pageControllers[currentKey]?.moshroomTabWillClose()
-      _pageControllers[currentKey] = nil
-    }
-    _tabKinds[currentKey] = nil
-    _viewportsKeys.remove(at: idx)
+    _forgetTab(currentKey, keepArchive: keepArchive)
     if _viewportsKeys.isEmpty {
       // No tabs is a real state, never an auto-resurrected shell: the page VC gets the
       // empty-state placeholder and New tab (there, or in Moshtabs) brings the next terminal.
@@ -965,16 +970,8 @@ extension SpaceController: UIPageViewControllerDelegate {
     // The swipe ended (completed or cancelled) — always release the flag and replay any switch
     // that was requested while it was in flight.
     _spaceControllerAnimating = false
-    if _pendingEmptyInstall {
-      _pendingEmptyInstall = false
-      if _viewportsKeys.isEmpty {
-        _installEmptyState()
-        return
-      }
-    }
-    if let pendingKey = _pendingMoveKey {
-      _pendingMoveKey = nil
-      _moveToShell(key: pendingKey, animated: false)
+    if _pendingEmptyInstall || _pendingMoveKey != nil {
+      _replayPendingInstall(landedKey: nil, orFallBack: false)
       return
     }
 
@@ -984,6 +981,11 @@ extension SpaceController: UIPageViewControllerDelegate {
 
     guard let page = pageViewController.viewControllers?.first as? (UIViewController & MoshroomTabPage)
     else {
+      return
+    }
+    // Swiped onto a tab that closed meanwhile: never adopt its key, land on the current tab instead.
+    guard _viewportsKeys.contains(page.moshroomTabKey) else {
+      _replayPendingInstall(landedKey: nil, orFallBack: true)
       return
     }
     // Landing on a non-terminal page: release the outgoing terminal's focus BEFORE _currentKey
@@ -1118,7 +1120,6 @@ extension SpaceController {
     case .configShow: showConfigAction()
     case .snippetsShow: showSnippetsAction()
     case .scratchShow: showScratchAction()
-    case .toggleQuickActions: toggleQuickActionsAction()
     case .tab1: _moveToShell(idx: 0)
     case .tab2: _moveToShell(idx: 1)
     case .tab3: _moveToShell(idx: 2)
@@ -1198,9 +1199,6 @@ extension SpaceController {
     _focusOnShell()
   }
   
-  @objc public func scaleWithPich(_ pinch: UIPinchGestureRecognizer) {
-    currentTerm()?.scaleWithPich(pinch)
-  }
   
   private func _newShellAction(command: String = "", animated: Bool = true) {
     let params = MCPParams()
@@ -1286,7 +1284,8 @@ extension SpaceController {
 
 
     term.prepareForWindowMove()
-    _removeCurrentSpace(attachInput: false)
+    // Only changing windows: the tab's archive (a parked session's only copy) must survive the move.
+    _removeCurrentSpace(attachInput: false, keepArchive: true)
     nextSpaceCtrl._addTerm(term: term)
     nextWindow.makeKey()
   }
@@ -1368,9 +1367,6 @@ extension SpaceController {
     return self
   }
   
-  @objc func toggleQuickActionsAction() {
-    // Quick-actions menu removed — tabs now live in the Moshkeys tabs pad.
-  }
   
   
   
@@ -1456,6 +1452,15 @@ extension SpaceController {
       if !didComplete {
         self._viewportsController.setViewControllers([page], direction: direction, animated: false)
       }
+      // The tab this transition was taking us to was closed while it was in flight (two quick
+      // closes): never adopt a key that is no longer a tab (that fabricated a phantom terminal and
+      // stranded the screen on a dead page). Land on what is current now instead.
+      guard self._viewportsKeys.contains(page.moshroomTabKey) else {
+        self._spaceControllerAnimating = false
+        completion?(didComplete)
+        self._replayPendingInstall(landedKey: nil, orFallBack: true)
+        return
+      }
       (page as? TermController)?.resumeIfNeeded()
       self._currentKey = page.moshroomTabKey
       // Keep the on-disk tab layout current (Catalyst relaunch path, see moshroomPersistUIState).
@@ -1470,21 +1475,39 @@ extension SpaceController {
       }
       self._spaceControllerAnimating = false
       completion?(didComplete)
+      self._replayPendingInstall(landedKey: page.moshroomTabKey, orFallBack: false)
+    }
+  }
 
-      if self._pendingEmptyInstall {
-        self._pendingEmptyInstall = false
-        if self._viewportsKeys.isEmpty {
-          self._installEmptyState()
-          return
-        }
-      }
-      if let pendingKey = self._pendingMoveKey {
-        self._pendingMoveKey = nil
-        if pendingKey != page.moshroomTabKey {
-          self._moveToShell(key: pendingKey, animated: false)
-        }
+  // What a finished transition owes: an empty-state install, or the newest switch requested while it
+  // was in flight, replayed unanimated. Installed directly rather than through _moveToShell, which
+  // needs the current key to still be a tab and silently dropped the switch when it was not.
+  // `orFallBack`: nothing pending and the page on screen is no longer a tab, so land on the current
+  // tab (or the first one, or the empty state).
+  private func _replayPendingInstall(landedKey: UUID?, orFallBack fallBack: Bool) {
+    if _pendingEmptyInstall {
+      _pendingEmptyInstall = false
+      if _viewportsKeys.isEmpty {
+        _installEmptyState()
+        return
       }
     }
+    var target = _pendingMoveKey
+    _pendingMoveKey = nil
+    if target == landedKey {
+      target = nil
+    }
+    if target == nil, fallBack {
+      target = _currentKey.flatMap { _viewportsKeys.contains($0) ? $0 : nil } ?? _viewportsKeys.first
+      if target == nil {
+        _installEmptyState()
+        return
+      }
+    }
+    guard let key = target, _viewportsKeys.contains(key), let page = _pageController(for: key) else {
+      return
+    }
+    _installPage(page, direction: .forward, animated: false)
   }
 
   // Zero tabs: install the empty-state placeholder page. Same serialized discipline as
@@ -1513,20 +1536,7 @@ extension SpaceController {
       // while this one was in flight re-runs (only meaningful if keys are still empty), and a
       // tab born while the placeholder was installing (New tab racing the close) replays
       // directly: _moveToShell would bail on the nil _currentKey of the empty state.
-      if self._pendingEmptyInstall {
-        self._pendingEmptyInstall = false
-        if self._viewportsKeys.isEmpty {
-          self._installEmptyState()
-          return
-        }
-      }
-      if let pendingKey = self._pendingMoveKey {
-        self._pendingMoveKey = nil
-        if self._viewportsKeys.contains(pendingKey),
-           let page = self._pageController(for: pendingKey) {
-          self._installPage(page, direction: .forward, animated: false)
-        }
-      }
+      self._replayPendingInstall(landedKey: nil, orFallBack: false)
     }
   }
   
@@ -1844,9 +1854,20 @@ extension SpaceController {
   }
 
   func moshroomClose(tab key: UUID) {
-    guard let idx = _viewportsKeys.firstIndex(of: key) else { return }
-    if key != _currentKey { _moveToShell(idx: idx, animated: false) }
-    _closeCurrentSpace()
+    guard _viewportsKeys.contains(key) else { return }
+    if key == _currentKey {
+      _closeCurrentSpace()
+      return
+    }
+    // Any other tab closes by its key, in place: never by switching to it first. A switch requested
+    // while a transition is in flight is only queued, so "switch, then close the current tab" closed
+    // the tab the user was LEAVING, live session and all.
+    if moshroomTabKind(for: key) == .term {
+      let term: TermController? = SessionRegistry.shared.sessionFromIndexWith(key: key)
+      term?.terminate()
+    }
+    _forgetTab(key)
+    moshroomPersistUIState()
   }
 }
 

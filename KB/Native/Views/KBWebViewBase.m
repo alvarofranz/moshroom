@@ -128,13 +128,16 @@ NSString *_encodeString(NSString *str);
   traits.autocapitalizationType = UITextAutocapitalizationTypeNone;
   traits.spellCheckingType = UITextSpellCheckingTypeNo;
   // NOTE: Fixes crash introduced on iOS 17.4. This function is called multiple times, and for
-  // some reason, on one of them the selector will not exist and it will crash the app on start. Issue #1945
+  // some reason, on one of them the selector will not exist and it will crash the app on start.
   if ([traits respondsToSelector:@selector(setSmartInsertDeleteType:)]) {
     traits.smartInsertDeleteType = UITextSmartInsertDeleteTypeNo;
   }
-  // Disable WritingTools support (AI functions)
-  if ([traits respondsToSelector:@selector(setWritingToolsBehavior:)]) {
-    traits.writingToolsBehavior = UIWritingToolsBehaviorNone;
+  // Disable WritingTools support (AI functions). The availability check is what the compiler wants;
+  // the selector check stays for the same reason as the one above.
+  if (@available(iOS 18.0, macCatalyst 18.0, *)) {
+    if ([traits respondsToSelector:@selector(setWritingToolsBehavior:)]) {
+      traits.writingToolsBehavior = UIWritingToolsBehaviorNone;
+    }
   }
 }
 
@@ -167,9 +170,13 @@ NSString *_encodeString(NSString *str);
     _focused = NO;
     [self.configuration.userContentController addScriptMessageHandler:self name:_interopName];
     self.configuration.defaultWebpagePreferences.preferredContentMode = WKContentModeDesktop;
+#if DEBUG
+    // Dev builds only, like TermView: a release build must not let Web Inspector attach to a page
+    // that can type into live sessions.
     if (@available(iOS 16.4, *)) {
       self.inspectable = true;
     }
+#endif
 //    [self.configuration.preferences setJavaScriptCanOpenWindowsAutomatically:true];
     NSMutableArray *imeGuards = [[NSMutableArray alloc] init];
     
@@ -344,10 +351,6 @@ NSString *_encodeString(NSString *str);
 
 - (void)ready {
   [self removeAssistantsFromView];
-}
-
-- (void)removeAssistantsFromContentView {
-  [self _removeAssistantsFromView:self.scrollView];
 }
 
 - (void)removeAssistantsFromView {

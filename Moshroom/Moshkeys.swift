@@ -336,10 +336,10 @@ final class MoshkeysBar: UIStackView {
     arrowsBtn  = moshkeyRoundButton()
     arrowsBtn.setMoshIcon("dpad")
     arrowsBtn.addAction(UIAction { [weak self] _ in self?._toggleArrowMode() }, for: .touchUpInside)
-    arrowLeftBtn  = _arrowKeyButton("arrow.left",  "\u{1B}[D")
-    arrowRightBtn = _arrowKeyButton("arrow.right", "\u{1B}[C")
-    arrowDownBtn  = _arrowKeyButton("arrow.down",  "\u{1B}[B")
-    arrowUpBtn    = _arrowKeyButton("arrow.up",    "\u{1B}[A")
+    arrowLeftBtn  = _arrowKeyButton("arrow.left",  .keyboardLeftArrow)
+    arrowRightBtn = _arrowKeyButton("arrow.right", .keyboardRightArrow)
+    arrowDownBtn  = _arrowKeyButton("arrow.down",  .keyboardDownArrow)
+    arrowUpBtn    = _arrowKeyButton("arrow.up",    .keyboardUpArrow)
 
     // ↕ sits third (centre of five) so it never shifts when arrow mode swaps the others out.
     [specialBtn, numbersBtn, arrowsBtn, lettersBtn, enterBtn].forEach { addArrangedSubview($0) }
@@ -381,14 +381,19 @@ final class MoshkeysBar: UIStackView {
     if shownKind == kind { _closePad() } else { _showPad(kind) }
   }
 
-  // A round arrow key (no pad — lives inline in the bar while arrow mode is on); sends its ANSI escape
-  // and stays put.
-  private func _arrowKeyButton(_ symbol: String, _ bytes: String) -> UIButton {
+  // A round arrow key (no pad: it lives inline in the bar while arrow mode is on); sends its escape
+  // and stays put. Encoded at tap time, the same way as the hardware arrows: SS3 while the program
+  // asked for application cursor keys (less, man), CSI otherwise.
+  private func _arrowKeyButton(_ symbol: String, _ code: UIKeyboardHIDUsage) -> UIButton {
     let b = moshkeyRoundButton()
     b.setMoshIcon(symbol, pointSize: 16, weight: .semibold)
     b.addAction(UIAction { [weak self] _ in
       self?.spaceController?.dismissMoshnector()
-      self?.spaceController?.currentDevice?.write(bytes)
+      guard let device = self?.spaceController?.currentDevice,
+            let bytes = MoshroomKeyboard.navigationBytes(for: code, modifiers: [],
+                                                         applicationCursor: device.moshroomApplicationCursor)
+      else { return }
+      device.write(bytes)
     }, for: .touchUpInside)
     return b
   }
@@ -820,7 +825,7 @@ private final class _TabLongPress: UILongPressGestureRecognizer {
 // flash for three seconds after a swipe and fade out, but the strip it lives in is empty anyway and
 // "which host am I on" is worth having on screen at all times, so it is simply always there and
 // always current (SpaceController.moshroomUpdateTabLabel). A padded UILabel (Moshroom red, white
-// text) that never takes touches — a tap passes straight through to the terminal underneath.
+// text). Moshkeys.install turns touches on and adds the tap that offers to reconnect a mosh tab.
 final class MoshroomTabLabel: UILabel {
   private let insets = UIEdgeInsets(top: 6, left: 12, bottom: 6, right: 12)
   override init(frame: CGRect) {

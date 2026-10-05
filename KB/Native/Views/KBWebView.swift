@@ -141,17 +141,6 @@ class KBWebView: KBWebViewBase {
     scrollView.subviews.first
   }
   
-  func disableTextSelectionView() {
-    let subviews = scrollView.subviews
-    guard
-      subviews.count > 2,
-      let v = subviews[1].subviews.first
-    else {
-      return
-    }
-    NotificationCenter.default.removeObserver(v)
-  }
-  
   override func ready() {
     webViewReady = true
     super.ready()

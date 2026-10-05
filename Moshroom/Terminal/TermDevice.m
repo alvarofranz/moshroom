@@ -498,6 +498,9 @@ static int __sizeOfIncompleteSequenceAtTheEnd(const char *buffer, size_t len) {
   [self onSubmit:line];
 }
 
+// A program writing the clipboard (OSC 52). It may only do that from the terminal the user is looking
+// at (a hidden tab or a backgrounded app never gets to overwrite what the user copied), with a sane
+// size, and the copy stays on this device (no Universal Clipboard). Anything else is dropped silently.
 - (void)viewCopyString:(NSString *)text
 {
   // A restored client's first frame replays the remote's LAST copy: it must not overwrite whatever
@@ -505,7 +508,17 @@ static int __sizeOfIncompleteSequenceAtTheEnd(const char *buffer, size_t len) {
   if ([self _isQuietReplay]) {
     return;
   }
-  [[UIPasteboard generalPasteboard] setString:text];
+  if (text.length == 0 || [text lengthOfBytesUsingEncoding:NSUTF8StringEncoding] > 256 * 1024) {
+    return;
+  }
+  UIView *view = _view;
+  UISceneActivationState state = view.window.windowScene.activationState;
+  if (view.window == nil || view.isHidden
+      || (state != UISceneActivationStateForegroundActive && state != UISceneActivationStateForegroundInactive)) {
+    return;
+  }
+  [[UIPasteboard generalPasteboard] setItems:@[@{@"public.utf8-plain-text": text}]
+                                     options:@{UIPasteboardOptionLocalOnly: @YES}];
 }
 
 - (void)viewSelectionChanged {

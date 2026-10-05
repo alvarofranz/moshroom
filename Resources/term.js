@@ -345,7 +345,7 @@ function term_setup(accessibilityEnabled) {
       t.scrollPort_.screen_.style.backgroundColor;
     var bgColor = _colorComponents(t.scrollPort_.screen_.style.backgroundColor);
     
-    t.keyboard.characterEncoding = 'raw'; // we are UTF8. Fix for #507
+    t.keyboard.characterEncoding = 'raw'; // we are UTF8: hterm must not re-encode what it sends
     t.uninstallKeyboard();
     // Belt to the braces of the same call in the appearance command list: a theme is user-supplied JS
     // and can throw halfway (term_init catches that and carries on), and this must hold regardless.
@@ -481,6 +481,11 @@ function term_sanitizeModes() {
   // The pen too: a child that died mid-output with SGR attributes latched (reverse video, a
   // background color) must not paint the local prompt with them.
   t.primaryScreen_.textAttributes.reset();
+  // Cursor-key mode too: a pager killed mid-session leaves it on, and the local prompt reads the
+  // arrows the normal (CSI) way.
+  if (t.keyboard) {
+    t.keyboard.applicationCursor = false;
+  }
   _moshroomPostScrollMode();
 }
 
@@ -550,10 +555,11 @@ function _moshroomMouseReportOn() {
             t.vt.mouseReport !== t.vt.MOUSE_REPORT_DISABLED);
 }
 
-// Only these DEC modes change who can use a swipe. Deliberately NOT every mode: a TUI toggles cursor
-// visibility (25) twice per frame, and posting on that would be a message storm.
+// Only these DEC modes change who can use a swipe, plus cursor-key mode (1, DECCKM), which decides
+// how the native arrow keys are encoded. Deliberately NOT every mode: a TUI toggles cursor visibility
+// (25) twice per frame, and posting on that would be a message storm.
 var _moshroomScrollModeCodes = {
-  '9': 1, '47': 1, '1000': 1, '1002': 1, '1003': 1,
+  '1': 1, '9': 1, '47': 1, '1000': 1, '1002': 1, '1003': 1,
   '1005': 1, '1006': 1, '1015': 1, '1047': 1, '1049': 1,
 };
 
@@ -573,6 +579,10 @@ function _moshroomPostScrollMode() {
     op: 'scrollmode',
     isPrimary: t.isPrimaryScreen(),
     mouseReport: _moshroomMouseReportOn(),
+    // Cursor-key mode rides along: the quick-key and hardware arrows are encoded natively, and like
+    // every terminal they must send SS3 (ESC O A) while the program asked for application cursor
+    // keys and CSI (ESC [ A) otherwise. `less` ignores CSI arrows once it sets this mode.
+    appCursor: !!(t.keyboard && t.keyboard.applicationCursor),
   });
 }
 
@@ -1115,16 +1125,16 @@ function term_appendUserCss(css) {
 function term_getCurrentSelection() {
   const selection = document.getSelection();
     if (!selection || selection.rangeCount === 0 || selection.type === 'Caret') {
-    return {base: '', offset: 0, text: ''};
+    return {text: ''};
   }
 
   const r = selection.getRangeAt(0).getBoundingClientRect();
 
   const rect = `{{${r.x}, ${r.y}},{${r.width},${r.height}}}`;
 
+  // Only what native reads (TermView: the text for Copy, the rect for the edit menu). This posts on
+  // every step of a drag, so it carries nothing else.
   return {
-    base: selection.baseNode.textContent,
-    offset: selection.baseOffset,
     text: selection.toString() || "",
     rect,
   };

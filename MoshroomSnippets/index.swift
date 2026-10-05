@@ -23,10 +23,6 @@
 
 import Foundation
 
-public protocol AdaptiveSearchable {
-  var searchableContent: String { get }
-}
-
 // NOTE This uses Data, but CFData functions may be more optimized for
 // what we are trying to do.
 // Ranges is supported on 16+ only.
@@ -90,7 +86,7 @@ extension String {
   }
 }
 
-extension Snippet: AdaptiveSearchable {
+extension Snippet {
   public var searchableContent: String {
     (try? self.content) ?? ""
   }

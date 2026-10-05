@@ -138,13 +138,14 @@ class TermController: UIViewController {
   private var _termView = TermView(frame: .zero, termUIState: TermUIState.withDefaults())
   private var _proxyView = ProxyView(frame: .zero)
   private var _bgColor: UIColor? = nil
-  private var _fontSizeBeforeScaling: Int? = nil
+  // Live page API calls (history search, completion), kept until they answer: a discarded
+  // AnyCancellable cancels its subscription before the answer can arrive.
+  private var _apiCalls: [UUID: AnyCancellable] = [:]
   // The loader over this terminal while it is not drawing yet (see moshroomBeginCatchUp).
   fileprivate let _catchUp = MoshroomCatchUp()
 
   @objc public var viewIsLoaded: Bool = false
 
-  @objc public var activityKey: String? = nil
   @objc public var termDevice: TermDevice { _termDevice }
   @objc weak var delegate: TermControlDelegate? = nil
 
@@ -290,17 +291,6 @@ class TermController: UIViewController {
     }
   }
 
-  public override func viewWillLayoutSubviews() {
-    super.viewWillLayoutSubviews()
-
-    guard let window = view.window,
-      let windowScene = window.windowScene,
-      windowScene.activationState == .foregroundActive
-    else {
-      return
-    }
-  }
-
   public override func viewDidLayoutSubviews() {
     super.viewDidLayoutSubviews()
     _termView.termUIState.viewSize = view.bounds.size
@@ -311,29 +301,6 @@ class TermController: UIViewController {
     _termDevice.delegate = nil
     _termView.terminate()
     _session?.kill()
-  }
-
-  @objc public func scaleWithPich(_ pinch: UIPinchGestureRecognizer) {
-    // Block font resize when layout is locked
-    guard !_termView.termUIState.layoutLocked else {
-      return
-    }
-
-    switch pinch.state {
-    case .began: fallthrough
-    case .ended:
-      _fontSizeBeforeScaling = _termView.termUIState.fontSize
-    case .changed:
-      guard let initialSize = _fontSizeBeforeScaling else {
-        return
-      }
-      let newSize = Int(round(CGFloat(initialSize) * pinch.scale))
-      guard newSize != _termView.termUIState.fontSize else {
-        return
-      }
-      _termView.setFontSize(newSize as NSNumber)
-    default:  break
-    }
   }
 
   deinit {
@@ -434,10 +401,11 @@ extension TermController: TermDeviceDelegate {
     }
 
     weak var termView = _termView
-
-   _ = call(session, request)
-     .receive(on: RunLoop.main)
-     .sink { termView?.apiResponse(api, response: $0) }
+    let id = UUID()
+    _apiCalls[id] = call(session, request)
+      .receive(on: RunLoop.main)
+      .sink(receiveCompletion: { [weak self] _ in self?._apiCalls[id] = nil },
+            receiveValue: { termView?.apiResponse(api, response: $0) })
   }
 
   public func deviceIsReady() {
@@ -671,11 +639,12 @@ extension TermController: SuspendableSession {
       _sessionPayload = unarchiver.flatMap { decodePayload(from: $0) } ?? MCPSessionPayload(params: MCPParams())
       _sessionPayload!.start(in: _termDevice, sessionKey: _meta.key.uuidString)
       _session?.delegate = self
+      _moshroomSessionDidGoLive()
     } else {
-      _sessionPayload!.resumeFromSuspended()
+      // A payload whose session never started (resumeInPlace wakes any session that did): start it
+      // now rather than leave the tab with nothing running in it.
+      _startSession()
     }
-
-    _moshroomSessionDidGoLive()
   }
 
   func suspendSession(with archiver: NSKeyedArchiver) {
@@ -732,6 +701,14 @@ extension TermController {
     _termView.moshroomScreenHasContent { [weak self] hasContent in
       guard let self, self._catchUp.active, self._catchUp.token == token else { return }
       if hasContent {
+        self._endCatchUp()
+        return
+      }
+      // A ready page with a running mosh client is not catching up: the client draws its whole screen
+      // locally the moment it runs (a woken one from its checkpoint, a rebuilt page on its repaint),
+      // so a screen still blank then is what the remote shows. Without this the loader sat over a
+      // live, blank-but-real terminal for its whole 15 s cap.
+      if self._termView.isReady, (self._session as? MCPSession)?.moshroomMoshCanRepaint() == true {
         self._endCatchUp()
         return
       }

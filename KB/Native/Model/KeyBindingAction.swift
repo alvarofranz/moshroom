@@ -57,7 +57,6 @@ enum Command: String, Codable, CaseIterable {
   case configShow
   case snippetsShow
   case scratchShow
-  case toggleQuickActions
   case hideKeyboard
 
   var title: String {
@@ -97,7 +96,6 @@ enum Command: String, Codable, CaseIterable {
     case .configShow:             return "Show Config"
     case .snippetsShow:           return "Show Snippets"
     case .scratchShow:            return "Show Scratch"
-    case .toggleQuickActions:     return "Toggle Quick Actions"
     case .hideKeyboard:           return "Hide Keyboard"
     }
   }
@@ -266,8 +264,13 @@ enum KeyBindingAction: Codable, Identifiable {
       let mods    = try c.decode(Int.self,     forKey: .mods)
       self = .press(keyCode, mods: mods)
     case .command:
-      let cmd = try c.decode(Command.self, forKey: .value)
-      self = .command(cmd)
+      // A command this build no longer has (a saved binding to a removed one) becomes no binding,
+      // rather than failing the whole keyboard configuration it is part of.
+      if let cmd = try? c.decode(Command.self, forKey: .value) {
+        self = .command(cmd)
+      } else {
+        self = .none
+      }
     default:
       self = .none
     }

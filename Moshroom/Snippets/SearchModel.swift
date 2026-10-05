@@ -343,11 +343,16 @@ public protocol SnippetContext {
 }
 
 extension TermDevice: SnippetReceiver {
+  // Through the terminal's paste path, like a Moshkitor send: hterm frames it as a bracketed paste
+  // when the program asked for that, so an agent reads a multi-line snip as text instead of running
+  // each line. (`view.paste(_:)` here was the edit ACTION, which ignores its argument and pastes the
+  // clipboard; writing raw to stdin in a session skipped the framing.) A bare "\r" (the prompt
+  // submit) stays a keystroke.
   public func receive(_ content: String) {
-    if self.rawMode {
-      self.write(inDirectly: content)
+    if content == "\r" {
+      self.write(content)
     } else {
-      self.view?.paste(content)
+      self.sendBracketedPaste(content)
     }
   }
 }

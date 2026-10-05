@@ -86,16 +86,51 @@ protocol SuspendableSession: AnyObject {
       }
     }
     
-    // Enumerate files and delete missed in index
-    
+    _fsRemoveOrphanedArchives()
     _fsWriteMetaIndex()
+  }
+
+  // Archives no tab knows about any more (a scene state that was lost, a crash between a close and the
+  // next index write) are deleted: each holds a mosh session key, and nothing would ever read it. Only
+  // when the index itself was read (or never existed): an index that failed to load says nothing about
+  // which archives are live, and deleting by it would throw every tab's session away.
+  private func _fsRemoveOrphanedArchives() {
+    guard _metaIndexIsTrustworthy,
+          let folder = try? _fsSessionsFolder(),
+          let names = try? FileManager.default.contentsOfDirectory(atPath: folder.path)
+    else {
+      return
+    }
+    // A week of grace on top: a restored tab whose controller has not been built yet is not in
+    // `_sessionsIndex`, and an archive that young is never worth the risk.
+    let cutoff = Date().addingTimeInterval(-7 * 24 * 3600)
+    for name in names {
+      guard let key = UUID(uuidString: name),
+            _metaIndex[key] == nil, _sessionsIndex[key] == nil
+      else {
+        continue
+      }
+      let url = folder.appendingPathComponent(name)
+      guard let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate,
+            modified < cutoff
+      else {
+        continue
+      }
+      try? FileManager.default.removeItem(at: url)
+    }
   }
   
   func track(session: SuspendableSession) {
     let meta = session.meta
     let key = meta.key
+    let isNew = _metaIndex[key] == nil
     _metaIndex[key] = meta
     _sessionsIndex[key] = session
+    // A tab the index has never seen is written down now: its archive (a checkpoint can land long
+    // before the next park writes the index) must never look orphaned.
+    if isNew, _metaIndexIsTrustworthy {
+      _fsWriteMetaIndex()
+    }
   }
 
   // Force (or clear, with nil/empty) a tab's custom name and persist it across launches.
@@ -140,10 +175,15 @@ protocol SuspendableSession: AnyObject {
   /// SpaceController.onDidDiscardSceneSessions.
   var liveSessionKeys: Set<UUID> { Set(_sessionsIndex.keys) }
 
-  func remove(forKey key: UUID) {
+  /// Forget a tab. `keepArchive` is for a tab that is only changing windows (tracked again right
+  /// after): its archive is the only copy of a parked session and must survive the move.
+  func remove(forKey key: UUID, keepArchive: Bool = false) {
     _metaIndex.removeValue(forKey: key)
-    _fsRemove(forKey: key)
+    if !keepArchive {
+      _fsRemove(forKey: key)
+    }
     _sessionsIndex.removeValue(forKey: key)
+    _fsWriteMetaIndex()
   }
   
   
@@ -312,13 +352,21 @@ protocol SuspendableSession: AnyObject {
     }
   }
   
+  // Whether `_metaIndex` reflects the index on disk (read fine, or there was none yet).
+  private var _metaIndexIsTrustworthy = false
+
   private func _fsReadMetaIndex() {
     do {
       let sessionsFolder = try _fsSessionsFolder()
       let indexURL = sessionsFolder.appendingPathComponent("index.json")
+      guard FileManager.default.fileExists(atPath: indexURL.path) else {
+        _metaIndexIsTrustworthy = true
+        return
+      }
       let data = try Data(contentsOf: indexURL)
       let jsonDecoder = JSONDecoder()
       _metaIndex = try jsonDecoder.decode(type(of: _metaIndex), from: data)
+      _metaIndexIsTrustworthy = true
     } catch let e {
       debugPrint(e)
     }

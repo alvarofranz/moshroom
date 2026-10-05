@@ -146,30 +146,10 @@ import Combine
   }
   
   override func becomeFirstResponder() -> Bool {
-    // Moshroom: the terminal never takes the keyboard — all input goes through Moshkitor.
-    if Moshroom.scratchOnly {
-      return false
-    }
-    // Don't become first responder if blocked (e.g., during Snips Input Mode)
-    if device?.shouldBlockFirstResponder == true {
-      return false
-    }
-
-    sync(traits: KBTracker.shared.kbTraits, device: KBTracker.shared.kbDevice, hideSmartKeysWithHKB: KBTracker.shared.hideSmartKeysWithHKB)
-
-    let res = super.becomeFirstResponder()
-
-    if !webViewReady {
-      return res
-    }
-
-    device?.focus()
-    kbView.isHidden = false
-    setNeedsLayout()
-
-    _inputAccessoryView?.isHidden = false
-
-    return res
+    // Moshroom: the terminal never takes the keyboard, all input goes through Moshkitor. This view
+    // itself is never first responder (`Moshroom.scratchOnly` is a constant); the selection UI makes
+    // the WKContentView first responder instead (see activateSelectionUI).
+    return false
   }
   
   
@@ -317,28 +297,6 @@ import Combine
   // MARK: - Legacy Keyboard Methods Removed
   // These empty override methods have been removed as keyboard tracking
   // is now handled by UIKeyboardLayoutGuide in SpaceController
-  
-  override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
-    super.pressesBegan(presses, with: event)
-    
-    guard presses.count == 1, let press = presses.first, let key = press.key,
-    // left or right cmd
-    key.keyCode.rawValue == 227 || key.keyCode.rawValue == 231
-    else {
-      commandPressTimestamp = 0
-      return
-    }
-    
-    if press.timestamp - commandPressTimestamp > 0.5 {
-      commandPressTimestamp = press.timestamp
-      return
-    }
-    
-    UIApplication.shared.sendAction(#selector(SpaceController.toggleQuickActionsAction), to: nil, from: nil, for: nil)
-    commandPressTimestamp = 0
-  }
-  
-  var commandPressTimestamp: TimeInterval = 0
 }
 
 // - MARK: Web communication
@@ -502,26 +460,28 @@ extension SmarterTermInput {
   }
   
   @objc func googleSelection(_ sender: Any) {
-    guard
-      let deviceView = device?.view,
-      let query = deviceView.selectedText?.addingPercentEncoding(withAllowedCharacters: CharacterSet.urlQueryAllowed),
-      let url = URL(string: "https://google.com/search?q=\(query)")
-    else {
-        return
-    }
-    
-    moshroom_openurl(url)
+    _searchSelection(on: "https://google.com/search")
   }
   
   @objc func soSelection(_ sender: Any) {
+    _searchSelection(on: "https://stackoverflow.com/search")
+  }
+
+  // The selection as the `q` parameter, encoded as a query VALUE: `.urlQueryAllowed` leaves & + = #
+  // alone, so "C++ a&b" reached the search engine as "C   a" plus a stray parameter.
+  private func _searchSelection(on base: String) {
     guard
-      let deviceView = device?.view,
-      let query = deviceView.selectedText?.addingPercentEncoding(withAllowedCharacters: CharacterSet.urlQueryAllowed),
-      let url = URL(string: "https://stackoverflow.com/search?q=\(query)")
+      let text = device?.view?.selectedText, !text.isEmpty,
+      var components = URLComponents(string: base)
     else {
-        return
+      return
     }
-    
+    var allowed = CharacterSet.urlQueryAllowed
+    allowed.remove(charactersIn: "&+=#?/")
+    components.percentEncodedQueryItems = [
+      URLQueryItem(name: "q", value: text.addingPercentEncoding(withAllowedCharacters: allowed))
+    ]
+    guard let url = components.url else { return }
     moshroom_openurl(url)
   }
   
