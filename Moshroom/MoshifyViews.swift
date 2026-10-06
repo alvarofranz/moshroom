@@ -238,11 +238,9 @@ final class MoshifyTabController: UIViewController, MoshroomTabPage,
   private enum Step { case host, folder, player }
   private var step: Step = .player
 
-  // Setup state — browsing reuses MoshxploreSession (connect + list are exactly its job).
-  private var setupSession: MoshxploreSession?
+  // Setup state: the folder step is the shared server-folder browser (MoshFolderBrowserView).
+  private var setupBrowser: MoshFolderBrowserView?
   private var setupHost: String?
-  private var setupPath = "/"
-  private var setupEntries: [MoshxploreEntry] = []
   private var hostsObserver: NSObjectProtocol?
 
   // Player chrome.
@@ -330,8 +328,8 @@ final class MoshifyTabController: UIViewController, MoshroomTabPage,
   func moshroomTabWillClose() {
     // Tab semantics: closing the tab stops the music — but only if this tab is the one playing.
     // Closing a music tab that had handed the engine over must not silence the tab that owns it.
-    setupSession?.stop()
-    setupSession = nil
+    setupBrowser?.stop()
+    setupBrowser = nil
     if MoshifyEngine.shared.ownerKey == moshroomTabKey {
       MoshifyEngine.shared.shutdown()
     }
@@ -476,8 +474,8 @@ final class MoshifyTabController: UIViewController, MoshroomTabPage,
 
   private func _startSetup() {
     setupHost = nil
-    setupPath = "/"
-    setupEntries = []
+    setupBrowser?.stop()
+    setupBrowser = nil
     _show(step: .host)
   }
 
@@ -576,213 +574,38 @@ final class MoshifyTabController: UIViewController, MoshroomTabPage,
   private func _pickHost(_ alias: String) {
     // A music tab stands on its own and connects HEADLESS, here and in the worker: a prompt it
     // cannot answer fails with a reason instead of waiting in a terminal tab nobody is looking at.
+    // The browser is the shared one (MoshFolderBrowserView), the same a project's folder is picked in.
     setupHost = alias
-    _showSetupBusy("Connecting to \(alias)…")
-    let session = MoshxploreSession()
-    setupSession?.stop()
-    setupSession = session
-    session.connect(hostAlias: alias) { [weak self] result in
-      guard let self, self.setupHost == alias else { return }
-      switch result {
-      case .success(let home):
-        self.setupPath = home
-        self._loadFolder(home)
-      case .failure(let e):
-        self._showSetupError(e.localizedDescription)
-      }
-    }
-  }
-
-  private func _loadFolder(_ path: String) {
-    _showSetupBusy("Loading \(path)…")
-    setupSession?.list(path: path) { [weak self] result in
-      guard let self else { return }
-      switch result {
-      case .success(let entries):
-        self.setupPath = path
-        self.setupEntries = entries.filter { $0.isDirectory }
-        self._show(step: .folder)
-      case .failure(let e):
-        self._showSetupError(e.localizedDescription)
-      }
-    }
+    setupBrowser?.stop()
+    let browser = MoshFolderBrowserView(title: "Pick the music folder")
+    browser.onChangeHost = { [weak self] in self?._startSetup() }
+    browser.onUse = { [weak self] folder in self?._start(host: alias, folder: folder) }
+    setupBrowser = browser
+    _show(step: .folder)
+    browser.start(hostAlias: alias)
   }
 
   private func _buildFolderStep() {
     _clearSetupContainer()
-    let title = _setupTitle("Pick the music folder")
-
-    let path = UILabel()
-    path.translatesAutoresizingMaskIntoConstraints = false
-    path.text = setupPath
-    path.font = .monospacedSystemFont(ofSize: 13, weight: .regular)
-    path.textColor = .secondaryLabel
-    path.lineBreakMode = .byTruncatingHead
-
-    let up = moshkeyRoundButton(diameter: 34)
-    up.layer.shadowOpacity = 0
-    up.setMoshIcon("chevron.up", pointSize: 14, weight: .semibold)
-    up.translatesAutoresizingMaskIntoConstraints = false
-    up.isEnabled = setupPath != "/"
-    up.addAction(UIAction { [weak self] _ in
-      guard let self else { return }
-      let parent = (self.setupPath as NSString).deletingLastPathComponent
-      self._loadFolder(parent.isEmpty ? "/" : parent)
-    }, for: .touchUpInside)
-
-    let backToHosts = moshkeyRoundButton(diameter: 34)
-    backToHosts.layer.shadowOpacity = 0
-    backToHosts.setMoshIcon("server.rack", pointSize: 14, weight: .semibold)
-    backToHosts.translatesAutoresizingMaskIntoConstraints = false
-    backToHosts.addAction(UIAction { [weak self] _ in self?._startSetup() }, for: .touchUpInside)
-
-    let list = UIScrollView()
-    list.translatesAutoresizingMaskIntoConstraints = false
-    let stack = UIStackView()
-    stack.axis = .vertical
-    stack.spacing = 8
-    stack.translatesAutoresizingMaskIntoConstraints = false
-    list.addSubview(stack)
-    for entry in setupEntries {
-      var cfg = UIButton.Configuration.filled()
-      cfg.baseBackgroundColor = .secondarySystemGroupedBackground
-      cfg.baseForegroundColor = .label
-      cfg.background.cornerRadius = 12
-      cfg.image = UIImage(systemName: "folder",
-                          withConfiguration: UIImage.SymbolConfiguration(pointSize: 14, weight: .medium))?
-        .withTintColor(.moshroomTint, renderingMode: .alwaysOriginal)
-      cfg.imagePadding = 10
-      var attr = AttributeContainer()
-      attr.font = UIFont.systemFont(ofSize: 15, weight: .medium)
-      cfg.attributedTitle = AttributedString(entry.name, attributes: attr)
-      cfg.contentInsets = NSDirectionalEdgeInsets(top: 12, leading: 14, bottom: 12, trailing: 14)
-      let b = moshButton()
-      b.configuration = cfg
-      #if targetEnvironment(macCatalyst)
-      b.preferredBehavioralStyle = .pad
-      #endif
-      b.contentHorizontalAlignment = .leading
-      b.addAction(UIAction { [weak self] _ in
-        guard let self else { return }
-        let base = self.setupPath == "/" ? "" : self.setupPath
-        self._loadFolder(base + "/" + entry.name)
-      }, for: .touchUpInside)
-      stack.addArrangedSubview(b)
-    }
-
-    var useCfg = UIButton.Configuration.filled()
-    useCfg.baseBackgroundColor = .moshroomTint
-    useCfg.baseForegroundColor = .white
-    useCfg.cornerStyle = .capsule
-    var useAttr = AttributeContainer()
-    useAttr.font = UIFont.systemFont(ofSize: 16, weight: .semibold)
-    useCfg.attributedTitle = AttributedString("Use this folder", attributes: useAttr)
-    useCfg.contentInsets = NSDirectionalEdgeInsets(top: 12, leading: 22, bottom: 12, trailing: 22)
-    let use = moshButton()
-    use.configuration = useCfg
-    #if targetEnvironment(macCatalyst)
-    use.preferredBehavioralStyle = .pad
-    #endif
-    use.translatesAutoresizingMaskIntoConstraints = false
-    use.addAction(UIAction { [weak self] _ in self?._useCurrentFolder() }, for: .touchUpInside)
-
-    setupContainer.addSubview(title)
-    setupContainer.addSubview(backToHosts)
-    setupContainer.addSubview(up)
-    setupContainer.addSubview(path)
-    setupContainer.addSubview(list)
-    setupContainer.addSubview(use)
+    guard let browser = setupBrowser else { return }
+    setupContainer.addSubview(browser)
     NSLayoutConstraint.activate([
-      title.topAnchor.constraint(equalTo: setupContainer.topAnchor, constant: 18),
-      title.leadingAnchor.constraint(equalTo: setupContainer.leadingAnchor, constant: 20),
-
-      backToHosts.centerYAnchor.constraint(equalTo: title.centerYAnchor),
-      backToHosts.trailingAnchor.constraint(equalTo: setupContainer.trailingAnchor, constant: -20),
-      up.centerYAnchor.constraint(equalTo: title.centerYAnchor),
-      up.trailingAnchor.constraint(equalTo: backToHosts.leadingAnchor, constant: -10),
-
-      path.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 8),
-      path.leadingAnchor.constraint(equalTo: title.leadingAnchor),
-      path.trailingAnchor.constraint(equalTo: setupContainer.trailingAnchor, constant: -20),
-
-      list.topAnchor.constraint(equalTo: path.bottomAnchor, constant: 12),
-      list.leadingAnchor.constraint(equalTo: setupContainer.leadingAnchor, constant: 20),
-      list.trailingAnchor.constraint(equalTo: setupContainer.trailingAnchor, constant: -20),
-      list.bottomAnchor.constraint(equalTo: use.topAnchor, constant: -14),
-      stack.topAnchor.constraint(equalTo: list.contentLayoutGuide.topAnchor),
-      stack.leadingAnchor.constraint(equalTo: list.contentLayoutGuide.leadingAnchor),
-      stack.trailingAnchor.constraint(equalTo: list.contentLayoutGuide.trailingAnchor),
-      stack.bottomAnchor.constraint(equalTo: list.contentLayoutGuide.bottomAnchor),
-      stack.widthAnchor.constraint(equalTo: list.frameLayoutGuide.widthAnchor),
-
-      use.centerXAnchor.constraint(equalTo: setupContainer.centerXAnchor),
-      use.bottomAnchor.constraint(equalTo: setupContainer.bottomAnchor, constant: -18),
+      browser.topAnchor.constraint(equalTo: setupContainer.topAnchor),
+      browser.leadingAnchor.constraint(equalTo: setupContainer.leadingAnchor),
+      browser.trailingAnchor.constraint(equalTo: setupContainer.trailingAnchor),
+      browser.bottomAnchor.constraint(equalTo: setupContainer.bottomAnchor),
     ])
-  }
-
-  private func _useCurrentFolder() {
-    guard let host = setupHost else { return }
-    _start(host: host, folder: setupPath)
   }
 
   /// Take the engine and play this library here. The one door into the player, from both the folder
   /// browser and a recents row.
   private func _start(host: String, folder: String) {
-    setupSession?.stop()
-    setupSession = nil
+    setupBrowser?.stop()
+    setupBrowser = nil
     setupHost = host
     _show(step: .player)
     MoshifyEngine.shared.configure(hostAlias: host, folder: folder, owner: moshroomTabKey)
     MoshLog.log("moshify", "library started in this tab")
-  }
-
-  private func _showSetupBusy(_ text: String) {
-    _clearSetupContainer()
-    let l = _setupTitle(text)
-    l.font = .preferredFont(forTextStyle: .callout)
-    l.textColor = .secondaryLabel
-    let s = UIActivityIndicatorView(style: .medium)
-    s.translatesAutoresizingMaskIntoConstraints = false
-    s.startAnimating()
-    setupContainer.addSubview(l)
-    setupContainer.addSubview(s)
-    NSLayoutConstraint.activate([
-      l.centerXAnchor.constraint(equalTo: setupContainer.centerXAnchor),
-      l.centerYAnchor.constraint(equalTo: setupContainer.centerYAnchor),
-      s.centerXAnchor.constraint(equalTo: setupContainer.centerXAnchor),
-      s.bottomAnchor.constraint(equalTo: l.topAnchor, constant: -12),
-    ])
-  }
-
-  private func _showSetupError(_ text: String) {
-    _clearSetupContainer()
-    let l = _setupTitle(text)
-    l.font = .preferredFont(forTextStyle: .callout)
-    l.textColor = .secondaryLabel
-    l.numberOfLines = 0
-    l.textAlignment = .center
-    var cfg = UIButton.Configuration.plain()
-    var attr = AttributeContainer()
-    attr.font = UIFont.preferredFont(forTextStyle: .headline)
-    cfg.attributedTitle = AttributedString("Back to hosts", attributes: attr)
-    cfg.baseForegroundColor = .moshroomTint
-    let retry = moshButton()
-    retry.configuration = cfg
-    #if targetEnvironment(macCatalyst)
-    retry.preferredBehavioralStyle = .pad
-    #endif
-    retry.translatesAutoresizingMaskIntoConstraints = false
-    retry.addAction(UIAction { [weak self] _ in self?._startSetup() }, for: .touchUpInside)
-    setupContainer.addSubview(l)
-    setupContainer.addSubview(retry)
-    NSLayoutConstraint.activate([
-      l.centerXAnchor.constraint(equalTo: setupContainer.centerXAnchor),
-      l.centerYAnchor.constraint(equalTo: setupContainer.centerYAnchor),
-      l.leadingAnchor.constraint(greaterThanOrEqualTo: setupContainer.leadingAnchor, constant: 32),
-      l.trailingAnchor.constraint(lessThanOrEqualTo: setupContainer.trailingAnchor, constant: -32),
-      retry.topAnchor.constraint(equalTo: l.bottomAnchor, constant: 10),
-      retry.centerXAnchor.constraint(equalTo: setupContainer.centerXAnchor),
-    ])
   }
 
   // MARK: live sync

@@ -137,7 +137,7 @@ struct Complete {
       "md5": "Calculate a message-digest fingerprint (checksum) for a file.", // fish
       "mkdir": "Make directories.", // fish
       "mosh": "Runs mosh client. 🦄",
-      "tmux": "SSH into the host's tmux session, which survives the app.",
+      "tmux": "SSH into the host's tmux session (or a project's: tmux <host> <project>), which survives the app.",
       "mv": "Move files and directories.",
       "nslookup": "Query Internet name servers interactively", // fish
       "pbcopy": "Copy to the pasteboard.",
@@ -288,6 +288,12 @@ struct Complete {
     }
 
     var result = _complete(kind: kind, input: input)
+    // `tmux <host> <project>` / `mosh <host> <project>`: after a saved host, its projects.
+    let words = token.prefix.split(separator: " ").map(String.init)
+    if (cmd == "tmux" || cmd == "mosh"), words.count == 2, prefix.isEmpty,
+       let host = MoshHosts.withHost(words[1]) {
+      result = host.moshroomProjects.map(\.session).filter { $0.hasPrefix(input) }.sorted()
+    }
     if !prefix.isEmpty {
       result = result.map { prefix + $0 }
     }

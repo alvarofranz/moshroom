@@ -72,7 +72,8 @@ func moshHostCardButton(alias: String, description: String, icon: String = "serv
 // The quick-connect card itself. Pure presentation — SpaceController owns the lifecycle.
 final class MoshnectorView: UIView {
 
-  var onConnect: ((MoshnectorMode, String) -> Void)?
+  /// A host (project nil: its own session) or one of its projects, in the mode to use.
+  var onConnect: ((MoshnectorMode, String, MoshProject?) -> Void)?
 
   // SSH first: it is the default way in (in tmux, unless the host turns that off).
   private var mode: MoshnectorMode = .ssh
@@ -185,11 +186,119 @@ final class MoshnectorView: UIView {
     let b = moshHostCardButton(alias: alias, description: description)
     b.addAction(UIAction { [weak self] _ in
       guard let self else { return }
-      self.onConnect?(self._tapMode(for: alias), alias)
+      self.onConnect?(self._tapMode(for: alias), alias, nil)
     }, for: .touchUpInside)
     b.accessibilityIdentifier = alias
     b.addInteraction(UIContextMenuInteraction(delegate: self))
-    return b
+    // A host without projects is exactly the card it always was.
+    let projects = MoshHosts.withHost(alias)?.moshroomProjects ?? []
+    guard !projects.isEmpty else { return b }
+
+    // Its projects as compact chips right under it, wrapping on a phone: one tap opens that project
+    // in the selected mode, in its own session.
+    let chips = MoshChipFlowView()
+    for project in projects {
+      let chip = moshProjectChip(project.name.isEmpty ? project.session : project.name)
+      chip.addAction(UIAction { [weak self] _ in
+        guard let self else { return }
+        self.onConnect?(self._tapMode(for: alias), alias, project)
+      }, for: .touchUpInside)
+      chip.accessibilityIdentifier = "project:" + alias + ":" + project.id
+      chips.addSubview(chip)
+    }
+    // The chips hang off the card, a little in from its edge.
+    let chipsRow = UIView()
+    chipsRow.translatesAutoresizingMaskIntoConstraints = false
+    chipsRow.addSubview(chips)
+    NSLayoutConstraint.activate([
+      chips.topAnchor.constraint(equalTo: chipsRow.topAnchor),
+      chips.bottomAnchor.constraint(equalTo: chipsRow.bottomAnchor),
+      chips.leadingAnchor.constraint(equalTo: chipsRow.leadingAnchor, constant: 12),
+      chips.trailingAnchor.constraint(equalTo: chipsRow.trailingAnchor),
+    ])
+    let column = UIStackView(arrangedSubviews: [b, chipsRow])
+    column.axis = .vertical
+    column.spacing = 7
+    column.alignment = .fill
+    column.isLayoutMarginsRelativeArrangement = true
+    column.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 0, leading: 0, bottom: 5, trailing: 0)
+    return column
+  }
+}
+
+/// A project chip (Quick Connect): a small capsule with a folder glyph and the project's name, the
+/// same dark family as the host card above it.
+func moshProjectChip(_ title: String) -> UIButton {
+  var cfg = UIButton.Configuration.filled()
+  cfg.baseBackgroundColor = .secondarySystemGroupedBackground
+  cfg.baseForegroundColor = .label
+  cfg.cornerStyle = .capsule
+  cfg.background.strokeColor = .separator
+  cfg.background.strokeWidth = 0.5
+  cfg.image = UIImage(systemName: "folder.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: 11, weight: .semibold))?
+    .withTintColor(.moshroomTint, renderingMode: .alwaysOriginal)
+  cfg.imagePadding = 6
+  var attr = AttributeContainer()
+  attr.font = UIFont.systemFont(ofSize: 13, weight: .semibold)
+  cfg.attributedTitle = AttributedString(title, attributes: attr)
+  cfg.titleLineBreakMode = .byTruncatingTail
+  cfg.contentInsets = NSDirectionalEdgeInsets(top: 6, leading: 11, bottom: 6, trailing: 12)
+  let b = UIButton(configuration: cfg)
+  #if targetEnvironment(macCatalyst)
+  b.preferredBehavioralStyle = .pad   // our capsule, never the native Mac push-button
+  #endif
+  return b
+}
+
+/// Lays its subviews out left to right and wraps them onto new lines, its height following the
+/// width it is given (chips under a host card fit a phone without scrolling sideways).
+final class MoshChipFlowView: UIView {
+  var spacing: CGFloat = 6
+  var lineSpacing: CGFloat = 6
+  private lazy var heightConstraint: NSLayoutConstraint = {
+    let c = heightAnchor.constraint(equalToConstant: 30)
+    c.priority = .init(999)
+    c.isActive = true
+    return c
+  }()
+
+  init() {
+    super.init(frame: .zero)
+    translatesAutoresizingMaskIntoConstraints = false
+    _ = heightConstraint
+  }
+
+  required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+  private func _layout(width: CGFloat, apply: Bool) -> CGFloat {
+    var x: CGFloat = 0
+    var y: CGFloat = 0
+    var lineHeight: CGFloat = 0
+    for view in subviews where !view.isHidden {
+      var size = view.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
+      size.width = min(ceil(size.width), width)
+      size.height = ceil(size.height)
+      if x > 0, x + size.width > width {
+        x = 0
+        y += lineHeight + lineSpacing
+        lineHeight = 0
+      }
+      if apply {
+        view.frame = CGRect(x: x, y: y, width: size.width, height: size.height)
+      }
+      x += size.width + spacing
+      lineHeight = max(lineHeight, size.height)
+    }
+    return subviews.isEmpty ? 0 : y + lineHeight
+  }
+
+  override func layoutSubviews() {
+    super.layoutSubviews()
+    guard bounds.width > 0 else { return }
+    let height = _layout(width: bounds.width, apply: true)
+    if abs(heightConstraint.constant - height) > 0.5 {
+      heightConstraint.constant = height
+    }
   }
 }
 
@@ -198,16 +307,28 @@ extension MoshnectorView: UIContextMenuInteractionDelegate {
                               configurationForMenuAtLocation location: CGPoint) -> UIContextMenuConfiguration? {
     guard let alias = interaction.view?.accessibilityIdentifier, !alias.isEmpty else { return nil }
     return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
-      let item: (String, String, MoshnectorMode) -> UIAction = { title, icon, mode in
-        UIAction(title: title, image: UIImage(systemName: icon)) { _ in
-          self?.onConnect?(mode, alias)
+      let ways: (MoshProject?) -> [UIAction] = { project in
+        let item: (String, String, MoshnectorMode) -> UIAction = { title, icon, mode in
+          UIAction(title: title, image: UIImage(systemName: icon)) { _ in
+            self?.onConnect?(mode, alias, project)
+          }
         }
+        return [
+          item("Connect (tmux)", "rectangle.stack", .tmux),
+          item("Connect (plain SSH)", "terminal", .ssh),
+          item("Connect (Mosh)", "antenna.radiowaves.left.and.right", .mosh),
+        ]
       }
-      return UIMenu(title: alias, children: [
-        item("Connect (tmux)", "rectangle.stack", .tmux),
-        item("Connect (plain SSH)", "terminal", .ssh),
-        item("Connect (Mosh)", "antenna.radiowaves.left.and.right", .mosh),
-      ])
+      // The host's own session first, then each project with the same three ways in.
+      let projects = (MoshHosts.withHost(alias)?.moshroomProjects ?? []).map { project in
+        UIMenu(title: project.name.isEmpty ? project.session : project.name,
+               image: UIImage(systemName: "folder"), children: ways(project))
+      }
+      var children: [UIMenuElement] = ways(nil)
+      if !projects.isEmpty {
+        children.append(UIMenu(title: "Projects", options: .displayInline, children: projects))
+      }
+      return UIMenu(title: alias, children: children)
     }
   }
 }
@@ -333,11 +454,21 @@ enum Moshnector {
 
     let card = MoshnectorView()
     card.isHidden = true
-    card.onConnect = { [weak sc] mode, alias in
-      guard let sc else { return }
-      sc.currentDevice?.write("\(mode.command) \(alias)\r")
+    card.onConnect = { [weak sc] mode, alias, project in
+      guard let sc, let device = sc.currentDevice else { return }
+      if let project {
+        if mode == .ssh {
+          // Plain SSH has no session to keep: into the folder, then the command, typed once it is up.
+          MoshroomProjectHandoff.set(MoshProjectShell.typedStart(project), for: device)
+          device.write("ssh \(alias)\r")
+        } else {
+          device.write("\(mode.command) \(alias) \(project.session)\r")
+        }
+      } else {
+        device.write("\(mode.command) \(alias)\r")
+      }
       // Remember where we connected — Moshdrop uploads attachments to this host.
-      sc.noteConnection(toHost: alias)
+      sc.noteConnection(toHost: alias, project: project?.session)
       // The terminal now has content (a connection) → keep Quick Connect from popping back over it.
       sc.currentTerm()?.moshroomUserHasInteracted = true
       sc.dismissMoshnector()
@@ -524,11 +655,13 @@ extension SpaceController {
 
   // The single place a connection's host is recorded as Moshdrop's upload target. Only saved hosts
   // qualify (an upload reuses the host's keys/config); an unknown host is ignored, never an error.
-  func noteConnection(toHost alias: String) {
+  // `project` is the project's session name when the connection is to one of the host's projects.
+  func noteConnection(toHost alias: String, project: String? = nil) {
     if moshroomSavedHostAliases.contains(alias) {
       let term = currentTerm()
       term?.moshroomConnectedHost = alias
       term?.meta.connectedHost = alias          // persisted → the tab name survives an app relaunch
+      term?.meta.connectedProject = project
       SessionRegistry.shared.persistMetaIndex()
       moshroomUpdateTabLabel()                  // the tab is this host now — say so in the pill
     }
@@ -543,9 +676,14 @@ extension SpaceController {
     guard currentTerm()?.moshroomIsFreshShell == true else { return }
     let words = command.split(whereSeparator: { " \t\n".contains($0) }).map(String.init)
     guard let verb = words.first, verb == "ssh" || verb == "mosh" || verb == "tmux" else { return }
-    if let alias = words.dropFirst().first(where: moshroomSavedHostAliases.contains) {
-      noteConnection(toHost: alias)
+    guard let index = words.indices.dropFirst().first(where: { moshroomSavedHostAliases.contains(words[$0]) }) else { return }
+    let alias = words[index]
+    // `tmux <host> <project>` / `mosh <host> <project>`: the words after the host name a project.
+    var project: String? = nil
+    if verb != "ssh", index + 1 < words.count {
+      project = MoshHosts.withHost(alias)?.moshroomProject(matching: Array(words[(index + 1)...]))?.session
     }
+    noteConnection(toHost: alias, project: project)
   }
 }
 

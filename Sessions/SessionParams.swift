@@ -120,6 +120,7 @@ public typealias MoshSessionParams = (any NSSecureCoding & MoshSessionParamsSnap
   private struct Fields {
     var hostAlias: String? = nil
     var sessionName: String? = nil
+    var projectId: String? = nil
     var sessionCreated: String? = nil
     var paneId: Int = -1
     var version: String? = nil
@@ -146,6 +147,9 @@ public typealias MoshSessionParams = (any NSSecureCoding & MoshSessionParamsSnap
   @objc var hostAlias: String? { get { _get(\.hostAlias) } set { _set(\.hostAlias, newValue) } }
   /// The remote tmux session (the host's, `main` by default; other tabs and clients may share it).
   @objc var sessionName: String? { get { _get(\.sessionName) } set { _set(\.sessionName, newValue) } }
+  /// The host's project this session belongs to (MoshProject.id), nil for the host's own session. A
+  /// session that has to be created (again) is created in the project's folder.
+  @objc var projectId: String? { get { _get(\.projectId) } set { _set(\.projectId, newValue) } }
   /// tmux's session_created: a different value on re-attach means a different session.
   @objc var sessionCreated: String? { get { _get(\.sessionCreated) } set { _set(\.sessionCreated, newValue) } }
   @objc var paneId: Int { get { _get(\.paneId) } set { _set(\.paneId, newValue) } }
@@ -166,7 +170,7 @@ public typealias MoshSessionParams = (any NSSecureCoding & MoshSessionParamsSnap
   override init() { super.init() }
 
   private enum Key: CodingKey {
-    case hostAlias, sessionName, sessionCreated, paneId, version, lastCols, lastHistorySize
+    case hostAlias, sessionName, projectId, sessionCreated, paneId, version, lastCols, lastHistorySize
     case bracketedPaste, mouseAnyMotion, everAttached
   }
 
@@ -176,6 +180,7 @@ public typealias MoshSessionParams = (any NSSecureCoding & MoshSessionParamsSnap
     let f: Fields = { _lock.lock(); defer { _lock.unlock() }; return _f }()
     coder.bk_encode(f.hostAlias, for: Key.hostAlias)
     coder.bk_encode(f.sessionName, for: Key.sessionName)
+    coder.bk_encode(f.projectId, for: Key.projectId)
     coder.bk_encode(f.sessionCreated, for: Key.sessionCreated)
     coder.bk_encode(f.paneId, for: Key.paneId)
     coder.bk_encode(f.version, for: Key.version)
@@ -191,6 +196,7 @@ public typealias MoshSessionParams = (any NSSecureCoding & MoshSessionParamsSnap
     var f = Fields()
     f.hostAlias = coder.bk_decode(for: Key.hostAlias)
     f.sessionName = coder.bk_decode(for: Key.sessionName)
+    f.projectId = coder.bk_decode(for: Key.projectId)
     f.sessionCreated = coder.bk_decode(for: Key.sessionCreated)
     f.paneId = coder.bk_decode(for: Key.paneId)
     f.version = coder.bk_decode(for: Key.version)

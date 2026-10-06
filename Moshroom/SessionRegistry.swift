@@ -33,6 +33,9 @@ class SessionMeta: Codable {
   // The saved host this tab last connected to (Quick Connect). Persisted so a named tab keeps
   // its name across an app relaunch, until the user renames or closes it.
   var connectedHost: String? = nil
+  // The project of that host the tab is on (its session name, MoshProject.session), nil for the host's
+  // own session. Persisted with the host: the tab reads "host · project" and reconnects to it.
+  var connectedProject: String? = nil
 }
 
 protocol SuspendableSession: AnyObject {

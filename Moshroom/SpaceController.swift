@@ -1738,7 +1738,7 @@ extension SpaceController {
     let kind: MoshroomTabKind
   }
 
-  /// A tab's name when it HAS one. Terminals: forced custom name, then the connected host's alias
+  /// A tab's name when it HAS one. Terminals: forced custom name, then the connected host's alias ("host · project" on a project)
   /// (a tab that is an ssh/mosh session to "awesomehost" IS awesomehost to the user), then the
   /// program's own OSC title (opencode / vim / ssh); nil for none of those — the quick-connect
   /// canvas. Other kinds: whatever their live page reports (the explorer names its host).
@@ -1747,7 +1747,7 @@ extension SpaceController {
     switch moshroomTabKind(for: key) {
     case .term:
       let term: TermController = SessionRegistry.shared[key]
-      for candidate in [term.meta.customName, term.meta.connectedHost, term.termView.title] {
+      for candidate in [term.meta.customName, term.moshroomConnectionTitle, term.termView.title] {
         let name = (candidate ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         if !name.isEmpty { return name }
       }
@@ -1820,7 +1820,8 @@ extension SpaceController {
     let message = term.moshroomIsTmuxSession
       ? "Attaches this tab to the same tmux session again. For a connection that stopped answering."
       : "Starts a new mosh session in this tab. For a connection that stopped answering."
-    let sheet = UIAlertController(title: "Reconnect to \(host)?",
+    // A project's tab reconnects to the project ("host · project"), the same name the pill shows.
+    let sheet = UIAlertController(title: "Reconnect to \(term.moshroomConnectionTitle ?? host)?",
                                   message: message,
                                   preferredStyle: .actionSheet)
     sheet.addAction(UIAlertAction(title: "Reconnect", style: .default) { [weak term] _ in

@@ -28,36 +28,71 @@ fileprivate struct HostCard: Equatable {
   let alias: String
   let hostName: String
   let hostDescription: String
+  let user: String
+  let projects: [String]
   init(host: MoshHosts) {
     self.host = host
     self.alias = host.host
     self.hostName = host.hostName
     self.hostDescription = host.hostDescription ?? ""
+    self.user = host.user ?? ""
+    self.projects = host.moshroomProjects.map { $0.name.isEmpty ? $0.session : $0.name }
   }
+
+  /// `user@address`, the way it reads in a terminal.
+  var target: String { user.isEmpty ? hostName : "\(user)@\(hostName)" }
 }
 
+/// One saved host as a card: the server glyph on a faint mushroom tile, the alias, its gray
+/// description, `user@address` in monospace and, when it has any, its projects.
 struct HostRow: View {
   fileprivate let card: HostCard
-  
+
   var reloadList: () -> ()
-  
+
   var body: some View {
     Row(
       content: {
-        HStack(alignment: .firstTextBaseline) {
-          VStack(alignment: .leading, spacing: 2) {
+        HStack(alignment: .top, spacing: 12) {
+          RoundedRectangle(cornerRadius: 10, style: .continuous)
+            .fill(Color.moshTint.opacity(Double(Moshstyle.faintTintAlpha)))
+            .frame(width: 38, height: 38)
+            .overlay(
+              Image(systemName: "server.rack")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundColor(.moshTint)
+            )
+          VStack(alignment: .leading, spacing: 3) {
             Text(card.alias)
+              .font(.body.weight(.semibold))
+              .foregroundColor(.primary)
+              .lineLimit(1)
             if !card.hostDescription.isEmpty {
               Text(card.hostDescription)
-                .font(.system(.subheadline)).foregroundColor(.secondary)
+                .font(.subheadline).foregroundColor(.secondary)
                 .lineLimit(2)
             }
+            Text(card.target)
+              .font(.system(.footnote, design: .monospaced)).foregroundColor(.secondary)
+              .lineLimit(1)
+              .truncationMode(.middle)
+            if !card.projects.isEmpty {
+              HStack(spacing: 5) {
+                Image(systemName: "folder.fill")
+                  .font(.system(size: 11, weight: .semibold))
+                  .foregroundColor(.moshTint)
+                Text(card.projects.count > 3
+                     ? "\(card.projects.count) projects"
+                     : card.projects.joined(separator: " \u{00B7} "))
+                  .font(.footnote.weight(.medium))
+                  .foregroundColor(.secondary)
+                  .lineLimit(1)
+              }
+              .padding(.top, 2)
+            }
           }
-          Spacer(minLength: 12)
-          Text(card.hostName)
-            .font(.system(.subheadline)).foregroundColor(.secondary)
-            .lineLimit(1)
         }
+        .padding(.vertical, 4)
       },
       details: {
         HostView(host: card.host, reloadList: reloadList)
@@ -104,28 +139,54 @@ struct HostListView: View {
           Button(action: _addHost) { Label("Add new Host", systemImage: "plus") }
         }
       } else {
-        // The same shell Keys wears (MoshSettingsList): one inset-grouped section, a footer that
-        // explains the screen, and the docked search only once the list is long enough to want one.
-        MoshSettingsList(
-          search: $_state.filterQuery,
-          searchPrompt: "Search hosts",
-          showSearch: _state.list.count > 10,
-          noMatches: _state.filteredList.isEmpty,
-          footer: "A saved host is an alias plus how to reach it: address, user, key or password, and anything to run on connect. Quick Connect, Moshxplore, Moshify and file uploads all read this list.",
-          rows: {
-            ForEach(Array(_state.filteredList.enumerated()), id: \.element.alias) { index, card in
-              HostRow(card: card, reloadList: _state.reloadHosts)
-                .contextMenu(menuItems: {
-                  Button(action: {
-                    _duplicateHost(card: card)
-                  }, label: { Label("Duplicate", systemImage: "plus.square.on.square")})
-                  Divider()
-                  Button(role: .destructive, action: {
-                    _confirmDeleteHosts(indexSet: IndexSet([index]))
-                  }, label: { Label("Delete", systemImage: "trash") })
-                })
-            }.onDelete(perform: _confirmDeleteHosts)
-          })
+        // One card per host (a section each, so every host reads as its own thing), the screen's
+        // footer under the last one, and the docked search once the list is long enough to want it.
+        VStack(spacing: 0) {
+          List {
+            ForEach(_state.filteredList, id: \.alias) { card in
+              Section {
+                HostRow(card: card, reloadList: _state.reloadHosts)
+                  .contextMenu(menuItems: {
+                    Button(action: {
+                      _duplicateHost(card: card)
+                    }, label: { Label("Duplicate", systemImage: "plus.square.on.square")})
+                    Divider()
+                    Button(role: .destructive, action: {
+                      _confirmDelete(card)
+                    }, label: { Label("Delete", systemImage: "trash") })
+                  })
+                  // Not a destructive role: that would take the row away before the user confirms.
+                  .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                    Button { _confirmDelete(card) } label: { Label("Delete", systemImage: "trash") }
+                      .tint(.moshTint)
+                  }
+              }
+            }
+            Section {
+            } footer: {
+              Text("A host is a server, saved once: address, user, key or password. Its projects are folders on it, each with its own session.")
+            }
+          }
+          .listStyle(.insetGrouped)
+          .listSectionSpacing(10)
+          .overlay {
+            if _state.filteredList.isEmpty {
+              VStack(spacing: 10) {
+                Image(systemName: "magnifyingglass").font(.system(size: 34)).foregroundColor(.secondary)
+                Text("No matches").font(.headline).foregroundColor(.secondary)
+              }
+            }
+          }
+
+          if _state.list.count > 6 {
+            MoshDockedSearch(query: $_state.filterQuery, prompt: "Search hosts and projects")
+              .background(Color(.secondarySystemGroupedBackground))
+              .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+              .padding(.horizontal, 16)
+              .padding(.bottom, 10)
+          }
+        }
+        .moshReadableWidth()
       }
     }
     .moshHubChromeBack(title: "Hosts") {
@@ -159,18 +220,19 @@ struct HostListView: View {
   
   // A deleted host is tombstoned, and the tombstone beats every other device's copy — this is the
   // gesture that can empty a server list you spent a year building, so it says so first.
-  private func _confirmDeleteHosts(indexSet: IndexSet) {
-    let targets = indexSet.compactMap { $0 < _state.filteredList.count ? _state.filteredList[$0] : nil }
-    guard !targets.isEmpty else { return }
+  private func _confirmDelete(_ card: HostCard) {
+    let projects = card.projects.count
     _pendingDelete = MoshDeletePrompt(
-      name: targets.count == 1 ? targets[0].alias : "",
-      what: targets.count == 1 ? "this host" : "\(targets.count) hosts",
-      extra: "Its address, user and connect settings go with it."
+      name: card.alias,
+      what: "this host",
+      extra: projects == 0
+        ? "Its address, user and connect settings go with it."
+        : "Its address, user, connect settings and \(projects == 1 ? "its project" : "its \(projects) projects") go with it."
     ) {
-      _state.deleteHosts(indexSet: indexSet)
+      _state.deleteHosts([card])
     }
   }
-  
+
   private func _addHost() {
     let rootView = HostView(host: nil, reloadList: _state.reloadHosts).environmentObject(_nav)
     let vc = UIHostingController(rootView: rootView)
@@ -227,7 +289,9 @@ fileprivate class HostsObservable: ObservableObject {
     
     filteredList = list.filter({ h in
       h.hostName.localizedCaseInsensitiveContains(trimmedQuery) ||
-      h.alias.localizedCaseInsensitiveContains(trimmedQuery)
+      h.alias.localizedCaseInsensitiveContains(trimmedQuery) ||
+      h.hostDescription.localizedCaseInsensitiveContains(trimmedQuery) ||
+      h.projects.contains { $0.localizedCaseInsensitiveContains(trimmedQuery) }
     })
   }
   
@@ -242,9 +306,7 @@ fileprivate class HostsObservable: ObservableObject {
     filterIfNeeded()
   }
   
-  func deleteHosts(indexSet: IndexSet) {
-    let hostsToDelete = indexSet.map { filteredList[$0] }
-
+  func deleteHosts(_ hostsToDelete: [HostCard]) {
     let allHosts = MoshHosts.all()
     for h in hostsToDelete {
       allHosts?.remove(h.host)
@@ -257,7 +319,6 @@ fileprivate class HostsObservable: ObservableObject {
         h.host.removePasswordFromKeychain()
       }
     }
-    filteredList.remove(atOffsets: indexSet)
     reloadHosts()
   }
 }

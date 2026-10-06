@@ -620,9 +620,23 @@ extension TermController: SuspendableSession {
   func moshroomReconnect() {
     guard let host = moshroomReconnectHost, let mcp = _session as? MCPSession else { return }
     moshroomConnectedHost = host
-    // tmux attaches again to the same remote session (the command is only a label for it there).
+    // tmux attaches again to the same remote session (the command is only a label for it there);
+    // mosh connects again to the same project, whose startup script finds its session still there.
     let verb = mcp.sessionParams?.childSessionType == "tmux" ? "tmux" : "mosh"
-    mcp.moshroomReconnect(with: "\(verb) \(host)")
+    let project = (meta.connectedProject ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    mcp.moshroomReconnect(with: project.isEmpty ? "\(verb) \(host)" : "\(verb) \(host) \(project)")
+  }
+
+  /// What the tab is called for the connection it is on: the host's alias, and "host · project" for
+  /// one of its projects (by the project's current name; the session name if it is gone).
+  var moshroomConnectionTitle: String? {
+    let host = (meta.connectedHost ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !host.isEmpty else { return nil }
+    let session = (meta.connectedProject ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !session.isEmpty else { return host }
+    let name = MoshHosts.withHost(host)?.moshroomProjects.first { $0.session == session }?.name
+    let project = (name ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    return "\(host) \u{00B7} \(project.isEmpty ? session : project)"
   }
 
   func resumeInPlace() -> Bool {

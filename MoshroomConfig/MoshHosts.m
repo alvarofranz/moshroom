@@ -79,6 +79,7 @@ static BOOL __kc_set(UICKeyChainStore *keychain, NSString *value, NSString *key)
   _hostDescription = [coder decodeObjectOfClasses:strings forKey:@"hostDescription"];
   _useTmux = [coder decodeObjectOfClasses:numbers forKey:@"useTmux"];
   _tmuxSession = [coder decodeObjectOfClasses:strings forKey:@"tmuxSession"];
+  _projectsJSON = [coder decodeObjectOfClasses:strings forKey:@"projects"];
   _prediction = [coder decodeObjectOfClasses:numbers forKey:@"prediction"];
   _proxyCmd = [coder decodeObjectOfClasses:strings forKey:@"proxyCmd"];
   _proxyJump = [coder decodeObjectOfClasses:strings forKey:@"proxyJump"];
@@ -107,6 +108,7 @@ static BOOL __kc_set(UICKeyChainStore *keychain, NSString *value, NSString *key)
   [encoder encodeObject:_hostDescription forKey:@"hostDescription"];
   [encoder encodeObject:_useTmux forKey:@"useTmux"];
   [encoder encodeObject:_tmuxSession forKey:@"tmuxSession"];
+  [encoder encodeObject:_projectsJSON forKey:@"projects"];
   [encoder encodeObject:_prediction forKey:@"prediction"];
   [encoder encodeObject:_proxyCmd forKey:@"proxyCmd"];
   [encoder encodeObject:_proxyJump forKey:@"proxyJump"];
@@ -225,6 +227,7 @@ sshConfigAttachment:(NSString *)sshConfigAttachment
          hostDescription:(NSString *)hostDescription
                  useTmux:(NSNumber *)useTmux
              tmuxSession:(NSString *)tmuxSession
+            projectsJSON:(NSString *)projectsJSON
               prediction:(enum MoshMoshPrediction)prediction
                 proxyCmd:(NSString *)proxyCmd
                proxyJump:(NSString *)proxyJump
@@ -325,6 +328,7 @@ sshConfigAttachment:(NSString *)sshConfigAttachment
   bkHost.hostDescription = hostDescription;
   bkHost.useTmux = useTmux;
   bkHost.tmuxSession = tmuxSession.length > 0 ? tmuxSession : nil;
+  bkHost.projectsJSON = projectsJSON.length > 0 ? projectsJSON : nil;
   bkHost.lastModified = [NSDate date];
   if (![MoshHosts saveHosts]) {
     return nil;

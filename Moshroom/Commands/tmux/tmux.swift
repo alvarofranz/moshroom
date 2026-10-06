@@ -157,15 +157,29 @@ import ios_system
     let resuming = !(p.sessionName ?? "").isEmpty
     if !resuming {
       let args = Array(argv.args(count: argc).dropFirst())
-      guard args.count == 1, let alias = args.first, !alias.hasPrefix("-"), !alias.isEmpty else {
-        _say("usage: tmux <host>")
-        _say("Opens a tmux session on a saved host over SSH. It survives the app closing, and comes back with its history.")
+      guard args.count >= 1, let alias = args.first, !alias.hasPrefix("-"), !alias.isEmpty else {
+        _say("usage: tmux <host> [project]")
+        _say("Opens a tmux session on a saved host over SSH (the host's own, or one of its projects). It survives the app closing, and comes back with its history.")
         return -1
       }
       p.hostAlias = alias
-      // The host's session (main unless it names another); an alias that is not a saved host gets main.
-      p.sessionName = MoshHosts.withHost(alias)?.moshroomTmuxSession ?? MoshHosts.moshroomDefaultTmuxSession
-      pendingCommandOnConnect = Self._commandOnConnect(for: alias)
+      if args.count > 1 {
+        // A project: its own session, created in its folder, with its own command.
+        let words = Array(args.dropFirst())
+        guard let project = MoshHosts.withHost(alias)?.moshroomProject(matching: words) else {
+          let known = (MoshHosts.withHost(alias)?.moshroomProjects ?? []).map(\.session)
+          _say("No project \u{201C}\(words.joined(separator: " "))\u{201D} on \(alias).")
+          if !known.isEmpty { _say("Its projects: \(known.joined(separator: ", "))") }
+          return -1
+        }
+        p.projectId = project.id
+        p.sessionName = project.session
+        pendingCommandOnConnect = Self._typeable(project.trimmedCommand)
+      } else {
+        // The host's session (main unless it names another); an alias that is not a saved host gets main.
+        p.sessionName = MoshHosts.withHost(alias)?.moshroomTmuxSession ?? MoshHosts.moshroomDefaultTmuxSession
+        pendingCommandOnConnect = Self._typeable(MoshHosts.withHost(alias)?.commandOnConnect)
+      }
       // The tab's archive must know about the session from now on: a relaunch after a crash finds it.
       mcpSession.moshroomCheckpointDidChange()
     }
@@ -248,6 +262,10 @@ import ios_system
           Self._noteFallback(host, true)
           _say("\u{1b}[2m\(message)\u{1b}[0m")
         }
+        // A project still opens in its folder, with its command, typed once the shell is up.
+        if let project = _project(host: host) {
+          MoshroomProjectHandoff.set(MoshProjectShell.typedStart(project), for: device)
+        }
         moshroomFallbackCommand = "ssh \(host)"
         return 0
       case .refused(let message):
@@ -280,18 +298,24 @@ import ios_system
     }
   }
 
-  /// The host's "Command on connect", unless it starts a session manager of its own. Such a command
-  /// is there for mosh (`tmux new -A -s main` and friends): typed inside this tmux session it would
-  /// nest, or grab and detach a session the user keeps for other clients.
-  private static func _commandOnConnect(for alias: String) -> String? {
-    guard let command = MoshHosts.withHost(alias)?.commandOnConnect?
-      .trimmingCharacters(in: .whitespacesAndNewlines), !command.isEmpty else { return nil }
+  /// The host's "Command on connect" (or a project's command), unless it starts a session manager of
+  /// its own. Such a command is there for mosh (`tmux new -A -s main` and friends): typed inside this
+  /// tmux session it would nest, or grab and detach a session the user keeps for other clients.
+  private static func _typeable(_ raw: String?) -> String? {
+    guard let command = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !command.isEmpty else { return nil }
     let first = command.split(whereSeparator: { " \t;&|".contains($0) }).first.map(String.init) ?? ""
     let program = (first as NSString).lastPathComponent
     if ["tmux", "screen", "byobu", "zellij", "abduco", "dtach"].contains(program) {
       return nil
     }
     return command
+  }
+
+  /// The project this tab's session belongs to, read fresh from the saved host (nil for the host's
+  /// own session, or a project deleted since).
+  private func _project(host: String) -> MoshProject? {
+    guard let id = params.projectId, !id.isEmpty else { return nil }
+    return MoshHosts.withHost(host)?.moshroomProject(id: id)
   }
 
   // MARK: - One connection
@@ -321,9 +345,15 @@ import ios_system
 
     let p = params
     let name = p.sessionName ?? ""
+    // A project's session is created in its folder, and only there: a folder that is gone stops the
+    // connect with a reason (an existing session is attached wherever it stands).
+    let project = _project(host: host)
+    let folderCheck = project.map { MoshProjectShell.folderCheck($0.folder) + "; " } ?? ""
+    let createIn = project.map { " -c " + MoshProjectShell.folderWord($0.folder) } ?? ""
     // Attach only to the session this tab created (an exact name, never a prefix match); before it
     // exists the same name creates it.
-    let tmuxCommand = p.everAttached ? "attach-session -t =\(name)" : "new-session -A -s \(name)"
+    let tmuxCommand = p.everAttached ? "attach-session -t =\(name)" : "new-session -A -s \(name)\(createIn)"
+    let checkWhenCreating = p.everAttached ? "" : folderCheck
     MoshLog.log("tmux", "\(p.everAttached ? "re-attaching to" : "attaching to or creating") session \(name) on \(host)")
     var tmuxProbe = "tmux"
     // Debug builds only (this target's Swift Debug condition is MOSHROOM_PUBLISHING_OPTION_DEVELOPER).
@@ -339,16 +369,17 @@ import ios_system
       }
     }
     #endif
+    // The plain SSH fallback goes into the folder too, so a missing one is said before falling back.
     let script = [
       "command -v \(tmuxProbe) >/dev/null 2>&1 || PATH=\"$PATH:/usr/local/bin:/opt/homebrew/bin:/snap/bin\"",
-      "command -v \(tmuxProbe) >/dev/null 2>&1 || { echo MOSHROOM_TMUX_MISSING; exit 127; }",
+      "command -v \(tmuxProbe) >/dev/null 2>&1 || { \(folderCheck)echo MOSHROOM_TMUX_MISSING; exit 127; }",
       "v=\"$(tmux -V 2>/dev/null)\"",
       "echo \"MOSHROOM_TMUX_VERSION $v\"",
-      "case \"$v\" in \"tmux 0.\"*|\"tmux 1.\"*|\"tmux 2.\"*) echo MOSHROOM_TMUX_OLD; exit 126;; esac",
-      "tmux has-session -t =\(name) 2>/dev/null && echo MOSHROOM_TMUX_EXISTS",
+      "case \"$v\" in \"tmux 0.\"*|\"tmux 1.\"*|\"tmux 2.\"*) \(folderCheck)echo MOSHROOM_TMUX_OLD; exit 126;; esac",
+      "if tmux has-session -t =\(name) 2>/dev/null; then echo MOSHROOM_TMUX_EXISTS; else \(checkWhenCreating):; fi",
       "exec tmux -u -C \(tmuxCommand) 2>&1",
     ].joined(separator: "; ")
-    let command = "exec sh -c '\(script)'"
+    let command = "exec sh -c " + MoshProjectShell.quote(script)
 
     let gw = TmuxGateway()
     gateway = gw
@@ -559,6 +590,12 @@ import ios_system
       return
     }
     let host = params.hostAlias ?? "the host"
+    if line.hasPrefix(MoshProjectShell.noFolderMarker) {
+      let home = String(line.dropFirst(MoshProjectShell.noFolderMarker.count))
+      let folder = _project(host: host)?.folder ?? "?"
+      _finish(.ended(MoshProjectShell.noFolderMessage(folder, host: host, home: home)))
+      return
+    }
     switch line {
     case "MOSHROOM_TMUX_MISSING":
       _finish(.fallback("tmux isn't installed on \(host), connected with plain SSH. Install tmux for sessions that survive."))

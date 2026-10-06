@@ -34,9 +34,13 @@ enum MoshError: Error, LocalizedError {
   case NoRemoteServerIP
   case AddressInfo(String)
   case MissingArguments(String)
+  /// A project's folder is not on the server: said as is, nothing was started.
+  case FolderMissing(String)
 
   public var errorDescription: String? {
     switch self {
+    case .FolderMissing(let message):
+      return message
     case .NoBinaryAvailable:
       return "Could not find a mosh-server on the remote."
     case .UserCancelled:
@@ -138,21 +142,26 @@ enum MoshError: Error, LocalizedError {
       self.isVerbose = command.verbose
       self.logger = MoshLogger(output: self.stderr, logLevel: command.verbose ? .info : .error)
 
+      let project = command.moshroomProject
       let moshParams: MoshParams
       do {
-        moshParams = try startMoshServer(using: command)
+        moshParams = try startMoshServer(using: command, project: project)
         self.copyToSession(moshParams: moshParams)
+      } catch MoshError.FolderMissing {
+        // Already said, in the user's words.
+        return -1
       } catch {
         return die(message: "\(error) - \(error.localizedDescription)")
       }
 
       // Fresh connect only (the restore branch above returns early) — remember the host's command.
-      self.pendingCommandOnConnect = MoshHosts.withHost(command.hostAlias)?.commandOnConnect
+      // Never for a project: its own command was started by the server, inside its session.
+      self.pendingCommandOnConnect = project == nil ? MoshHosts.withHost(command.hostAlias)?.commandOnConnect : nil
       return moshMain(moshParams)
     }
   }
 
-  func startMoshServer(using command: MoshCommand) throws -> MoshParams {
+  func startMoshServer(using command: MoshCommand, project: MoshProject? = nil) throws -> MoshParams {
     let host: MoshSSHHost
     let config: SSHClientConfig
     let hostName: String
@@ -163,7 +172,7 @@ enum MoshError: Error, LocalizedError {
     hostName = resolved.hostName
     config = try SSHClientConfigProvider.config(host: host, using: device)
 
-    let moshClientParams = MoshClientParams(extending: command)
+    let moshClientParams = MoshClientParams(extending: command, startup: project.map(MoshProjectShell.moshStartup))
     let moshServerParams: MoshServerParams
     if let customKey = command.customKey {
       guard let customUDPPort = moshClientParams.customUDPPort else {
@@ -208,7 +217,8 @@ enum MoshError: Error, LocalizedError {
                                           experimentalRemoteIP: moshClientParams.experimentalRemoteIP,
                                           family: command.addressFamily,
                                           args: moshServerStartupArgs,
-                                          withPTY: pty) }
+                                          withPTY: pty,
+                                          folderCheck: project.map { (MoshProjectShell.moshPreflight($0), $0.folder, command.hostAlias) }) }
 
       .sink(
         receiveCompletion: { completion in
@@ -216,7 +226,12 @@ enum MoshError: Error, LocalizedError {
           case .failure(let error):
             sshError = error
             // Surface the failure right away — do not depend on the teardown path to report it.
-            print("Connection failed - \(error)", to: &self.stderr)
+            if case MoshError.FolderMissing(let message) = error {
+              // From the start of the line, whatever the bootstrap left on it.
+              print("\r" + message, to: &self.stderr)
+            } else {
+              print("Connection failed - \(error)", to: &self.stderr)
+            }
           default:
             break
           }
@@ -363,7 +378,8 @@ enum MoshError: Error, LocalizedError {
                                    experimentalRemoteIP: MoshMoshExperimentalIP,
                                    family: AddressFamily?,
                                    args: String,
-                                   withPTY pty: SSH.SSHClient.PTY? = nil) -> AnyPublisher<MoshServerParams, Error> {
+                                   withPTY pty: SSH.SSHClient.PTY? = nil,
+                                   folderCheck: (script: String, folder: String, host: String)? = nil) -> AnyPublisher<MoshServerParams, Error> {
     let log = logger.log("bootstrapMoshServer")
     log.info("Trying bootstrap with sequence: \(sequence), experimental: \(experimentalRemoteIP), family: \(family), args: \(args)")
 
@@ -381,11 +397,17 @@ enum MoshError: Error, LocalizedError {
       return Just(bootstrap)
         .flatMap { $0.start(on: client) }
         .map { moshServerPath -> String in
+          let start: String
           if experimentalRemoteIP == MoshMoshExperimentalIPRemote {
-            return "echo \"MOSH SSH_CONNECTION $SSH_CONNECTION\" && \(moshServerPath) \(args)"
+            start = "echo \"MOSH SSH_CONNECTION $SSH_CONNECTION\" && \(moshServerPath) \(args)"
           } else {
-            return "\(moshServerPath) \(args)"
+            start = "\(moshServerPath) \(args)"
           }
+          // A project's folder is checked before mosh-server starts (see MoshProjectShell).
+          if let folderCheck {
+            return "\(folderCheck.script) && \(start)"
+          }
+          return start
         }
         .flatMap {
           log.info("Connecting to \($0)")
@@ -402,6 +424,10 @@ enum MoshError: Error, LocalizedError {
             }
             .tryMap { output -> MoshServerParams in
               log.info("Command output: \(output)")
+              if let folderCheck, let range = output.range(of: MoshProjectShell.noFolderMarker) {
+                let home = output[range.upperBound...].split(whereSeparator: \.isNewline).first.map(String.init)
+                throw MoshError.FolderMissing(MoshProjectShell.noFolderMessage(folderCheck.folder, host: folderCheck.host, home: home))
+              }
               // IP Resolution
               switch experimentalRemoteIP {
               case MoshMoshExperimentalIPRemote:
@@ -416,7 +442,11 @@ enum MoshError: Error, LocalizedError {
                 return try MoshServerParams(parsing: output, remoteIP: client.clientAddressIP())
               }
             }
-            .catch{ err in
+            .catch{ err -> AnyPublisher<MoshServerParams, Error> in
+              // A missing folder is an answer, not a failed bootstrap: no other way in is tried.
+              if case MoshError.FolderMissing = err {
+                return Fail(error: err).eraseToAnyPublisher()
+              }
               //let err = String(decoding: err as AnyObject as! Data, as: UTF8.self)
               log.warn("Bootstrap failed with \(err)")
               var sequence = sequence

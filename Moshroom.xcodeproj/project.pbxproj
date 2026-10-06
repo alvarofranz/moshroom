@@ -84,6 +84,8 @@
 		B1F30000000000000000B1C0 /* MoshroomSFTPWorker.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1F30000000000000000F1C0 /* MoshroomSFTPWorker.swift */; };
 		B1EE0000000000000000B17D /* Moshkeys.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1EE0000000000000000F11E /* Moshkeys.swift */; };
 		B1EE0000000000000000C0DE /* Moshnector.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1EE0000000000000000C0DF /* Moshnector.swift */; };
+		A7C3000000000000000F0B03 /* MoshFolderBrowser.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7C3000000000000000F0B04 /* MoshFolderBrowser.swift */; };
+		A7C3000000000000000F0B01 /* MoshProjects.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7C3000000000000000F0B02 /* MoshProjects.swift */; };
 		B1EE0000000000000000C0E0 /* Moshxplore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1EE0000000000000000C0E1 /* Moshxplore.swift */; };
 		B7A487691DC7C48D007BA809 /* UIDevice+DeviceName.m in Sources */ = {isa = PBXBuildFile; fileRef = B7A487681DC7C48D007BA809 /* UIDevice+DeviceName.m */; };
 		BD1758AC26EA8C5400AEC545 /* MenuController.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD1758AB26EA8C5400AEC545 /* MenuController.swift */; };
@@ -445,6 +447,8 @@
 		B1F40000000000000000F1D4 /* TmuxResync.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TmuxResync.swift; sourceTree = "<group>"; };
 		B1F30000000000000000F1C0 /* MoshroomSFTPWorker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoshroomSFTPWorker.swift; sourceTree = "<group>"; };
 		B1EE0000000000000000C0DF /* Moshnector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Moshnector.swift; sourceTree = "<group>"; };
+		A7C3000000000000000F0B04 /* MoshFolderBrowser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoshFolderBrowser.swift; sourceTree = "<group>"; };
+		A7C3000000000000000F0B02 /* MoshProjects.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoshProjects.swift; sourceTree = "<group>"; };
 		B1EE0000000000000000C0E1 /* Moshxplore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Moshxplore.swift; sourceTree = "<group>"; };
 		B1EE0000000000000000F11E /* Moshkeys.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Moshkeys.swift; sourceTree = "<group>"; };
 		B7A487671DC7C48D007BA809 /* UIDevice+DeviceName.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = "UIDevice+DeviceName.h"; sourceTree = "<group>"; };
@@ -775,6 +779,8 @@
 				D2887A5522DC676F00701BD5 /* SpaceController.swift */,
 				B1EE0000000000000000F11E /* Moshkeys.swift */,
 				B1EE0000000000000000C0DF /* Moshnector.swift */,
+				A7C3000000000000000F0B04 /* MoshFolderBrowser.swift */,
+				A7C3000000000000000F0B02 /* MoshProjects.swift */,
 				B1EE0000000000000000C0E1 /* Moshxplore.swift */,
 				FACEB00C0000000000000101 /* Moshlight.swift */,
 				AAAAA1110001000000000002 /* HostsCloudMirror.swift */,
@@ -1909,6 +1915,8 @@
 				D2887A5622DC676F00701BD5 /* SpaceController.swift in Sources */,
 				B1EE0000000000000000B17D /* Moshkeys.swift in Sources */,
 				B1EE0000000000000000C0DE /* Moshnector.swift in Sources */,
+				A7C3000000000000000F0B03 /* MoshFolderBrowser.swift in Sources */,
+				A7C3000000000000000F0B01 /* MoshProjects.swift in Sources */,
 				B1EE0000000000000000C0E0 /* Moshxplore.swift in Sources */,
 				FACEB00C0000000000000102 /* Moshlight.swift in Sources */,
 				AAAAA1110001000000000001 /* HostsCloudMirror.swift in Sources */,

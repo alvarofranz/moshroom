@@ -129,6 +129,14 @@ struct MoshCommand: ParsableCommand {
     }
   }
 
+  /// `mosh <host> <project>`: the words after the host name one of the host's saved projects. Those
+  /// words are a project before they are a remote command; `mosh <host> -- <command>` always runs
+  /// the command.
+  var moshroomProject: MoshProject? {
+    guard let first = cmd.first, first != "--" else { return nil }
+    return MoshHosts.withHost(hostAlias)?.moshroomProject(matching: cmd)
+  }
+
   func validate() throws {
     if addressFamily != nil && experimentalRemoteIP != MoshMoshExperimentalIPLocal {
       throw ValidationError("Address Family can only be used with 'local' IP resolution (-R).")

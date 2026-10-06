@@ -85,6 +85,9 @@ public func moshroom_ssh_main(argc: Int32, argv: Argv) -> Int32 {
       device.rawMode = originalRawMode
     }
 
+    // A project's way into its folder when it has no tmux (see MoshroomProjectHandoff): taken now,
+    // whatever this connect turns out to be, so it can never ride a later one.
+    let projectStart = MoshroomProjectHandoff.take(for: device)
     let cmd: SSHCommand
     do {
       cmd = try SSHCommand.parse(Array(argv[1...]))
@@ -202,7 +205,7 @@ public func moshroom_ssh_main(argc: Int32, argv: Argv) -> Int32 {
 
         return self.startInteractiveSessions(conn,
                                              command: host.remoteCommand,
-                                             commandOnConnect: MoshHosts.withHost(cmd.hostAlias)?.commandOnConnect,
+                                             commandOnConnect: projectStart ?? MoshHosts.withHost(cmd.hostAlias)?.commandOnConnect,
                                              requestTTY: host.requestTty ?? .auto,
                                              withEnvVars: environment,
                                              sendAgent: sendAgent)

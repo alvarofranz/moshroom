@@ -71,6 +71,10 @@ enum MoshAgentForward {
 @property (nonatomic, strong) NSNumber *useTmux;
 // The tmux session those connects attach to (or create). Nil or empty means "main".
 @property (nonatomic, strong) NSString *tmuxSession;
+// The host's projects (folders on it, each with its own session and command), as a JSON array. A
+// string so it rides the same coder as every other field and syncs with the host; Swift reads it as
+// `moshroomProjects` (MoshProjects.swift). Nil or empty means no projects.
+@property (nonatomic, strong) NSString *projectsJSON;
 @property (nonatomic, strong) NSNumber *prediction;
 @property (nonatomic, strong) NSString *proxyCmd;
 @property (nonatomic, strong) NSString *proxyJump;
@@ -103,6 +107,7 @@ enum MoshAgentForward {
          hostDescription:(NSString *)hostDescription
                  useTmux:(NSNumber *)useTmux
              tmuxSession:(NSString *)tmuxSession
+            projectsJSON:(NSString *)projectsJSON
               prediction:(enum MoshMoshPrediction)prediction
                 proxyCmd:(NSString *)proxyCmd
                proxyJump:(NSString *)proxyJump

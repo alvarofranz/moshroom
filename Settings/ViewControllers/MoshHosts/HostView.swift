@@ -278,6 +278,10 @@ struct HostView: View {
 
   @State private var _errorMessage: String = ""
 
+  @State private var _projects: [MoshProject] = []
+  @State private var _editingProject: HostProjectEdit? = nil
+  @State private var _pendingProjectDelete: MoshDeletePrompt? = nil
+
   private var _reloadList: () -> ()
   private var _cleanAlias: String {
     _alias.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -313,73 +317,119 @@ struct HostView: View {
     _reloadList = reloadList
   }
 
+  // One line under the Connection section: how to reach this host from the shell.
   private func _usageHint() -> String {
     var alias = _cleanAlias
     if alias.count < 2 {
       alias = "[alias]"
     }
+    return "Connect from Quick Connect, or type `ssh \(alias)`, `tmux \(alias)` or `mosh \(alias)`."
+  }
 
-    return "Use `mosh \(alias)` or `ssh \(alias)` from the shell to connect."
+  // `user@address:port`, live as the fields change: the header's summary of where this host is.
+  private var _summary: String {
+    let address = _hostName.trimmingCharacters(in: .whitespacesAndNewlines)
+    let user = _user.trimmingCharacters(in: .whitespacesAndNewlines)
+    let port = _port.trimmingCharacters(in: .whitespacesAndNewlines)
+    return (user.isEmpty ? "" : user + "@") + (address.isEmpty ? "address" : address) + ":" + (port.isEmpty ? "22" : port)
+  }
+
+  // The session the host's own connects use (what the editor holds now, not what is saved).
+  private var _hostSessionName: String {
+    let name = MoshHosts.moshroomTmuxSessionName(_tmuxSession)
+    return name.isEmpty ? MoshHosts.moshroomDefaultTmuxSession : name
   }
 
   var body: some View {
     List {
+      Section {
+        HostEditorHeader(alias: _cleanAlias, summary: _summary, isNew: _host == nil)
+      }
+      .listRowBackground(Color.clear)
+      .listRowInsets(EdgeInsets(top: 4, leading: 4, bottom: 0, trailing: 4))
+
       Section(
-        header: Text(""),
+        header: Text("Connection"),
         footer: Text(verbatim: _usageHint())
       ) {
-        Field("Alias", _aliasNoSpaces, next: "Description", placeholder: "Required")
-        Field("Description", $_hostDescription, next: "HostName", placeholder: "Optional one-liner, e.g. demo host for reviews")
+        Field("Alias", _aliasNoSpaces, next: "Description", placeholder: "Required, e.g. prod")
+        Field("Description", $_hostDescription, next: "Address", placeholder: "Optional one-liner")
+        Field("Address", $_hostName, next: "Port", placeholder: "Host name or IP. Required", enabled: _enabled, kbType: .URL)
+        Field("Port", $_port, next: "User", placeholder: "22", enabled: _enabled, kbType: .numberPad)
+        Field("User", $_user, next: "Password", placeholder: "Login user. Required", enabled: _enabled)
       }.disabled(!_enabled)
 
       Section(
-        header: Text("SSH"),
-        footer: Text("How to reach the machine: address, port (22 unless changed), user, and how to authenticate — a key from Keys & Certificates, or a password (leave it empty to be asked each time). ProxyCmd/ProxyJump route the connection through a bastion, and SSH Config takes any extra ssh_config lines verbatim.")
+        header: Text("Authentication"),
+        footer: Text("A key from Keys & Certificates, a password, or both. No password means you are asked each time.")
       ) {
-        Field("HostName",  $_hostName,  next: "Port",      placeholder: "Host or IP address. Required", enabled: _enabled, kbType: .URL)
-        Field("Port",      $_port,      next: "User",      placeholder: "22", enabled: _enabled, kbType: .numberPad)
-        Field("User",      $_user,      next: "Password",  placeholder: "Login user. Required", enabled: _enabled)
-        FieldPassword("Password",  $_password,  next: "ProxyCmd",  placeholder: "Ask Every Time", enabled: _enabled)
         FieldSSHKey(value: $_sshKeyName, enabled: _enabled, hasSSHKey: MoshPubKey.all().contains(where: {
           if let keyName = _sshKeyName.first {
             return $0.id == keyName
           }
           return false
         }))
-        Field("ProxyCmd",  $_proxyCmd,  next: "ProxyJump", placeholder: "ssh -W %h:%p bastion", enabled: _enabled)
-        Field("ProxyJump", $_proxyJump, next: "Server",    placeholder: "bastion1,bastion2", enabled: _enabled)
-        FieldTextArea("SSH Config", $_sshConfigAttachment, enabled: _enabled)
+        FieldPassword("Password", $_password, next: "tmuxSession", placeholder: "Ask every time", enabled: _enabled)
       }
 
       Section(
-        header: Text("SESSIONS"),
-        footer: Text("SSH sessions live in tmux on the server: smooth scrolling and they survive the app closing. Falls back to plain SSH if tmux is missing.")
+        header: Text("Sessions"),
+        footer: Text("SSH opens in tmux on the server: it survives the app closing, and falls back to plain SSH without tmux.")
       ) {
         Toggle("Use tmux with SSH", isOn: $_useTmux)
           .tint(.moshTint)
         if _useTmux {
-          Field("Session", _tmuxSessionSafe, next: "Server", placeholder: MoshHosts.moshroomDefaultTmuxSession, id: "tmuxSession")
+          Field("Session", _tmuxSessionSafe, next: "moshServer", placeholder: MoshHosts.moshroomDefaultTmuxSession, id: "tmuxSession")
         }
       }.disabled(!_enabled)
 
       Section(
-        header: Text("MOSH"),
-        footer: Text("""
-        Only used when you connect with `mosh` — all optional.
-
-        Server — full path to mosh-server on the machine, only if it isn't in the login PATH (e.g. /usr/local/bin/mosh-server).
-
-        Port — the UDP port (or PORT:PORT range) mosh talks over; set it when the server firewall only opens specific ports, e.g. 60000:60010. Empty lets mosh-server pick.
-
-        Command — what mosh runs instead of your login shell. The classic use is a persistent session that survives disconnects:
-        • tmux new -A -s main — attach the tmux session "main", creating it if needed (the safe default).
-        • tmux attach -d — attach the existing session; -d detaches any other client holding it.
-        • screen -Rd — reattach your screen session, detaching it elsewhere first; creates one if none.
-        Leave empty for a plain shell.
-        """)
+        header: Text("Projects"),
+        footer: Text(_host == nil
+          ? "Save the host first, then add projects: folders on it, each with its own session and tab."
+          : "A folder on this server with its own session: each project opens in its own tab and keeps running when you close it.")
       ) {
-        Field("Server",  $_moshServer,  next: "moshPort",    placeholder: "path/to/mosh-server")
-        Field("Port",    $_moshPort,    next: "moshCommand", placeholder: "UDP PORT[:PORT2]", id: "moshPort", kbType: .numbersAndPunctuation)
+        ForEach(_projects) { project in
+          Button { _editingProject = HostProjectEdit(project: project, isNew: false) } label: {
+            HostProjectRow(project: project)
+          }
+          .buttonStyle(.plain)
+          .moshCatalystPlainButtons()
+          // Right-click (Mac) / long-press (iOS): the Mac has no swipe, so delete and order live here too.
+          .contextMenu {
+            Button { _editingProject = HostProjectEdit(project: project, isNew: false) } label: { Label("Edit", systemImage: "pencil") }
+            if _projects.first?.id != project.id {
+              Button { _moveProject(project, by: -1) } label: { Label("Move Up", systemImage: "arrow.up") }
+            }
+            if _projects.last?.id != project.id {
+              Button { _moveProject(project, by: 1) } label: { Label("Move Down", systemImage: "arrow.down") }
+            }
+            Divider()
+            Button(role: .destructive) { _confirmDeleteProject(project) } label: { Label("Delete", systemImage: "trash") }
+          }
+        }
+        .onDelete { offsets in
+          if let index = offsets.first, index < _projects.count { _confirmDeleteProject(_projects[index]) }
+        }
+        .onMove { from, to in
+          _projects.move(fromOffsets: from, toOffset: to)
+          _persistProjects()
+        }
+        Button { _addProject() } label: {
+          Label("Add Project", systemImage: "plus.circle.fill")
+            .foregroundColor(_host == nil ? .secondary : .moshTint)
+        }
+        .buttonStyle(.plain)
+        .moshCatalystPlainButtons()
+        .disabled(_host == nil)
+      }
+
+      Section(
+        header: Text("Mosh"),
+        footer: Text("Only for `mosh`: the server binary if it is not on PATH, a UDP port or range, and what to run instead of the shell.")
+      ) {
+        Field("Server", $_moshServer, next: "moshPort", placeholder: "path/to/mosh-server", id: "moshServer")
+        Field("Port", $_moshPort, next: "moshCommand", placeholder: "UDP PORT[:PORT2]", id: "moshPort", kbType: .numbersAndPunctuation)
         Field("Command", $_moshCommand, next: "commandOnConnect", placeholder: "tmux new -A -s main", id: "moshCommand")
         FieldMoshCustomOptions(
           prediction: $_moshPrediction,
@@ -390,16 +440,19 @@ struct HostView: View {
       }.disabled(!_enabled)
 
       Section(
-        header: Text("ON CONNECT"),
-        footer: Text("Typed into the session right after connecting — over SSH and Mosh alike (e.g. cd dev && opencode). It runs inside whatever session comes up, so it does not replace the Mosh command.")
+        header: Text("On Connect"),
+        footer: Text("Typed into the host's own session right after connecting, over SSH and Mosh. Projects run their own command instead.")
       ) {
-        Field("Command", $_commandOnConnect, next: "Alias", placeholder: "cd dev && opencode", id: "commandOnConnect")
+        Field("Command", $_commandOnConnect, next: "ProxyCmd", placeholder: "cd dev && opencode", id: "commandOnConnect")
       }.disabled(!_enabled)
 
       Section(
-        header: Text("SSH AGENT"),
-        footer: Text("Agent forwarding lets programs on this host (e.g. git) authenticate with keys that never leave your phone. Choose whether to forward, whether each use needs your confirmation, and which keys are offered.")
+        header: Text("Advanced"),
+        footer: Text("A bastion to go through, extra ssh_config lines, and agent forwarding for keys that never leave this device.")
       ) {
+        Field("ProxyCmd", $_proxyCmd, next: "ProxyJump", placeholder: "ssh -W %h:%p bastion", enabled: _enabled)
+        Field("ProxyJump", $_proxyJump, next: "Alias", placeholder: "bastion1,bastion2", enabled: _enabled)
+        FieldTextArea("SSH Config", $_sshConfigAttachment, enabled: _enabled)
         FieldAgentForwardPrompt(value: $_agentForwardPrompt, enabled: _enabled)
         if _agentForwardPrompt != MoshAgentForwardNo {
           FieldAgentForwardKeys(value: $_agentForwardKeys, enabled: _enabled)
@@ -407,8 +460,21 @@ struct HostView: View {
       }.disabled(!_enabled)
     }
     .listStyle(.insetGrouped)
+    .listSectionSpacing(18)
     .moshReadableWidth()
     .alert(errorMessage: $_errorMessage)
+    .moshDeleteConfirmation($_pendingProjectDelete)
+    .fullScreenCover(item: $_editingProject) { edit in
+      MoshProjectEditor(
+        hostAlias: _host?.host ?? _cleanAlias,
+        hostSession: _hostSessionName,
+        otherSessions: Set(_projects.filter { $0.id != edit.project.id }.map(\.session)),
+        project: edit.project,
+        isNew: edit.isNew,
+        onSave: { _saveProject($0) },
+        onDelete: edit.isNew ? nil : { _deleteProject(edit.project) }
+      )
+    }
     .moshHubChrome(title: _host == nil ? "New Host" : "Host", leading: {
       Button(action: {
         _nav.navController.popViewController(animated: true)
@@ -431,6 +497,62 @@ struct HostView: View {
       }
     }
 
+  }
+
+  // MARK: Projects
+  //
+  // A project is saved the moment its own editor says Save (or a delete is confirmed), like a vault
+  // entry: it belongs to the saved host, whatever happens to the rest of this form. Discard only
+  // drops the host's own fields.
+
+  private func _addProject() {
+    guard _host != nil else { return }
+    _editingProject = HostProjectEdit(project: MoshProject(name: "", folder: "", command: "", session: ""), isNew: true)
+  }
+
+  private func _saveProject(_ project: MoshProject) {
+    if let index = _projects.firstIndex(where: { $0.id == project.id }) {
+      _projects[index] = project
+    } else {
+      _projects.append(project)
+    }
+    _persistProjects()
+  }
+
+  private func _deleteProject(_ project: MoshProject) {
+    _projects.removeAll { $0.id == project.id }
+    _persistProjects()
+  }
+
+  private func _moveProject(_ project: MoshProject, by delta: Int) {
+    guard let index = _projects.firstIndex(where: { $0.id == project.id }) else { return }
+    let target = index + delta
+    guard _projects.indices.contains(target) else { return }
+    _projects.swapAt(index, target)
+    _persistProjects()
+  }
+
+  private func _confirmDeleteProject(_ project: MoshProject) {
+    let host = _host?.host ?? "the server"
+    _pendingProjectDelete = MoshDeletePrompt(
+      name: project.name.isEmpty ? project.session : project.name,
+      what: "this project",
+      extra: "Its session on \(host) is left running: end it there if you no longer need it."
+    ) {
+      _deleteProject(project)
+    }
+  }
+
+  // Straight onto the saved host (stamped, so the iCloud merge takes this edit) and to disk.
+  private func _persistProjects() {
+    guard let host = _host else { return }
+    host.projectsJSON = MoshProject.json(_projects)
+    host.lastModified = Date()
+    guard MoshHosts.save() else {
+      _errorMessage = "The project could not be saved: the hosts file is not writable right now. Unlock the device and try again."
+      return
+    }
+    _reloadList()
   }
 
   private static var __sshConfigAttachmentExample: String { "# Compression no" }
@@ -474,6 +596,9 @@ struct HostView: View {
     _tmuxSession = host.tmuxSession ?? ""
     _agentForwardPrompt.rawValue = UInt32(host.agentForwardPrompt?.intValue ?? 0)
     _agentForwardKeys = host.agentForwardKeys ?? []
+    // A duplicate starts with no projects: each one is a session on the server, and two hosts
+    // pointing at the same sessions would fight over them.
+    _projects = _host == nil ? [] : host.moshroomProjects
     _enabled = true
   }
 
@@ -502,12 +627,18 @@ struct HostView: View {
 
       let cleanHostName = _hostName.trimmingCharacters(in: .whitespacesAndNewlines)
       if let _ = cleanHostName.rangeOfCharacter(from: .whitespacesAndNewlines) {
-        throw ValidationError.general(message: "Spaces are not permitted in the host name.")
+        throw ValidationError.general(message: "Spaces are not permitted in the address.")
       }
 
       if cleanHostName.isEmpty {
         throw ValidationError.general(
-          message: "HostName is required."
+          message: "Address is required."
+        )
+      }
+
+      if let clash = _projects.first(where: { $0.session == _hostSessionName }) {
+        throw ValidationError.general(
+          message: "The session \u{201C}\(_hostSessionName)\u{201D} belongs to the project \u{201C}\(clash.name)\u{201D}. Pick another session name for the host."
         )
       }
     } catch {
@@ -543,6 +674,7 @@ struct HostView: View {
       // ON is the default and is stored as nil, so a host follows the default unless turned off.
       useTmux: _useTmux ? nil : NSNumber(value: false),
       tmuxSession: MoshHosts.moshroomTmuxSessionName(_tmuxSession),
+      projectsJSON: MoshProject.json(_projects),
       prediction: _moshPrediction,
       proxyCmd: _proxyCmd,
       proxyJump: _proxyJump,
@@ -561,6 +693,236 @@ fileprivate enum ValidationError: Error, LocalizedError {
   var errorDescription: String? {
     switch self {
     case .general(message: let message, field: _): return message
+    }
+  }
+}
+
+// MARK: - Header, projects
+
+/// The top of the host editor: the server glyph on a faint mushroom tile, the alias, and a live
+/// `user@address:port` summary of where it points.
+fileprivate struct HostEditorHeader: View {
+  let alias: String
+  let summary: String
+  let isNew: Bool
+
+  var body: some View {
+    HStack(spacing: 14) {
+      RoundedRectangle(cornerRadius: Moshstyle.cardRadius, style: .continuous)
+        .fill(Color.moshTint.opacity(Double(Moshstyle.faintTintAlpha)))
+        .frame(width: 54, height: 54)
+        .overlay(
+          Image(systemName: "server.rack")
+            .font(.system(size: 22, weight: .semibold))
+            .foregroundColor(.moshTint)
+        )
+      VStack(alignment: .leading, spacing: 4) {
+        Text(alias.isEmpty ? (isNew ? "New host" : "Host") : alias)
+          .font(.system(size: 22, weight: .bold))
+          .foregroundColor(alias.isEmpty ? .secondary : .primary)
+          .lineLimit(1)
+        Text(summary)
+          .font(.system(.subheadline, design: .monospaced))
+          .foregroundColor(.secondary)
+          .lineLimit(1)
+          .truncationMode(.middle)
+      }
+      Spacer(minLength: 0)
+    }
+    .padding(.vertical, 6)
+  }
+}
+
+/// A project being edited (the editor is presented per item).
+struct HostProjectEdit: Identifiable {
+  let project: MoshProject
+  let isNew: Bool
+  var id: String { project.id }
+}
+
+/// One project in the host editor: name, folder in monospace, and the command it starts.
+fileprivate struct HostProjectRow: View {
+  let project: MoshProject
+
+  var body: some View {
+    HStack(spacing: 12) {
+      Image(systemName: "folder.fill")
+        .font(.system(size: 16, weight: .medium))
+        .foregroundColor(.moshTint)
+        .frame(width: 24)
+      VStack(alignment: .leading, spacing: 3) {
+        Text(project.name.isEmpty ? project.session : project.name)
+          .font(.body.weight(.semibold))
+          .foregroundColor(.primary)
+          .lineLimit(1)
+        Text(project.folder)
+          .font(.system(.footnote, design: .monospaced))
+          .foregroundColor(.secondary)
+          .lineLimit(1)
+          .truncationMode(.head)
+        if !project.trimmedCommand.isEmpty {
+          HStack(spacing: 5) {
+            Image(systemName: "terminal")
+              .font(.system(size: 11, weight: .semibold))
+            Text(project.trimmedCommand)
+              .font(.system(.footnote, design: .monospaced))
+              .lineLimit(1)
+          }
+          .foregroundColor(.secondary)
+        }
+      }
+      Spacer(minLength: 8)
+      Image(systemName: "chevron.right")
+        .font(.system(size: 13, weight: .semibold))
+        .foregroundColor(Color(.tertiaryLabel))
+    }
+    .padding(.vertical, 4)
+    .contentShape(Rectangle())
+  }
+}
+
+/// A project's own editor, full screen (a sheet's toolbar takes no taps on the Mac): where it is on the
+/// server (picked by browsing, never typed), its name and the command that starts it.
+struct MoshProjectEditor: View {
+  let hostAlias: String
+  let hostSession: String
+  let otherSessions: Set<String>
+  @State var project: MoshProject
+  let isNew: Bool
+  let onSave: (MoshProject) -> Void
+  let onDelete: (() -> Void)?
+
+  @Environment(\.dismiss) private var dismiss
+  @State private var picking = false
+  @State private var pendingDelete: MoshDeletePrompt? = nil
+
+  init(hostAlias: String, hostSession: String, otherSessions: Set<String>, project: MoshProject,
+       isNew: Bool, onSave: @escaping (MoshProject) -> Void, onDelete: (() -> Void)?) {
+    self.hostAlias = hostAlias
+    self.hostSession = hostSession
+    self.otherSessions = otherSessions
+    _project = State(initialValue: project)
+    self.isNew = isNew
+    self.onSave = onSave
+    self.onDelete = onDelete
+  }
+
+  private var cleanName: String {
+    let name = project.name.trimmingCharacters(in: .whitespacesAndNewlines)
+    return name.isEmpty && !project.folder.isEmpty ? MoshProject.folderName(project.folder) : name
+  }
+
+  // A new project's session follows its name; an existing one keeps the session it already has, so
+  // renaming never strands a running session.
+  private var session: String {
+    if !isNew && !project.session.isEmpty && project.session != hostSession && !otherSessions.contains(project.session) {
+      return project.session
+    }
+    return MoshProject.sessionName(for: cleanName, hostSession: hostSession, taken: otherSessions)
+  }
+
+  var body: some View {
+    VStack(spacing: 0) {
+      MoshSheetHeader(title: isNew ? "New Project" : "Project", onClose: { dismiss() }) {
+        Button {
+          var saved = project
+          saved.name = cleanName
+          saved.command = project.trimmedCommand
+          saved.session = session
+          onSave(saved)
+          dismiss()
+        } label: { MoshNavLabel(title: "Save") }
+          .buttonStyle(.plain)
+          .disabled(project.folder.isEmpty)
+      }
+      Form {
+        Section {
+          Button { picking = true } label: {
+            HStack(spacing: 12) {
+              Image(systemName: "folder.fill")
+                .font(.system(size: 16, weight: .medium))
+                .foregroundColor(.moshTint)
+                .frame(width: 24)
+              if project.folder.isEmpty {
+                Text("Choose a folder")
+                  .foregroundColor(.moshTint)
+              } else {
+                Text(project.folder)
+                  .font(.system(.body, design: .monospaced))
+                  .foregroundColor(.primary)
+                  .lineLimit(2)
+                  .truncationMode(.head)
+              }
+              Spacer(minLength: 8)
+              Image(systemName: "chevron.right")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundColor(Color(.tertiaryLabel))
+            }
+            .contentShape(Rectangle())
+          }
+          .buttonStyle(.plain)
+          .moshCatalystPlainButtons()
+        } header: {
+          Text("Folder")
+        } footer: {
+          Text("Browse \(hostAlias) and pick it: the session starts there.")
+        }
+
+        Section {
+          HStack {
+            Text("Name").foregroundColor(.secondary).frame(width: 92, alignment: .leading)
+            TextField(project.folder.isEmpty ? "The folder's name" : MoshProject.folderName(project.folder), text: $project.name)
+              .autocorrectionDisabled()
+          }
+          HStack {
+            Text("Command").foregroundColor(.secondary).frame(width: 92, alignment: .leading)
+            TextField("opencode", text: $project.command)
+              .font(.system(.body, design: .monospaced))
+              .autocorrectionDisabled()
+              .textInputAutocapitalization(.never)
+          }
+        } header: {
+          Text("Project")
+        } footer: {
+          Text(project.folder.isEmpty
+               ? "The command starts once, when the project's session is new; empty means a shell in the folder."
+               : "Runs in the tmux session \u{201C}\(session)\u{201D}. The command starts once, when that session is new; empty means a shell in the folder.")
+        }
+
+        if let onDelete {
+          Section {
+            Button(role: .destructive) {
+              pendingDelete = MoshDeletePrompt(
+                name: cleanName,
+                what: "this project",
+                extra: "Its session on \(hostAlias) is left running: end it there if you no longer need it."
+              ) {
+                onDelete()
+                dismiss()
+              }
+            } label: {
+              Text("Delete Project")
+                .frame(maxWidth: .infinity)
+                .foregroundColor(.moshTint)
+            }
+            .moshCatalystPlainButtons()
+          }
+        }
+      }
+    }
+    .background(Color(.systemGroupedBackground).ignoresSafeArea())
+    .tint(.moshTint)
+    .moshDeleteConfirmation($pendingDelete)
+    .fullScreenCover(isPresented: $picking) {
+      MoshFolderPickerScreen(hostAlias: hostAlias, startAt: project.folder.isEmpty ? nil : project.folder) { path in
+        // The name follows the folder until the user gives it one of their own.
+        let previousDefault = project.folder.isEmpty ? "" : MoshProject.folderName(project.folder)
+        let name = project.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        project.folder = path
+        if name.isEmpty || name == previousDefault {
+          project.name = MoshProject.folderName(path)
+        }
+      }
     }
   }
 }

@@ -32,7 +32,8 @@ struct MoshClientParams {
   let server: String
   let remoteExecCommand: String?
 
-  init(extending cmd: MoshCommand) {
+  /// `startup`: what mosh-server runs instead of the host's own Mosh command (a project's script).
+  init(extending cmd: MoshCommand, startup: String? = nil) {
     let bkHost = MoshHosts.withHost(cmd.hostAlias)
 
     let customUDPPort: String? = if let moshPort = bkHost?.moshPort { String(describing: moshPort) } else { nil }
@@ -43,6 +44,10 @@ struct MoshClientParams {
     self.predictOverwrite = cmd.predictOverwrite ? "yes" : bkHost?.moshPredictOverwrite
     self.experimentalRemoteIP = cmd.experimentalRemoteIP ?? MoshMoshExperimentalIP(UInt32(truncating: bkHost?.moshExperimentalIP ?? 0))
     let remoteExecCommand: String? = if let command = bkHost?.moshStartup, !command.isEmpty { command } else { nil }
-    self.remoteExecCommand = !cmd.remoteExecCommand.isEmpty ? cmd.remoteExecCommand.joined(separator: " ") : remoteExecCommand
+    if let startup {
+      self.remoteExecCommand = startup
+    } else {
+      self.remoteExecCommand = !cmd.remoteExecCommand.isEmpty ? cmd.remoteExecCommand.joined(separator: " ") : remoteExecCommand
+    }
   }
 }
