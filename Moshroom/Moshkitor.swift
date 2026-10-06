@@ -574,6 +574,7 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
         self._uploadStep(attachments, index: index + 1, host: host)
       case .failure(let error):
         self._endSending()
+        MoshLog.log("upload", "\(a.displayName) failed: \(error.localizedDescription)")
         self._composerAlert(title: "Upload failed",
                             message: "Couldn't upload \(a.displayName):\n\(error.localizedDescription)\n\nYou're back in the editor — fix it and send again.")
       }

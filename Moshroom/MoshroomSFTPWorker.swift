@@ -136,13 +136,24 @@ final class MoshroomSFTPWorker {
                       timeoutError: @escaping () -> Error = { SSHError.connError(msg: "Timed out") })
     throws -> AnyPublisher<Translator, Error> {
     let target = try MoshroomSSH.resolveTarget(hostAlias: alias, device: nil)
-    let sftp = SSHClient.dial(target.hostName, with: target.config, withProxy: MoshroomSSH.executeProxyCommand)
+    var sftp = SSHClient.dial(target.hostName, with: target.config, withProxy: MoshroomSSH.executeProxyCommand)
       .flatMap { $0.requestSFTP() }
       .tryMap { try SFTPTranslator(on: $0) as Translator }
       .eraseToAnyPublisher()
-    guard let timeout else { return sftp }
+    if let timeout {
+      sftp = sftp
+        .timeout(.seconds(timeout), scheduler: RunLoop.current, customError: timeoutError)
+        .eraseToAnyPublisher()
+    }
+    // Every app-side connection (uploads, Files, music) fails through here: leave the reason in the
+    // log, since the alert the user saw is gone by the time anyone reads an exported log. The error's
+    // own text names the step (connect, auth, host key), never a secret.
     return sftp
-      .timeout(.seconds(timeout), scheduler: RunLoop.current, customError: timeoutError)
+      .handleEvents(receiveCompletion: { completion in
+        if case .failure(let error) = completion {
+          MoshLog.log("ssh", "connection to \(alias) (\(target.hostName)) failed: \(error.localizedDescription)")
+        }
+      })
       .eraseToAnyPublisher()
   }
 }

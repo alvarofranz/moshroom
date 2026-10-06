@@ -194,24 +194,32 @@ final class MoshnectorView: UIView {
     let projects = MoshHosts.withHost(alias)?.moshroomProjects ?? []
     guard !projects.isEmpty else { return b }
 
-    // With projects the card grows: the host stays its header (same glyph, alias and description, tap
-    // = the host's own session) and its projects live INSIDE the same card as chips, lined up under the
-    // alias like sub-entries. One card per server, not a card with loose pills hanging off it.
+    // With projects the card grows into a little tree: the host stays its header (same glyph, alias and
+    // description, tap = the host's own session) and its projects hang under it, one row each, joined to
+    // the server glyph by a thin line with ├ / └ branches, like a file tree.
     var header = b.configuration ?? .filled()
     header.background.backgroundColor = .clear
     header.background.strokeWidth = 0
-    header.contentInsets.bottom = 8
+    header.contentInsets.bottom = 10
     b.configuration = header
+    let insets = header.contentInsets
+    let glyphWidth = header.image?.size.width ?? 20
+    let branchX = insets.leading + glyphWidth / 2          // the line drops from the glyph's centre
+    let textLeading = insets.leading + glyphWidth + header.imagePadding
 
-    let chips = MoshChipFlowView()
-    for project in projects {
-      let chip = moshProjectChip(project.name.isEmpty ? project.session : project.name)
-      chip.addAction(UIAction { [weak self] _ in
+    let rows = UIStackView()
+    rows.axis = .vertical
+    rows.translatesAutoresizingMaskIntoConstraints = false
+    for (index, project) in projects.enumerated() {
+      let row = MoshProjectTreeRow(title: project.name.isEmpty ? project.session : project.name,
+                                   branchX: branchX, textLeading: textLeading,
+                                   isLast: index == projects.count - 1)
+      row.button.addAction(UIAction { [weak self] _ in
         guard let self else { return }
         self.onConnect?(self._tapMode(for: alias), alias, project)
       }, for: .touchUpInside)
-      chip.accessibilityIdentifier = "project:" + alias + ":" + project.id
-      chips.addSubview(chip)
+      row.button.accessibilityIdentifier = "project:" + alias + ":" + project.id
+      rows.addArrangedSubview(row)
     }
 
     let card = UIView()
@@ -222,96 +230,96 @@ final class MoshnectorView: UIView {
     card.layer.borderWidth = 0.5
     card.layer.borderColor = UIColor.separator.resolvedColor(with: traitCollection).cgColor
     card.addSubview(b)
-    card.addSubview(chips)
-    // The chips start where the alias text starts: the header's leading inset + its glyph + padding.
-    let glyphWidth = b.configuration?.image?.size.width ?? 20
-    let textLeading = (b.configuration?.contentInsets.leading ?? 16) + glyphWidth + (b.configuration?.imagePadding ?? 12)
+    card.addSubview(rows)
     NSLayoutConstraint.activate([
       b.topAnchor.constraint(equalTo: card.topAnchor),
       b.leadingAnchor.constraint(equalTo: card.leadingAnchor),
       b.trailingAnchor.constraint(equalTo: card.trailingAnchor),
-      chips.topAnchor.constraint(equalTo: b.bottomAnchor),
-      chips.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: textLeading),
-      chips.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -14),
-      chips.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -14),
+      rows.topAnchor.constraint(equalTo: b.bottomAnchor),
+      rows.leadingAnchor.constraint(equalTo: card.leadingAnchor),
+      rows.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -8),
+      rows.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -8),
     ])
     card.setContentCompressionResistancePriority(.required, for: .vertical)
     return card
   }
 }
 
-/// A project chip (Quick Connect): a small capsule with a folder glyph and the project's name, the
-/// same dark family as the host card above it.
-func moshProjectChip(_ title: String) -> UIButton {
-  var cfg = UIButton.Configuration.filled()
-  // A step lighter than the card it sits in, no outline: part of the card, not a second card.
-  cfg.baseBackgroundColor = .tertiarySystemFill
-  cfg.baseForegroundColor = .label
-  cfg.cornerStyle = .capsule
-  cfg.image = UIImage(systemName: "folder.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: 11, weight: .semibold))?
-    .withTintColor(.moshroomTint, renderingMode: .alwaysOriginal)
-  cfg.imagePadding = 6
-  var attr = AttributeContainer()
-  attr.font = UIFont.systemFont(ofSize: 13, weight: .semibold)
-  cfg.attributedTitle = AttributedString(title, attributes: attr)
-  cfg.titleLineBreakMode = .byTruncatingTail
-  cfg.contentInsets = NSDirectionalEdgeInsets(top: 6, leading: 10, bottom: 6, trailing: 12)
-  let b = UIButton(configuration: cfg)
-  #if targetEnvironment(macCatalyst)
-  b.preferredBehavioralStyle = .pad   // our capsule, never the native Mac push-button
-  #endif
-  return b
-}
+/// One project under a host in Quick Connect: its branch of the tree (a vertical line from the host
+/// glyph, ├ for a middle row, a rounded └ for the last) and a full-width row button with a folder and
+/// the project's name, which lights up under the finger.
+final class MoshProjectTreeRow: UIView {
+  let button: UIButton
+  private let branchX: CGFloat
+  private let textLeading: CGFloat
+  private let isLast: Bool
+  private let line = CAShapeLayer()
+  private static let height: CGFloat = 40
 
-/// Lays its subviews out left to right and wraps them onto new lines, its height following the
-/// width it is given (chips under a host card fit a phone without scrolling sideways).
-final class MoshChipFlowView: UIView {
-  var spacing: CGFloat = 6
-  var lineSpacing: CGFloat = 6
-  private lazy var heightConstraint: NSLayoutConstraint = {
-    let c = heightAnchor.constraint(equalToConstant: 30)
-    c.priority = .init(999)
-    c.isActive = true
-    return c
-  }()
-
-  init() {
+  init(title: String, branchX: CGFloat, textLeading: CGFloat, isLast: Bool) {
+    self.branchX = branchX
+    self.textLeading = textLeading
+    self.isLast = isLast
+    var cfg = UIButton.Configuration.plain()
+    cfg.image = UIImage(systemName: "folder.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: 13, weight: .semibold))?
+      .withTintColor(.moshroomTint, renderingMode: .alwaysOriginal)
+    cfg.imagePadding = 8
+    var attr = AttributeContainer()
+    attr.font = UIFont.systemFont(ofSize: 15, weight: .medium)
+    cfg.attributedTitle = AttributedString(title, attributes: attr)
+    cfg.titleLineBreakMode = .byTruncatingTail
+    cfg.baseForegroundColor = .label
+    cfg.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 8)
+    cfg.background.cornerRadius = Moshstyle.rowRadius - 2
+    button = UIButton(configuration: cfg)
+    button.configurationUpdateHandler = { b in
+      b.configuration?.background.backgroundColor = b.isHighlighted ? .tertiarySystemFill : .clear
+    }
+    #if targetEnvironment(macCatalyst)
+    button.preferredBehavioralStyle = .pad   // our row, never the native Mac push-button
+    #endif
+    button.contentHorizontalAlignment = .leading
+    button.translatesAutoresizingMaskIntoConstraints = false
     super.init(frame: .zero)
     translatesAutoresizingMaskIntoConstraints = false
-    _ = heightConstraint
+    // Opaque with square ends: where two rows meet, the trunk must not double up into a darker dot.
+    line.strokeColor = UIColor.systemGray3.resolvedColor(with: traitCollection).cgColor
+    line.fillColor = nil
+    line.lineWidth = 1.5
+    line.lineCap = .butt
+    layer.addSublayer(line)
+    addSubview(button)
+    NSLayoutConstraint.activate([
+      heightAnchor.constraint(equalToConstant: Self.height),
+      // The folder lines up with the host's alias above it (the button's own leading inset is 8).
+      button.leadingAnchor.constraint(equalTo: leadingAnchor, constant: textLeading - 8),
+      button.trailingAnchor.constraint(equalTo: trailingAnchor),
+      button.topAnchor.constraint(equalTo: topAnchor, constant: 2),
+      button.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -2),
+    ])
   }
 
   required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-  private func _layout(width: CGFloat, apply: Bool) -> CGFloat {
-    var x: CGFloat = 0
-    var y: CGFloat = 0
-    var lineHeight: CGFloat = 0
-    for view in subviews where !view.isHidden {
-      var size = view.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
-      size.width = min(ceil(size.width), width)
-      size.height = ceil(size.height)
-      if x > 0, x + size.width > width {
-        x = 0
-        y += lineHeight + lineSpacing
-        lineHeight = 0
-      }
-      if apply {
-        view.frame = CGRect(x: x, y: y, width: size.width, height: size.height)
-      }
-      x += size.width + spacing
-      lineHeight = max(lineHeight, size.height)
-    }
-    return subviews.isEmpty ? 0 : y + lineHeight
-  }
-
   override func layoutSubviews() {
     super.layoutSubviews()
-    guard bounds.width > 0 else { return }
-    let height = _layout(width: bounds.width, apply: true)
-    if abs(heightConstraint.constant - height) > 0.5 {
-      heightConstraint.constant = height
+    let mid = bounds.midY
+    let end = textLeading - 12
+    let radius: CGFloat = 6
+    let path = UIBezierPath()
+    path.move(to: CGPoint(x: branchX, y: 0))
+    if isLast {
+      // └ with a soft corner.
+      path.addLine(to: CGPoint(x: branchX, y: mid - radius))
+      path.addQuadCurve(to: CGPoint(x: branchX + radius, y: mid), controlPoint: CGPoint(x: branchX, y: mid))
+    } else {
+      // ├: the trunk runs on to the next row, the branch leaves from the middle.
+      path.addLine(to: CGPoint(x: branchX, y: bounds.height))
+      path.move(to: CGPoint(x: branchX, y: mid))
     }
+    path.addLine(to: CGPoint(x: end, y: mid))
+    line.frame = bounds
+    line.path = path.cgPath
   }
 }
 
