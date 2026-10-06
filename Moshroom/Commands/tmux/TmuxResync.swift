@@ -76,8 +76,8 @@ struct TmuxVersion: Comparable {
   var hasFlowControl: Bool { self >= TmuxVersion(3, 2) }
 }
 
-/// Modes tmux has no format for (bracketed paste; any-motion mouse on 3.2), followed in the pane's own
-/// output as it streams by.
+/// Modes followed in the pane's own output as it streams by: bracketed paste (tmux has no format for
+/// it at all) and any-motion mouse (a fallback for a tmux whose `mouse_any_flag` comes back empty).
 struct TmuxTrackedModes: Equatable {
   var bracketedPaste = false
   var mouseAnyMotion = false
@@ -105,6 +105,7 @@ struct TmuxPaneState {
   var mouseButton = false
   var mouseUTF8 = false
   var mouseSGR = false
+  var mouseAny = false
   var inMode = false
   var sessionCreated = ""
   var windowId = ""
@@ -116,7 +117,7 @@ struct TmuxPaneState {
     "#{insert_flag}", "#{keypad_cursor_flag}", "#{keypad_flag}", "#{wrap_flag}",
     "#{scroll_region_upper}", "#{scroll_region_lower}", "#{mouse_standard_flag}",
     "#{mouse_button_flag}", "#{mouse_utf8_flag}", "#{mouse_sgr_flag}", "#{pane_in_mode}",
-    "#{session_created}", "#{window_id}", "#{window_panes}",
+    "#{session_created}", "#{window_id}", "#{window_panes}", "#{mouse_any_flag}",
   ].joined(separator: "|")
 
   init() {}
@@ -146,6 +147,11 @@ struct TmuxPaneState {
     mouseButton = b(17)
     mouseUTF8 = b(18)
     mouseSGR = b(19)
+    // Any-motion tracking (DECSET 1003): what a full-screen agent asks for (Claude Code's fullscreen
+    // mode does, with SGR). Missing it on attach left the pane with NO mouse reporting, so the wheel had
+    // nothing to talk to and the conversation could not be scrolled at all. Appended last so a tmux
+    // that does not know the format (it expands to nothing) still parses.
+    mouseAny = f.count > 24 && b(24)
     inMode = b(20)
     sessionCreated = f[21]
     windowId = f[22]
@@ -329,7 +335,7 @@ enum TmuxResync {
     if s.insertMode { out += bytes("\u{1b}[4h") }
     if s.mouseStandard { out += bytes("\u{1b}[?1000h") }
     if s.mouseButton { out += bytes("\u{1b}[?1002h") }
-    if modes.mouseAnyMotion { out += bytes("\u{1b}[?1003h") }
+    if s.mouseAny || modes.mouseAnyMotion { out += bytes("\u{1b}[?1003h") }
     if s.mouseUTF8 { out += bytes("\u{1b}[?1005h") }
     if s.mouseSGR { out += bytes("\u{1b}[?1006h") }
     if modes.bracketedPaste { out += bytes("\u{1b}[?2004h") }
