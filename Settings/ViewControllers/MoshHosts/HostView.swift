@@ -668,8 +668,8 @@ struct HostView: View {
       moshPredictOverwrite: _moshPredictOverwrite ? "yes" : nil,
       moshExperimentalIP: _moshExperimentalIP,
       moshPortRange: _moshPort,
-      startUpCmd: _moshCommand,
-      commandOnConnect: _commandOnConnect,
+      startUpCmd: MoshProject.plainShellText(_moshCommand),
+      commandOnConnect: MoshProject.plainShellText(_commandOnConnect),
       hostDescription: _hostDescription.trimmingCharacters(in: .whitespacesAndNewlines),
       // ON is the default and is stored as nil, so a host follows the default unless turned off.
       useTmux: _useTmux ? nil : NSNumber(value: false),

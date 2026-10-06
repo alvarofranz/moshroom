@@ -72,7 +72,20 @@ struct MoshProject: Codable, Identifiable, Hashable {
     session = (try? c.decode(String.self, forKey: .session)) ?? ""
   }
 
-  var trimmedCommand: String { command.trimmingCharacters(in: .whitespacesAndNewlines) }
+  var trimmedCommand: String { MoshProject.plainShellText(command).trimmingCharacters(in: .whitespacesAndNewlines) }
+
+  /// A command is shell text, never prose: the text system's smart punctuation turns a typed `--` into
+  /// an em dash and straight quotes into curly ones, and the shell then sees an option it does not
+  /// know (`opencode —-flag`). Undo exactly those substitutions; nothing a shell would want is touched.
+  static func plainShellText(_ text: String) -> String {
+    // `—-` first: an em dash typed over the first of two hyphens leaves exactly that behind.
+    var out = text.replacingOccurrences(of: "\u{2014}-", with: "--")
+    for (smart, plain) in [("\u{2014}", "--"), ("\u{2013}", "--"), ("\u{2018}", "'"), ("\u{2019}", "'"),
+                           ("\u{201C}", "\""), ("\u{201D}", "\""), ("\u{2026}", "...")] {
+      out = out.replacingOccurrences(of: smart, with: plain)
+    }
+    return out
+  }
 
   /// The folder's last component, the name a new project starts with.
   static func folderName(_ path: String) -> String {

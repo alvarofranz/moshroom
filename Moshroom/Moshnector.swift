@@ -194,8 +194,15 @@ final class MoshnectorView: UIView {
     let projects = MoshHosts.withHost(alias)?.moshroomProjects ?? []
     guard !projects.isEmpty else { return b }
 
-    // Its projects as compact chips right under it, wrapping on a phone: one tap opens that project
-    // in the selected mode, in its own session.
+    // With projects the card grows: the host stays its header (same glyph, alias and description, tap
+    // = the host's own session) and its projects live INSIDE the same card as chips, lined up under the
+    // alias like sub-entries. One card per server, not a card with loose pills hanging off it.
+    var header = b.configuration ?? .filled()
+    header.background.backgroundColor = .clear
+    header.background.strokeWidth = 0
+    header.contentInsets.bottom = 8
+    b.configuration = header
+
     let chips = MoshChipFlowView()
     for project in projects {
       let chip = moshProjectChip(project.name.isEmpty ? project.session : project.name)
@@ -206,23 +213,30 @@ final class MoshnectorView: UIView {
       chip.accessibilityIdentifier = "project:" + alias + ":" + project.id
       chips.addSubview(chip)
     }
-    // The chips hang off the card, a little in from its edge.
-    let chipsRow = UIView()
-    chipsRow.translatesAutoresizingMaskIntoConstraints = false
-    chipsRow.addSubview(chips)
+
+    let card = UIView()
+    card.translatesAutoresizingMaskIntoConstraints = false
+    card.backgroundColor = .secondarySystemGroupedBackground
+    card.layer.cornerRadius = Moshstyle.cardRadius
+    card.layer.cornerCurve = .continuous
+    card.layer.borderWidth = 0.5
+    card.layer.borderColor = UIColor.separator.resolvedColor(with: traitCollection).cgColor
+    card.addSubview(b)
+    card.addSubview(chips)
+    // The chips start where the alias text starts: the header's leading inset + its glyph + padding.
+    let glyphWidth = b.configuration?.image?.size.width ?? 20
+    let textLeading = (b.configuration?.contentInsets.leading ?? 16) + glyphWidth + (b.configuration?.imagePadding ?? 12)
     NSLayoutConstraint.activate([
-      chips.topAnchor.constraint(equalTo: chipsRow.topAnchor),
-      chips.bottomAnchor.constraint(equalTo: chipsRow.bottomAnchor),
-      chips.leadingAnchor.constraint(equalTo: chipsRow.leadingAnchor, constant: 12),
-      chips.trailingAnchor.constraint(equalTo: chipsRow.trailingAnchor),
+      b.topAnchor.constraint(equalTo: card.topAnchor),
+      b.leadingAnchor.constraint(equalTo: card.leadingAnchor),
+      b.trailingAnchor.constraint(equalTo: card.trailingAnchor),
+      chips.topAnchor.constraint(equalTo: b.bottomAnchor),
+      chips.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: textLeading),
+      chips.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -14),
+      chips.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -14),
     ])
-    let column = UIStackView(arrangedSubviews: [b, chipsRow])
-    column.axis = .vertical
-    column.spacing = 7
-    column.alignment = .fill
-    column.isLayoutMarginsRelativeArrangement = true
-    column.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 0, leading: 0, bottom: 5, trailing: 0)
-    return column
+    card.setContentCompressionResistancePriority(.required, for: .vertical)
+    return card
   }
 }
 
@@ -230,11 +244,10 @@ final class MoshnectorView: UIView {
 /// same dark family as the host card above it.
 func moshProjectChip(_ title: String) -> UIButton {
   var cfg = UIButton.Configuration.filled()
-  cfg.baseBackgroundColor = .secondarySystemGroupedBackground
+  // A step lighter than the card it sits in, no outline: part of the card, not a second card.
+  cfg.baseBackgroundColor = .tertiarySystemFill
   cfg.baseForegroundColor = .label
   cfg.cornerStyle = .capsule
-  cfg.background.strokeColor = .separator
-  cfg.background.strokeWidth = 0.5
   cfg.image = UIImage(systemName: "folder.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: 11, weight: .semibold))?
     .withTintColor(.moshroomTint, renderingMode: .alwaysOriginal)
   cfg.imagePadding = 6
@@ -242,7 +255,7 @@ func moshProjectChip(_ title: String) -> UIButton {
   attr.font = UIFont.systemFont(ofSize: 13, weight: .semibold)
   cfg.attributedTitle = AttributedString(title, attributes: attr)
   cfg.titleLineBreakMode = .byTruncatingTail
-  cfg.contentInsets = NSDirectionalEdgeInsets(top: 6, leading: 11, bottom: 6, trailing: 12)
+  cfg.contentInsets = NSDirectionalEdgeInsets(top: 6, leading: 10, bottom: 6, trailing: 12)
   let b = UIButton(configuration: cfg)
   #if targetEnvironment(macCatalyst)
   b.preferredBehavioralStyle = .pad   // our capsule, never the native Mac push-button
@@ -642,6 +655,7 @@ extension SpaceController {
       // Only reveal on a brand-new, untouched terminal. Once a command has run here, the shell is still
       // "fresh" (local prompt) but now has content on screen — don't pop the card back over it.
       if term?.moshroomUserHasInteracted == true {
+        if moshroomFreshOverlayIsVisible { MoshLog.log("quick", "hidden: this tab already has content") }
         dismissMoshnector()
       } else if moshroomHasNoHostsNorKeys {
         showMoshboard()          // fresh install: onboarding instead of an empty Quick Connect
@@ -649,6 +663,7 @@ extension SpaceController {
         showMoshnector()
       }
     } else {
+      if moshroomFreshOverlayIsVisible { MoshLog.log("quick", "hidden: \(term == nil ? "no terminal on screen" : "not a fresh shell")") }
       dismissMoshnector()
     }
   }

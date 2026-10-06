@@ -84,13 +84,10 @@ class SpaceController: UIViewController {
   private var _pageControllers = [UUID: UIViewController & MoshroomTabPage]()
 
   private var _overlay = UIView()
-  private var _spaceControllerAnimating: Bool = false
-  // The newest switch requested while a page transition was in flight — replayed (unanimated)
-  // when the live transition ends, so a racing tap can never corrupt the page VC. See _installPage.
-  private var _pendingMoveKey: UUID? = nil
-  // Zero tabs is a real state: an empty-state install requested mid-transition replays when the
-  // live transition ends, same discipline as _pendingMoveKey.
-  private var _pendingEmptyInstall = false
+  // What the page VC shows: one of the tabs, or the zero-tabs placeholder.
+  private enum PageTarget: Equatable { case tab(UUID), empty }
+  // A switch asked for while the user's finger is moving the pages, applied when that swipe lands.
+  private var _showAfterSwipe: PageTarget? = nil
   // True when this controller was rebuilt from a persisted UIState. Distinguishes "the user
   // closed every tab and that state was restored" (stay at zero tabs) from a launch with nothing
   // to restore (fresh install / discarded scene), which still starts the first shell.
@@ -456,9 +453,9 @@ class SpaceController: UIViewController {
       if _restoredState {
         // The user closed every tab and that is the state that was persisted: honor it.
         // No auto-resurrected "shell": the empty state offers New tab instead.
-        _installEmptyState()
+        _show(.empty)
       } else {
-        _newShellAction(animated: false)
+        _newShellAction()
       }
     } else if let key = _currentKey.flatMap({ _viewportsKeys.contains($0) ? $0 : nil }) ?? _viewportsKeys.first {
       // A restored current key that is missing or no longer a tab lands on the first tab instead of
@@ -477,7 +474,7 @@ class SpaceController: UIViewController {
           _currentKey = fallback
           _viewportsController.setViewControllers([page], direction: .forward, animated: false)
         } else {
-          _installEmptyState()
+          _show(.empty)
         }
       }
     }
@@ -723,12 +720,7 @@ class SpaceController: UIViewController {
     if Moshroom.scratchOnly { showMoshnectorIfIdle() }
   }
   
-  func _createTerminal(
-    userActivity: NSUserActivity?,
-    animated: Bool,
-    sessionPayload: TermSessionPayload,
-    completion: ((Bool) -> Void)? = nil)
-  {
+  func _createTerminal(userActivity: NSUserActivity?, sessionPayload: TermSessionPayload) {
     let term = TermController(sessionPayload: sessionPayload)
     term.delegate = self
     //term.layoutProvider = self
@@ -745,9 +737,7 @@ class SpaceController: UIViewController {
     SessionRegistry.shared.track(session: term)
     _tabKinds[term.meta.key] = .term
 
-    _currentKey = term.meta.key
-
-    _installPage(term, direction: .forward, animated: animated, completion: completion)
+    _show(.tab(term.meta.key))
   }
   
   func _closeCurrentSpace() {
@@ -769,8 +759,8 @@ class SpaceController: UIViewController {
     }
     _tabKinds[key] = nil
     _viewportsKeys.removeAll { $0 == key }
-    if _pendingMoveKey == key {
-      _pendingMoveKey = nil
+    if _showAfterSwipe == .tab(key) {
+      _showAfterSwipe = nil
     }
   }
 
@@ -782,32 +772,13 @@ class SpaceController: UIViewController {
       return
     }
     _forgetTab(currentKey, keepArchive: keepArchive)
+    // The neighbour that slides into its place: the next tab, else the previous one. No tab left is a
+    // real state, never an auto-resurrected shell: the empty page offers New tab.
     if _viewportsKeys.isEmpty {
-      // No tabs is a real state, never an auto-resurrected shell: the page VC gets the
-      // empty-state placeholder and New tab (there, or in Moshtabs) brings the next terminal.
-      _installEmptyState()
-      return
-    }
-
-    let direction: UIPageViewController.NavigationDirection
-    let nextKey: UUID
-
-    if idx < _viewportsKeys.endIndex {
-      direction = .forward
-      nextKey = _viewportsKeys[idx]
+      _show(.empty)
     } else {
-      direction = .reverse
-      nextKey = _viewportsKeys[idx - 1]
+      _show(.tab(_viewportsKeys[min(idx, _viewportsKeys.count - 1)]), attachInput: attachInput)
     }
-    guard let page = _pageController(for: nextKey) else {
-      MoshLog.log("tabs", "close: no page for next key, falling back to empty state")
-      _installEmptyState()
-      return
-    }
-
-    self._currentKey = nextKey
-
-    _installPage(page, direction: direction, animated: true, attachInput: attachInput)
   }
   
   @objc func _focusOnShell() {
@@ -964,54 +935,29 @@ extension SpaceController: UIStateRestorable {
 
 // MARK: UIPageViewControllerDelegate
 extension SpaceController: UIPageViewControllerDelegate {
-  // A user swipe is a live transition too — flag it so a programmatic switch that races it gets
-  // queued (see _installPage) instead of corrupting the .scroll page VC mid-flight.
-  public func pageViewController(
-    _ pageViewController: UIPageViewController,
-    willTransitionTo pendingViewControllers: [UIViewController]) {
-    _spaceControllerAnimating = true
-  }
-
   public func pageViewController(
     _ pageViewController: UIPageViewController,
     didFinishAnimating finished: Bool,
     previousViewControllers: [UIViewController],
     transitionCompleted completed: Bool) {
-    // The swipe ended (completed or cancelled) — always release the flag and replay any switch
-    // that was requested while it was in flight.
-    _spaceControllerAnimating = false
-    if _pendingEmptyInstall || _pendingMoveKey != nil {
-      _replayPendingInstall(landedKey: nil, orFallBack: false)
+    // A switch asked for during the swipe wins over wherever the swipe landed.
+    if let target = _showAfterSwipe {
+      _showAfterSwipe = nil
+      _show(target)
       return
     }
-
-    guard completed else {
-      return
-    }
-
-    guard let page = pageViewController.viewControllers?.first as? (UIViewController & MoshroomTabPage)
+    guard completed,
+          let page = pageViewController.viewControllers?.first as? (UIViewController & MoshroomTabPage)
     else {
       return
     }
-    // Swiped onto a tab that closed meanwhile: never adopt its key, land on the current tab instead.
+    // Swiped onto a tab that closed meanwhile: never adopt its key.
     guard _viewportsKeys.contains(page.moshroomTabKey) else {
-      _replayPendingInstall(landedKey: nil, orFallBack: true)
+      _showCurrentOrFirstTab()
       return
     }
-    // Landing on a non-terminal page: release the outgoing terminal's focus BEFORE _currentKey
-    // moves (the focused terminal refuses to hide, and currentTerm() still names the old tab here).
-    if page.moshroomTabKind != .term {
-      currentTerm()?.resignInput()
-    }
-    (page as? TermController)?.resumeIfNeeded()
-    _currentKey = page.moshroomTabKey
-    _syncTerminalBackground()
-    if page.moshroomTabKind == .term {
-      _attachInputToCurrentTerm()
-    }
-    // A swipe just landed here: run the same "this tab is the visible one" pass an install does, so
-    // the hidden/front bookkeeping, the tab label and the back-to-live chip all follow one path.
-    _showOnlyCurrentTerminal()
+    _adopt(page)
+    _didShowCurrentPage(attachInput: true)
   }
 }
 
@@ -1149,7 +1095,7 @@ extension SpaceController {
     case .tabPrev: _advanceShell(by: -1)
     case .tabNextCycling: _advanceShellCycling(by: 1)
     case .tabPrevCycling: _advanceShellCycling(by: -1)
-    case .tabLast: _moveToLastShell()
+    case .tabLast: _moveToShell(idx: _viewportsKeys.count - 1)
     case .windowClose: _closeWindowAction()
     case .windowFocusOther: _focusOtherWindowAction()
     case .windowNew: _newWindowAction()
@@ -1210,13 +1156,13 @@ extension SpaceController {
   }
   
   
-  private func _newShellAction(command: String = "", animated: Bool = true) {
+  private func _newShellAction(command: String = "") {
     let params = MCPParams()
     if !command.isEmpty {
       params.initialCommand = command
     }
     let payload = MCPSessionPayload(params: params)
-    _createTerminal(userActivity: nil, animated: animated, sessionPayload: payload)
+    _createTerminal(userActivity: nil, sessionPayload: payload)
     // A plain new shell lands at the moshroom> prompt — offer quick-connect. A shell opened
     // to run a command (non-empty `command`) is about to be busy, so skip it.
     if command.isEmpty { showMoshnector() }
@@ -1270,7 +1216,7 @@ extension SpaceController {
       let session = view.window?.windowScene?.session,
       let idx = sessions.firstIndex(of: session)?.advanced(by: 1),
       let term = currentTerm(),
-      _spaceControllerAnimating == false
+      !_isUserSwiping
     else  {
         return
     }
@@ -1287,7 +1233,7 @@ extension SpaceController {
       let delegate = nextScene.delegate as? SceneDelegate,
       let nextWindow = delegate.window,
       let nextSpaceCtrl = nextWindow.rootViewController as? SpaceController,
-      nextSpaceCtrl._spaceControllerAnimating == false
+      !nextSpaceCtrl._isUserSwiping
     else {
       return
     }
@@ -1381,180 +1327,104 @@ extension SpaceController {
   
   
   
-  private func _addTerm(term: TermController, animated: Bool = true) {
+  private func _addTerm(term: TermController) {
     SessionRegistry.shared.track(session: term)
     term.delegate = self
     _viewportsKeys.append(term.meta.key)
-    _moveToShell(key: term.meta.key, animated: animated)
+    _show(.tab(term.meta.key))
   }
   
-  private func _moveToShell(idx: Int, animated: Bool = true) {
+  private func _moveToShell(idx: Int) {
     guard _viewportsKeys.indices.contains(idx) else {
       return
     }
-
-    let key = _viewportsKeys[idx]
-    
-    _moveToShell(key: key, animated: animated)
-  }
-  
-  private func _moveToLastShell(animated: Bool = true) {
-    _moveToShell(idx: _viewportsKeys.count - 1)
+    _show(.tab(_viewportsKeys[idx]))
   }
   
   // Called from AppDelegate as `moveToShellWithKey:` — the ObjC-bridged name, which is why a plain
   // grep for "moveToShell" does not find its caller.
   @objc func moveToShell(key: String?) {
-    guard
-      let key = key,
-      let uuidKey = UUID(uuidString: key)
-    else {
+    guard let key, let uuidKey = UUID(uuidString: key), _viewportsKeys.contains(uuidKey) else {
       return
     }
-    _moveToShell(key: uuidKey, animated: true)
-  }
-  
-  private func _moveToShell(key: UUID, animated: Bool = true) {
-    guard
-      let currentKey = _currentKey,
-      let currentIdx = _viewportsKeys.firstIndex(of: currentKey),
-      let idx = _viewportsKeys.firstIndex(of: key),
-      let page = _pageController(for: key)
-    else {
-      return
-    }
-
-    let direction: UIPageViewController.NavigationDirection = currentIdx < idx ? .forward : .reverse
-
-    _installPage(page, direction: direction, animated: animated)
+    _show(.tab(uuidKey))
   }
 
-  // The ONE serialized installer for every page-VC transition. A .scroll UIPageViewController
-  // aborts a programmatic animated transition that races another animation (a modal dismiss, a
-  // user swipe, a second switch) — the completion then reports didComplete == false while the OLD
-  // page stays on screen, and `viewControllers` LIES (it reports the target). Trusting the intent
-  // there is how a tab got "lost": _currentKey said B, the screen showed A, and the layout sweep
-  // hid B for good. So: one transition at a time (later requests remember only the newest target
-  // and replay when the live one ends), and a didComplete == false transition is unconditionally
-  // re-issued without animation — which cannot be interrupted.
-  private func _installPage(
-    _ page: UIViewController & MoshroomTabPage,
-    direction: UIPageViewController.NavigationDirection,
-    animated: Bool,
-    attachInput: Bool = true,
-    completion: ((Bool) -> Void)? = nil
-  ) {
-    if _spaceControllerAnimating {
-      _pendingMoveKey = page.moshroomTabKey
+  // THE way the page on screen changes (new tab, close, switch, the empty page): one path, always
+  // instant. A .scroll UIPageViewController cannot be trusted with a programmatic ANIMATED transition:
+  // one that races another animation is aborted while `viewControllers` already reports the target
+  // (the "lost tab"), and its completion is not reliably called at all, so a flag waiting for it stuck
+  // and every later tab only got queued (a new tab with its pill and its session over the page before
+  // it). An instant install is done when the call returns, so there is nothing in flight to track. The
+  // only real motion is the user's own swipe: a switch asked for during one waits for it to land.
+  private func _show(_ target: PageTarget, attachInput: Bool = true) {
+    if _isUserSwiping {
+      _showAfterSwipe = target
       return
     }
+    switch target {
+    case .empty:
+      _currentKey = nil
+      dismissMoshnector()
+      let empty = MoshroomNoTabsController()
+      empty.onNewTab = { [weak self] in self?._newShellAction() }
+      _viewportsController.setViewControllers([empty], direction: .forward, animated: false)
+    case .tab(let key):
+      guard _viewportsKeys.contains(key), let page = _pageController(for: key) else {
+        // A key with no page (a kind this build cannot rebuild): never fabricate one.
+        MoshLog.log("tabs", "no page for a tab, landing elsewhere")
+        _viewportsKeys.removeAll { $0 == key }
+        _tabKinds[key] = nil
+        _showCurrentOrFirstTab()
+        return
+      }
+      _viewportsController.setViewControllers([page], direction: .forward, animated: false)
+      _adopt(page)
+    }
+    _didShowCurrentPage(attachInput: attachInput)
+  }
 
-    // A non-terminal page cannot go up while a terminal web view holds the input focus: the
-    // focused terminal REFUSES to hide (removeFromContainer bails while KBTracker points at its
-    // web view), so the page would render over a live terminal. Release the focus first —
-    // _currentKey still names the outgoing tab here.
-    if page.moshroomTabKind != .term {
+  // The page on screen becomes the current tab. A terminal that holds the keyboard refuses to hide,
+  // so it lets go BEFORE a non-terminal page takes over (`_currentKey` still names it here).
+  private func _adopt(_ page: UIViewController & MoshroomTabPage) {
+    if page.moshroomTabKind != .term, page.moshroomTabKey != _currentKey {
       currentTerm()?.resignInput()
     }
-
-    _spaceControllerAnimating = true
-    _viewportsController.setViewControllers([page], direction: direction, animated: animated) { (didComplete) in
-      if !didComplete {
-        self._viewportsController.setViewControllers([page], direction: direction, animated: false)
-      }
-      // The tab this transition was taking us to was closed while it was in flight (two quick
-      // closes): never adopt a key that is no longer a tab (that fabricated a phantom terminal and
-      // stranded the screen on a dead page). Land on what is current now instead.
-      guard self._viewportsKeys.contains(page.moshroomTabKey) else {
-        self._spaceControllerAnimating = false
-        completion?(didComplete)
-        self._replayPendingInstall(landedKey: nil, orFallBack: true)
-        return
-      }
-      (page as? TermController)?.resumeIfNeeded()
-      self._currentKey = page.moshroomTabKey
-      // Keep the on-disk tab layout current (Catalyst relaunch path, see moshroomPersistUIState).
-      self.moshroomPersistUIState()
-      // Assert the visible web view on every install. The page VC being right is not enough: the
-      // terminals' web views are siblings in a shared container and a stale one left unhidden by any
-      // other path would keep covering the tab just switched to.
-      self._showOnlyCurrentTerminal()
-      self._syncTerminalBackground()
-      if attachInput, page.moshroomTabKind == .term {
-        self._attachInputToCurrentTerm()
-      }
-      self._spaceControllerAnimating = false
-      completion?(didComplete)
-      self._replayPendingInstall(landedKey: page.moshroomTabKey, orFallBack: false)
-    }
+    (page as? TermController)?.resumeIfNeeded()
+    _currentKey = page.moshroomTabKey
   }
 
-  // What a finished transition owes: an empty-state install, or the newest switch requested while it
-  // was in flight, replayed unanimated. Installed directly rather than through _moveToShell, which
-  // needs the current key to still be a tab and silently dropped the switch when it was not.
-  // `orFallBack`: nothing pending and the page on screen is no longer a tab, so land on the current
-  // tab (or the first one, or the empty state).
-  private func _replayPendingInstall(landedKey: UUID?, orFallBack fallBack: Bool) {
-    if _pendingEmptyInstall {
-      _pendingEmptyInstall = false
-      if _viewportsKeys.isEmpty {
-        _installEmptyState()
-        return
-      }
-    }
-    var target = _pendingMoveKey
-    _pendingMoveKey = nil
-    if target == landedKey {
-      target = nil
-    }
-    if target == nil, fallBack {
-      target = _currentKey.flatMap { _viewportsKeys.contains($0) ? $0 : nil } ?? _viewportsKeys.first
-      if target == nil {
-        _installEmptyState()
-        return
-      }
-    }
-    guard let key = target, _viewportsKeys.contains(key), let page = _pageController(for: key) else {
-      return
-    }
-    _installPage(page, direction: .forward, animated: false)
-  }
-
-  // Zero tabs: install the empty-state placeholder page. Same serialized discipline as
-  // _installPage (an unanimated setViewControllers racing a live transition is exactly the
-  // page-VC corruption _installPage exists to prevent), so a request made mid-flight replays
-  // when the live transition ends.
-  private func _installEmptyState() {
-    _currentKey = nil
-    dismissMoshnector()
-    // The top bar named the tab that just closed (its pill, the live chip, the quick keys): with no
-    // tab there is nothing to name, and leaving it read as "a tab is open" over the empty page.
+  // Everything that follows "this page is the one on screen", for an install and a swipe alike: the
+  // persisted layout (the Catalyst relaunch path), which terminal web view is visible and in front (the
+  // page VC being right is not enough: they are siblings in one container), the top bar and quick keys
+  // (both inside _showOnlyCurrentTerminal), the ground colour and the keyboard.
+  private func _didShowCurrentPage(attachInput: Bool) {
+    moshroomPersistUIState()
     _showOnlyCurrentTerminal()
-    if _spaceControllerAnimating {
-      _pendingEmptyInstall = true
-      return
+    _syncTerminalBackground()
+    if attachInput, let key = _currentKey, moshroomTabKind(for: key) == .term {
+      _attachInputToCurrentTerm()
     }
-    _spaceControllerAnimating = true
-    let empty = MoshroomNoTabsController()
-    empty.onNewTab = { [weak self] in self?._newShellAction() }
-    _viewportsController.setViewControllers([empty], direction: .forward, animated: false) { _ in
-      self._spaceControllerAnimating = false
-      // Zero tabs is a real state the user chose — persist it too, so it survives a relaunch.
-      self.moshroomPersistUIState()
-      // Keep the page the same shade as the strips around it (last terminal theme or the
-      // house ground) — currentTerm() is nil here, so the layout-driven sync alone would
-      // land after a visible flash of the default.
-      self._syncTerminalBackground()
-      self._showOnlyCurrentTerminal()
-      // Same replay discipline as the other two completion sites: an empty-install requested
-      // while this one was in flight re-runs (only meaningful if keys are still empty), and a
-      // tab born while the placeholder was installing (New tab racing the close) replays
-      // directly: _moveToShell would bail on the nil _currentKey of the empty state.
-      self._replayPendingInstall(landedKey: nil, orFallBack: false)
+  }
+
+  private func _showCurrentOrFirstTab() {
+    if let key = _currentKey.flatMap({ _viewportsKeys.contains($0) ? $0 : nil }) ?? _viewportsKeys.first {
+      _show(.tab(key))
+    } else {
+      _show(.empty)
     }
+  }
+
+  // The user's finger (or a trackpad) is moving the pages right now: the page VC's own scroll view says
+  // so, no bookkeeping that could fall out of step with it.
+  private var _isUserSwiping: Bool {
+    guard let scroll = _viewportsController.view.subviews.lazy.compactMap({ $0 as? UIScrollView }).first else {
+      return false
+    }
+    return scroll.isTracking || scroll.isDragging || scroll.isDecelerating
   }
   
-  private func _advanceShell(by: Int, animated: Bool = true) {
+  private func _advanceShell(by: Int) {
     guard
       let currentKey = _currentKey,
       let idx = _viewportsKeys.firstIndex(of: currentKey)?.advanced(by: by)
@@ -1562,10 +1432,10 @@ extension SpaceController {
       return
     }
         
-    _moveToShell(idx: idx, animated: animated)
+    _moveToShell(idx: idx)
   }
   
-  private func _advanceShellCycling(by: Int, animated: Bool = true) {
+  private func _advanceShellCycling(by: Int) {
     guard
       let currentKey = _currentKey,
       _viewportsKeys.count > 1
@@ -1575,11 +1445,11 @@ extension SpaceController {
     
     if let idx = _viewportsKeys.firstIndex(of: currentKey)?.advanced(by: by),
       idx >= 0 && idx < _viewportsKeys.count {
-      _moveToShell(idx: idx, animated: animated)
+      _moveToShell(idx: idx)
       return
     }
     
-    _moveToShell(idx: by > 0 ? 0 : _viewportsKeys.count - 1, animated: animated)
+    _moveToShell(idx: by > 0 ? 0 : _viewportsKeys.count - 1)
   }
   
 }
@@ -1653,7 +1523,7 @@ extension SpaceController {
     } else {
       _viewportsKeys.append(key)
     }
-    _installPage(page, direction: .forward, animated: false)
+    _show(.tab(key))
   }
 
 }
@@ -1835,17 +1705,11 @@ extension SpaceController {
 
   func moshroomSwitch(toTab key: UUID) {
     dismissMoshnector()
-    guard key != _currentKey, let idx = _viewportsKeys.firstIndex(of: key) else { return }
-    // The switch happens BEHIND the full-screen Moshtabs modal that is dismissing at this same
-    // moment — animating the page VC here is invisible AND races the dismiss (the interrupted
-    // transition was how a tab got "lost": state on B, screen stuck on A). Install directly.
-    _moveToShell(idx: idx, animated: false)
+    guard key != _currentKey, _viewportsKeys.contains(key) else { return }
+    _show(.tab(key))
   }
 
-  // Unanimated on purpose: the new tab is born BEHIND the dismissing Moshtabs modal, and an
-  // animated page-VC transition racing that dismiss is the documented "lost tab" corruption
-  // (same reason moshroomSwitch installs with no animation).
-  func moshroomNewTab() { _newShellAction(animated: false) }
+  func moshroomNewTab() { _newShellAction() }
 
   // Rename a tab. On save, persist the forced name and call `onDone` so the caller can refresh
   // the Tabs pad. An empty name clears the override (back to the program's own title).
