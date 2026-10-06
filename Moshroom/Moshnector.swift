@@ -74,9 +74,10 @@ final class MoshnectorView: UIView {
 
   var onConnect: ((MoshnectorMode, String) -> Void)?
 
-  private var mode: MoshnectorMode = .mosh
+  // SSH first: it is the default way in (in tmux, unless the host turns that off).
+  private var mode: MoshnectorMode = .ssh
   private var hosts: [(alias: String, description: String)] = []
-  private let modeControl = UISegmentedControl(items: ["Mosh", "SSH"])
+  private let modeControl = UISegmentedControl(items: ["SSH", "Mosh"])
   private let rowsStack = UIStackView()
   private let emptyLabel = UILabel()
   private let scroll = UIScrollView()
@@ -91,13 +92,13 @@ final class MoshnectorView: UIView {
     Moshstyle.applyOverlayShadow(layer)
 
     // No card title on purpose: the switcher and the host rows say what this is, and a "Quick Connect"
-    // heading over them was a label explaining the obvious. The card starts at the Mosh/SSH switcher.
+    // heading over them was a label explaining the obvious. The card starts at the SSH/Mosh switcher.
     modeControl.selectedSegmentIndex = 0
     // Mushroom-red selection with white text — the house switcher, styled once for the whole
     // app in MoshstyleAppearance.install() (Moshvault's Passwords/2FA picker matches for free).
     modeControl.addAction(UIAction { [weak self] _ in
       guard let self else { return }
-      self.mode = self.modeControl.selectedSegmentIndex == 1 ? .ssh : .mosh
+      self.mode = self.modeControl.selectedSegmentIndex == 1 ? .mosh : .ssh
     }, for: .valueChanged)
 
     rowsStack.axis = .vertical
@@ -304,8 +305,32 @@ final class MoshonboardView: UIView {
   }
 }
 
+/// What Quick Connect stands on: an opaque page over the terminal area, the ground colour of the
+/// terminal. While the card is up there is no terminal to look at or to scroll: without it a swipe or a
+/// wheel next to the card scrolled the idle shell underneath (haptic ticks, its cursor sliding by).
+/// It takes every touch and wheel that is not the card's, and passes none through.
+final class MoshnectorBackdrop: UIView {
+  init() {
+    super.init(frame: .zero)
+    translatesAutoresizingMaskIntoConstraints = false
+    isOpaque = true
+  }
+
+  required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+}
+
 enum Moshnector {
   static func install(in sc: SpaceController) {
+    let backdrop = MoshnectorBackdrop()
+    backdrop.isHidden = true
+    sc.view.insertSubview(backdrop, aboveSubview: sc.moshroomTerminalArea)
+    NSLayoutConstraint.activate([
+      backdrop.topAnchor.constraint(equalTo: sc.moshroomTerminalArea.topAnchor),
+      backdrop.bottomAnchor.constraint(equalTo: sc.moshroomTerminalArea.bottomAnchor),
+      backdrop.leadingAnchor.constraint(equalTo: sc.moshroomTerminalArea.leadingAnchor),
+      backdrop.trailingAnchor.constraint(equalTo: sc.moshroomTerminalArea.trailingAnchor),
+    ])
+
     let card = MoshnectorView()
     card.isHidden = true
     card.onConnect = { [weak sc] mode, alias in
@@ -402,6 +427,25 @@ extension SpaceController {
     card.reload(hosts: moshroomSavedHostCards)
     card.isHidden = false
     view.bringSubviewToFront(card)
+    _moshroomSyncFreshOverlayPage()
+  }
+
+  /// Quick Connect or the onboarding is on screen (the fresh-terminal overlay).
+  var moshroomFreshOverlayIsVisible: Bool {
+    let cardVisible = !(view.subviews.compactMap { $0 as? MoshnectorView }.first?.isHidden ?? true)
+    let onboardVisible = !(view.subviews.compactMap { $0 as? MoshonboardView }.first?.isHidden ?? true)
+    return cardVisible || onboardVisible
+  }
+
+  // The overlay is a page of its own: the backdrop hides the idle terminal under it (and takes its
+  // gestures), and the quick keys step aside except compose. Re-read whenever the overlay changes.
+  private func _moshroomSyncFreshOverlayPage() {
+    let visible = moshroomFreshOverlayIsVisible
+    if let backdrop = view.subviews.compactMap({ $0 as? MoshnectorBackdrop }).first {
+      backdrop.backgroundColor = view.backgroundColor ?? .moshroomBackground
+      backdrop.isHidden = !visible
+    }
+    moshroomSyncQuickKeysVisibility()
   }
 
   // True when a brand-new install has nothing set up yet — no saved hosts AND no keys. On a fresh
@@ -416,14 +460,13 @@ extension SpaceController {
     view.subviews.compactMap({ $0 as? MoshnectorView }).first?.isHidden = true
     onboard.isHidden = false
     view.bringSubviewToFront(onboard)
+    _moshroomSyncFreshOverlayPage()
   }
 
   // A host/key change landed (local save or iCloud pull): if a fresh-terminal overlay is showing,
   // re-pick onboarding vs Quick Connect (adding the first host swaps the onboarding away).
   func refreshFreshOverlayIfVisible() {
-    let cardVisible = !(view.subviews.compactMap { $0 as? MoshnectorView }.first?.isHidden ?? true)
-    let onboardVisible = !(view.subviews.compactMap { $0 as? MoshonboardView }.first?.isHidden ?? true)
-    guard cardVisible || onboardVisible else { return }
+    guard moshroomFreshOverlayIsVisible else { return }
     if moshroomHasNoHostsNorKeys { showMoshboard() } else { showMoshnector() }
   }
 
@@ -432,6 +475,7 @@ extension SpaceController {
   func dismissMoshnector() {
     view.subviews.compactMap({ $0 as? MoshnectorView }).first?.isHidden = true
     view.subviews.compactMap({ $0 as? MoshonboardView }).first?.isHidden = true
+    _moshroomSyncFreshOverlayPage()
   }
 
   // Reveal the card only for a fresh, unconnected shell; keep it hidden for a restored or

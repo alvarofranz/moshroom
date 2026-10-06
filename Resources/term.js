@@ -535,6 +535,14 @@ function _mshJoinRows(rows, mode, raw) {
 // box-drawing gutter that every row carries at the same column (a TUI's border, a diff's bar) is
 // dropped on either side.
 function _mshOneLine(rows) {
+  // A row that is nothing but box drawing (a TUI's top or bottom border, a rule) carries no text.
+  // (Unless that is all there is: then the user asked for exactly that.)
+  var withText = rows.filter(function(r) {
+    return /[^\s\u2500-\u257F]/.test(r.txt);
+  });
+  if (withText.length) {
+    rows = withText;
+  }
   var txts = [];
   var i;
   for (i = 0; i < rows.length; i++) {
@@ -1043,59 +1051,6 @@ function term_selAutoScroll(rows, x, y, what) {
     return term_selMoveHandle(what, x, y);
   }
   return term_selExtendTo(x, y);
-}
-
-// scope 'screen': what is on screen; 'buffer': everything, scrollback included. Blank rows at both
-// ends are left out.
-function term_selAll(scope) {
-  if (!_mshReady()) {
-    return _mshGeometry();
-  }
-  var count = _mshRowCount();
-  var from = scope === 'screen' ? t.scrollbackRows_.length : 0;
-  var to = count - 1;
-  var blank = function(R) {
-    return !/\S/.test(_mshCellsText(_mshCells(_mshRowAt(R)), 0, Infinity));
-  };
-  while (from <= to && blank(from)) {
-    from++;
-  }
-  while (to >= from && blank(to)) {
-    to--;
-  }
-  if (from > to) {
-    _mshSel = null;
-    _mshPaint();
-    return _mshGeometry();
-  }
-  var endCells = _mshCells(_mshRowAt(to));
-  var endCol = endCells.length;
-  while (endCol > 0 && !/\S/.test(endCells[endCol - 1].s)) {
-    endCol--;
-  }
-  _mshNew({sR: from, sC: 0, eR: to, eC: endCol}, 'line', 'linear');
-  _mshPaint();
-  return _mshGeometry();
-}
-
-// Grows the selection to the whole logical lines it touches.
-function term_selExpandLines() {
-  if (!_mshReady() || !_mshSel || _mshSel.state !== 'active') {
-    return _mshGeometry();
-  }
-  var sel = _mshSel;
-  var a = _mshLineSpan(_mshIndexOf(sel.s));
-  var b = _mshLineSpan(_mshIndexOf(sel.e));
-  var first = _mshLogicalLine(_mshIndexOf(sel.s));
-  var unit = {
-    sR: a ? a.sR : first.first,
-    sC: a ? a.sC : 0,
-    eR: b ? b.eR : _mshIndexOf(sel.e),
-    eC: b ? b.eC : sel.e.col,
-  };
-  _mshNew(unit, 'line', 'linear');
-  _mshPaint();
-  return _mshGeometry();
 }
 
 function term_selClear(reason) {

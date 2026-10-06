@@ -101,6 +101,11 @@ class SpaceController: UIViewController {
   // current tab is not a terminal — those keys type into the current TermDevice and a music or
   // explorer tab has none.
   var moshroomBottomKeys: [UIView] = []
+  // The compose key (one of moshroomBottomKeys): the one key that stays over the Quick Connect page,
+  // so a host that is not saved can still be reached by typing `ssh user@host`.
+  weak var moshroomComposeKey: UIView?
+  // Where the terminals live (the page VC's view): the Quick Connect page covers exactly this.
+  var moshroomTerminalArea: UIView { _viewportsController.view }
   // The "back to live" chip (created in Moshkeys.install): shown only while the visible terminal's
   // viewport is parked up in its scrollback.
   var moshroomLiveButton: UIButton?
@@ -210,12 +215,17 @@ class SpaceController: UIViewController {
 
   // The bottom quick-keys cluster only makes sense over a terminal (its keys write into the
   // current TermDevice). Faded, not hidden: the arrow mode manages isHidden on its own members.
-  private func moshroomSyncQuickKeysVisibility() {
+  func moshroomSyncQuickKeysVisibility() {
     guard !moshroomBottomKeys.isEmpty else { return }
-    let terminalTab = _currentKey.map { moshroomTabKind(for: $0) == .term } ?? true
+    // No tab at all (the empty page) has nothing for the keys to type into either.
+    let terminalTab = _currentKey.map { moshroomTabKind(for: $0) == .term } ?? false
+    // Over the Quick Connect page there is no terminal on screen: only compose stays (it can still
+    // send a command to the local prompt, an ad-hoc `ssh user@host`).
+    let quickConnect = moshroomFreshOverlayIsVisible
     for v in moshroomBottomKeys {
-      v.alpha = terminalTab ? 1 : 0
-      v.isUserInteractionEnabled = terminalTab
+      let shown = terminalTab && (!quickConnect || v === moshroomComposeKey)
+      v.alpha = shown ? 1 : 0
+      v.isUserInteractionEnabled = shown
     }
   }
 
@@ -1517,6 +1527,9 @@ extension SpaceController {
   private func _installEmptyState() {
     _currentKey = nil
     dismissMoshnector()
+    // The top bar named the tab that just closed (its pill, the live chip, the quick keys): with no
+    // tab there is nothing to name, and leaving it read as "a tab is open" over the empty page.
+    _showOnlyCurrentTerminal()
     if _spaceControllerAnimating {
       _pendingEmptyInstall = true
       return
@@ -1532,6 +1545,7 @@ extension SpaceController {
       // house ground) — currentTerm() is nil here, so the layout-driven sync alone would
       // land after a visible flash of the default.
       self._syncTerminalBackground()
+      self._showOnlyCurrentTerminal()
       // Same replay discipline as the other two completion sites: an empty-install requested
       // while this one was in flight re-runs (only meaningful if keys are still empty), and a
       // tab born while the placeholder was installing (New tab racing the close) replays

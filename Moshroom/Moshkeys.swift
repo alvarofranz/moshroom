@@ -148,6 +148,7 @@ enum Moshkeys {
     // nothing to type into, so SpaceController fades the whole cluster out per tab kind
     // (alpha, not isHidden: the arrow mode manages isHidden on compose/arrowEnter itself).
     sc.moshroomBottomKeys = [bar, compose, arrowEnter]
+    sc.moshroomComposeKey = compose
 
     NSLayoutConstraint.activate([
       bar.leadingAnchor.constraint(equalTo: sc.view.safeAreaLayoutGuide.leadingAnchor, constant: 14),

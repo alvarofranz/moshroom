@@ -297,14 +297,6 @@ struct TerminalSelectionGeometry {
     _call("term_selLineAt(\(Self._pt(p)));") { [weak self] _ in self?._settle(showPill: true) }
   }
 
-  @objc func selectAll() {
-    _call("term_selAll('buffer');") { [weak self] _ in self?._settle(showPill: true) }
-  }
-
-  func expandToLines() {
-    _call("term_selExpandLines();") { [weak self] _ in self?._settle(showPill: true) }
-  }
-
   /// The selection's text, fetched on demand (it never travels with the geometry).
   @objc func fetchText(raw: Bool, oneLine: Bool, completion: @escaping (String?) -> Void) {
     guard hasSelection, let webView = _webView else {
@@ -317,18 +309,13 @@ struct TerminalSelectionGeometry {
     }
   }
 
-  /// Copy to the system clipboard: plain text, the way any app's Copy works. On iOS the selection
-  /// is done once copied; on the Mac it stays, like every desktop app.
+  /// Copy to the system clipboard. The one Copy there is gives ONE line: rows joined with a space,
+  /// runs of blanks collapsed, a TUI's box borders dropped, because what gets copied out of an agent
+  /// is a command, a path or a sentence that the terminal happened to wrap. `raw` (Cmd+Shift+C) is the
+  /// escape hatch: the rows exactly as they are. On iOS the selection is done once copied; on the Mac
+  /// it stays, like every desktop app.
   @objc func copy(raw: Bool) {
-    _copy(raw: raw, oneLine: false)
-  }
-
-  func copyOneLine() {
-    _copy(raw: false, oneLine: true)
-  }
-
-  private func _copy(raw: Bool, oneLine: Bool) {
-    fetchText(raw: raw, oneLine: oneLine) { [weak self] text in
+    fetchText(raw: raw, oneLine: !raw) { [weak self] text in
       guard let text = text else { return }
       UIPasteboard.general.string = text
       #if !targetEnvironment(macCatalyst)
@@ -650,9 +637,6 @@ struct TerminalSelectionGeometry {
   private func _pillAction(_ action: TerminalSelectionPill.Action) {
     switch action {
     case .copy: copy(raw: false)
-    case .oneLine: copyOneLine()
-    case .line: expandToLines()
-    case .all: selectAll()
     }
   }
 
@@ -687,8 +671,6 @@ struct TerminalSelectionGeometry {
       _pill.isHidden = true
       return
     }
-    let multiRow = geometry.rows > 1
-    _pill.configure(clip: geometry.state == .clip, multiRow: multiRow, isLine: geometry.gran == "line")
     let size = _pill.fittingSize()
     let hostBounds = host.bounds
     var anchor: CGRect
@@ -749,18 +731,9 @@ extension TerminalSelectionController: UIContextMenuInteractionDelegate {
                               configurationForMenuAtLocation location: CGPoint) -> UIContextMenuConfiguration? {
     let has = hasSelection
     return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
-      var items: [UIMenuElement] = []
       let copy = UIAction(title: "Copy", image: UIImage(systemName: "doc.on.doc"),
                           attributes: has ? [] : .disabled) { _ in self?.copy(raw: false) }
-      let oneLine = UIAction(title: "Copy as One Line", image: UIImage(systemName: "text.alignleft"),
-                             attributes: has ? [] : .disabled) { _ in self?.copyOneLine() }
-      let raw = UIAction(title: "Copy Raw", image: UIImage(systemName: "doc.on.doc.fill"),
-                         attributes: has ? [] : .disabled) { _ in self?.copy(raw: true) }
-      items.append(UIMenu(options: .displayInline, children: [copy, oneLine, raw]))
-      items.append(UIAction(title: "Select All", image: UIImage(systemName: "selection.pin.in.out")) { _ in
-        self?.selectAll()
-      })
-      return UIMenu(children: items)
+      return UIMenu(children: [copy])
     }
   }
 }
@@ -831,7 +804,7 @@ final class TerminalSelectionHandle: UIView {
 /// The copy pill: the house white chip with near-black ink, floating over the selection.
 final class TerminalSelectionPill: UIView {
   enum Action {
-    case copy, oneLine, line, all
+    case copy
   }
 
   var onAction: ((Action) -> Void)?
@@ -858,14 +831,14 @@ final class TerminalSelectionPill: UIView {
       _stack.topAnchor.constraint(equalTo: topAnchor),
       _stack.bottomAnchor.constraint(equalTo: bottomAnchor),
     ])
-    for (action, title) in [(Action.copy, "Copy"), (.oneLine, "One line"), (.line, "Line"), (.all, "All")] {
+    for (action, title) in [(Action.copy, "Copy")] {
       var config = UIButton.Configuration.plain()
       config.title = title
       config.baseForegroundColor = Moshstyle.ink
       config.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 10, bottom: 0, trailing: 10)
       config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attrs in
         var out = attrs
-        out.font = UIFont.systemFont(ofSize: 15, weight: action == .copy ? .semibold : .medium)
+        out.font = UIFont.systemFont(ofSize: 15, weight: .semibold)
         return out
       }
       let button = UIButton(configuration: config)
@@ -877,19 +850,6 @@ final class TerminalSelectionPill: UIView {
   }
 
   required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-
-  /// A clip (text rewritten under the selection) can only be copied; "One line" only means something
-  /// for more than one row.
-  func configure(clip: Bool, multiRow: Bool, isLine: Bool) {
-    for (action, button) in _buttons {
-      switch action {
-      case .copy: button.isHidden = false
-      case .oneLine: button.isHidden = !multiRow
-      case .line: button.isHidden = clip || isLine
-      case .all: button.isHidden = clip
-      }
-    }
-  }
 
   func fittingSize() -> CGSize {
     let width = _stack.systemLayoutSizeFitting(UIView.layoutFittingCompressedSize).width + 12
