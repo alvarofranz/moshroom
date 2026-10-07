@@ -39,12 +39,14 @@ line, and then go hunting for the typo hiding in paragraph two like it owes you 
 
 Here's the trick Moshroom pulls: **it rips the terminal in half.**
 
-- The terminal goes **read-only**. It's just the transcript, so scroll it, read it, breathe. No cursor
-  doing parkour, no `rm -rf` because your thumb sneezed.
-- Everything you **send** goes through UI that was actually designed for a slab of glass you hold in
-  one hand on a moving train, or a full keyboard and mouse at the desk.
+- **Composer** keeps the terminal as a transcript, with a roomy editor for everything you send.
+- **Direct** lets you type straight into the terminal, with native text input and familiar terminal
+  keys. The composer is still a click or **⌘E** away for long prompts and attachments.
+- **Automatic** uses Direct with a hardware keyboard and Composer with the on-screen keyboard.
+  Choose in **Settings › Terminal › Typing**. Composer remains the default.
 
-Two jobs, two tools. Revolutionary, we know. 🙄
+The welcome tour walks through hosts, projects, SSH and Mosh, and how tmux keeps a session running
+between connections. You can reopen it from Settings whenever you like.
 
 ---
 
@@ -106,7 +108,7 @@ Real screenshots, real sessions, one thumb.
   </tr>
   <tr>
     <td align="center"><img src="screenshots/opencode.png" width="200" alt="A coding agent starting up on iPhone"></td>
-    <td><b>🤖 Drive your agent</b><br><br>The terminal is a calm, read-only transcript. Kick off a coding agent, read what it does, and scroll back through the whole session without a stray thumb firing anything.</td>
+    <td><b>🤖 Drive your agent</b><br><br>Type directly into your agent’s terminal, or use Composer for a longer brief. Read its output and scroll through the session at your own pace.</td>
   </tr>
   <tr>
     <td align="center"><img src="screenshots/hub.png" width="200" alt="The Moshroom hub: files, vault, settings"></td>
@@ -141,11 +143,12 @@ down at the Mac, and your hosts are already there, one click away.
 ## Get it
 
 **On the App Store:** [Get Moshroom for iPhone, iPad and Mac](https://apps.apple.com/app/moshroom/id6785947810).
-One purchase covers all three (iOS 16.1+, macOS 13+ on Apple silicon). Your server needs nothing
-installed: Moshroom talks plain SSH and Mosh, with no daemon and no agent-side setup.
+One purchase covers all three (iOS/iPadOS 17.6+, macOS 14.6+ on Apple silicon). Moshroom needs no proprietary
+server agent. SSH uses your server's existing SSH service; Mosh also needs `mosh-server` and an
+allowed UDP port. `tmux` is optional and keeps sessions available between connections.
 
-**Or build it yourself.** You'll want an **iPhone or iPad on iOS/iPadOS 16.1+** (or a **Mac with
-Apple silicon on macOS 13+**) with Developer Mode on, the full **Xcode.app**, and an Apple signing
+**Or build it yourself.** You'll want an **iPhone or iPad on iOS/iPadOS 17.6+** (or a **Mac with
+Apple silicon on macOS 14.6+**) with Developer Mode on, the full **Xcode.app**, and an Apple signing
 team. Then:
 
 ```bash
@@ -158,6 +161,25 @@ First build is slow (grab a coffee ☕), the rest are incremental. Every binary 
 (mosh, the SSH stack, crypto, ios_system) is **self-hosted on this repo's own release** and slimmed
 down to just the device slices it needs. Zero third-party hosting, zero surprises. The full breakdown
 lives in [`FRAMEWORKS.md`](FRAMEWORKS.md).
+
+### Local checks
+
+Run the input-buffer and terminal-paste checks without a device:
+
+```bash
+sh Tests/run-direct-input-tests.sh
+node Tests/direct-paste-tests.js
+```
+
+The **Moshroom Devices** scheme runs UI tests on a trusted iPhone or iPad. Select the physical
+device in Xcode; for command-line builds, pass `SUPPORTS_MACCATALYST=NO` so Xcode builds iOS.
+The tests cover the tour in both orientations, its accessibility, and the software keyboard.
+Keyboard checks create and close their own local tab and restore the previous typing mode.
+
+`testStoreScreenshots` captures six scenes using the actual UI with sample data. Its development
+launch argument, `-moshroom-store-capture`, bypasses sessions, saved hosts and cloud startup.
+Set `MOSHROOM_STORE_SCENE` to `terminal`, `composer`, `connect`, `files`, `tools` or `typing` to
+capture one scene. This catalog is excluded from publishing builds.
 
 ---
 

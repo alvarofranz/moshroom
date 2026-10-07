@@ -58,6 +58,7 @@ enum Command: String, Codable, CaseIterable {
   case snippetsShow
   case scratchShow
   case hideKeyboard
+  case composeShow
 
   var title: String {
     switch self {
@@ -97,6 +98,7 @@ enum Command: String, Codable, CaseIterable {
     case .snippetsShow:           return "Show Snippets"
     case .scratchShow:            return "Show Scratch"
     case .hideKeyboard:           return "Hide Keyboard"
+    case .composeShow:            return "Compose…"
     }
   }
 }

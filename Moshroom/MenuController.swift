@@ -33,6 +33,7 @@ fileprivate var attachedShortcuts: [UIKeyCommand] = []
     case windowClose
     case tabNew
     case tabClose
+    case composeShow
   }
 
   enum EditMenu: String, CaseIterable {
@@ -72,6 +73,20 @@ fileprivate var attachedShortcuts: [UIKeyCommand] = []
     builder.remove(menu: .font)
 
     let kbConfig = KBTracker.shared.loadConfig()
+    // Cocoa reserves Cmd+E for Use Selection for Find. A collision makes UIKit reject the
+    // ENTIRE replacement File group, including New Tab. The configured Compose binding wins;
+    // preserve the other Find commands and leave Find alone if Compose was cleared/rebound.
+    if let compose = kbConfig.shortcuts.first(where: {
+      if case .command(.composeShow) = $0.action { return !$0.isCleared }
+      return false
+    }) {
+      builder.replaceChildren(ofMenu: .find) { children in
+        children.filter { element in
+          guard let key = element as? UIKeyCommand else { return true }
+          return key.input?.lowercased() != compose.input.lowercased() || key.modifierFlags != compose.modifiers
+        }
+      }
+    }
 
     attachedShortcuts = []
     let editMenuCommands:   [UICommand] = EditMenu.allCases.map   { _generate(Command(rawValue: $0.rawValue)!, with: kbConfig) }
@@ -89,7 +104,7 @@ fileprivate var attachedShortcuts: [UIKeyCommand] = []
     // (new-item, open, close, document, print) and replacing THOSE works — which also puts New Tab
     // and Close Tab exactly where a Mac user looks for them.
     builder.replaceChildren(ofMenu: UIMenu.Identifier("com.apple.menu.new-item")) { _ in
-      [_shellCommand(.windowNew, kbConfig), _shellCommand(.tabNew, kbConfig)]
+      [_shellCommand(.windowNew, kbConfig), _shellCommand(.tabNew, kbConfig), _shellCommand(.composeShow, kbConfig)]
     }
     builder.replaceChildren(ofMenu: UIMenu.Identifier("com.apple.menu.close")) { _ in
       [_shellCommand(.tabClose, kbConfig), _shellCommand(.windowClose, kbConfig)]
@@ -122,7 +137,7 @@ fileprivate var attachedShortcuts: [UIKeyCommand] = []
         return true
       }
       return false
-    })
+    }), !shortcut.isCleared
     {
       // The same shortcut, or the same action, will make this crash with a
       // 'NSInternalInconsistencyException', reason: 'replacement menu has duplicate submenu,
@@ -220,4 +235,3 @@ fileprivate var attachedShortcuts: [UIKeyCommand] = []
       }
   }
 }
-

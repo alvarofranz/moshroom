@@ -27,10 +27,12 @@ import UIKit
 
 class SettingsHostingController: UIHostingController<NavView<SettingsView>> {
   private let onClose: () -> Void
+  private let onWelcomeTour: () -> Void
   private let navController: UINavigationController
 
-  private init(navController: UINavigationController, onClose: @escaping () -> Void) {
+  private init(navController: UINavigationController, onClose: @escaping () -> Void, onWelcomeTour: @escaping () -> Void) {
     self.onClose = onClose
+    self.onWelcomeTour = onWelcomeTour
     self.navController = navController
 
     let rootView = NavView(navController: navController) {
@@ -51,11 +53,12 @@ class SettingsHostingController: UIHostingController<NavView<SettingsView>> {
     // lives there). Closing dismisses the whole modal stack (launcher + Settings) back to the terminal
     // in one shot, no flash — `onClose` is wired to SpaceController.dismiss in showConfigAction.
     rootView = NavView(navController: navController) {
-      SettingsView(onClose: { [weak self] in self?.onClose() })
+      SettingsView(onClose: { [weak self] in self?.onClose() }, onWelcomeTour: { [weak self] in self?.onWelcomeTour() })
     }
   }
 
-  static func createSettings(nav: UINavigationController, onClose: @escaping () -> Void) -> UIViewController {
-    return SettingsHostingController(navController: nav, onClose: onClose)
+  static func createSettings(nav: UINavigationController, onClose: @escaping () -> Void,
+                             onWelcomeTour: @escaping () -> Void = {}) -> UIViewController {
+    return SettingsHostingController(navController: nav, onClose: onClose, onWelcomeTour: onWelcomeTour)
   }
 }

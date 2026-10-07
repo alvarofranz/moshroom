@@ -414,7 +414,19 @@ enum Moshdrop {
       // couldn't (or shouldn't) read it: fall through to image/text
     }
 
-    // 2) Raw image data (screenshot, "Copy Image") — write a PNG we own.
+    // 2) A copied PDF can have data without a file URL or a text representation.
+    // Keep it as a document instead of silently ignoring the enabled Paste control.
+    if pb.contains(pasteboardTypes: [UTType.pdf.identifier]),
+       let pdf = pb.data(forPasteboardType: UTType.pdf.identifier),
+       !pdf.isEmpty, pdf.count <= pasteMaxBytes {
+      let temp = FileManager.default.temporaryDirectory
+        .appendingPathComponent("paste-\(UUID().uuidString).pdf")
+      if (try? pdf.write(to: temp)) != nil {
+        return (temp, "clipboard.pdf")
+      }
+    }
+
+    // 3) Raw image data (screenshot, "Copy Image") — write a PNG we own.
     if pb.hasImages, let image = pb.image, let png = image.pngData() {
       let temp = FileManager.default.temporaryDirectory
         .appendingPathComponent("paste-\(UUID().uuidString).png")

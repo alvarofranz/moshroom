@@ -71,6 +71,9 @@ func moshHostCardButton(alias: String, description: String, icon: String = "serv
 
 // The quick-connect card itself. Pure presentation — SpaceController owns the lifecycle.
 final class MoshnectorView: UIView {
+  #if MOSHROOM_PUBLISHING_OPTION_DEVELOPER
+  var storeProjects: [String: [MoshProject]]?
+  #endif
 
   /// A host (project nil: its own session) or one of its projects, in the mode to use.
   var onConnect: ((MoshnectorMode, String, MoshProject?) -> Void)?
@@ -191,7 +194,11 @@ final class MoshnectorView: UIView {
     b.accessibilityIdentifier = alias
     b.addInteraction(UIContextMenuInteraction(delegate: self))
     // A host without projects is exactly the card it always was.
+    #if MOSHROOM_PUBLISHING_OPTION_DEVELOPER
+    let projects = storeProjects.map { $0[alias] ?? [] } ?? MoshHosts.withHost(alias)?.moshroomProjects ?? []
+    #else
     let projects = MoshHosts.withHost(alias)?.moshroomProjects ?? []
+    #endif
     guard !projects.isEmpty else { return b }
 
     // With projects the card grows into a little tree: the host stays its header (same glyph, alias and
@@ -709,4 +716,3 @@ extension SpaceController {
     noteConnection(toHost: alias, project: project)
   }
 }
-

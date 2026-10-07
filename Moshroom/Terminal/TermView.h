@@ -75,6 +75,7 @@ extern NSString * TermViewTitleDidChangeNotificationKey;
 
 @property (nonatomic, strong) LayoutConstraintManager *constraintManager;
 @property (nonatomic, readonly) BOOL isReady;
+@property (nonatomic) BOOL directCursor;
 /// The viewport sits at the live end of the transcript (nothing to catch up to). NO while the user
 /// is reading back through the scrollback, which is what SpaceController's "back to live" chip
 /// reflects.

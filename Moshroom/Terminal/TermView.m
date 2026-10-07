@@ -174,6 +174,7 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
 
 - (void)_startDebugJSProbe
 {
+  if ([NSProcessInfo.processInfo.arguments containsObject:@"-moshroom-store-capture"]) { return; }
   if (_debugProbeTimer) {
     return;
   }
@@ -732,6 +733,7 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
   _recoveringFromJettison = NO;
 
   _isReady = YES;
+  [self setDirectCursor:_directCursor];
   [_device viewIsReady];
   [[NSNotificationCenter defaultCenter] postNotificationName:TermViewReadyNotificationKey object:self];
 
@@ -957,6 +959,7 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
   [commands addObject:term_setCursorBlink([MoshroomDefaults isCursorBlink])];
   // LAST, because it reads back what the theme above just set.
   [commands addObject:term_blendPaletteBlack()];
+  [commands addObject:[NSString stringWithFormat:@"term_setDirectCursor(%@);", _directCursor ? @"true" : @"false"]];
 
   return commands;
 }
@@ -976,6 +979,13 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
           [script componentsJoinedByString:@"\n"]
                                 injectionTime:WKUserScriptInjectionTimeAtDocumentEnd
                              forMainFrameOnly:YES];
+}
+
+- (void)setDirectCursor:(BOOL)directCursor {
+  _directCursor = directCursor;
+  if (_isReady) {
+    [_webView evaluateJavaScript:[NSString stringWithFormat:@"term_setDirectCursor(%@);", directCursor ? @"true" : @"false"] completionHandler:nil];
+  }
 }
 
 - (void)terminate

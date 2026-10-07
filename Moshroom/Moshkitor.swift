@@ -22,6 +22,7 @@
 ////////////////////////////////////////////////////////////////////////////////
 
 import UIKit
+import UniformTypeIdentifiers
 
 // Moshroom-wide feature flag. Set to false to fall back to stock terminal input
 // (on-terminal keyboard + SmartKeys bar).
@@ -122,9 +123,11 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
     super.viewDidLoad()
     view.backgroundColor = .systemBackground
     // Drop staging files orphaned by an abandoned/relaunched draft, never one a saved draft still uses.
-    Moshdrop.sweepStaging(keeping: Self._draftAttachmentURLs())
+    if !MoshroomStoreCaptureMode.enabled { Moshdrop.sweepStaging(keeping: Self._draftAttachmentURLs()) }
 
     textView.delegate = self
+    textView.accessibilityLabel = "Composer text"
+    textView.accessibilityIdentifier = "composer.input"
     textView.font = .monospacedSystemFont(ofSize: 17, weight: .regular)
     textView.textColor = .label
     textView.allowsEditingTextAttributes = false
@@ -264,7 +267,11 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
     _draft = didSend ? NSAttributedString() : (textView.attributedText ?? NSAttributedString())
     // Hand the first responder back to SpaceController so chain-dispatched commands
     // (config, etc.) keep working after the composer closes.
-    navigationController?.presentingViewController?.becomeFirstResponder()
+    if let space = navigationController?.presentingViewController as? SpaceController {
+      space.moshroomRestoreKeyboardOwner()
+    } else {
+      navigationController?.presentingViewController?.becomeFirstResponder()
+    }
   }
 
   override var keyCommands: [UIKeyCommand]? {
@@ -283,11 +290,11 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
 
     var rightItems: [UIView] = [_barButton(systemImage: "chevron.left.forwardslash.chevron.right", action: #selector(openSnips))]
     let pb = UIPasteboard.general
-    if pb.hasStrings || pb.hasImages || pb.hasURLs {
+    if pb.hasStrings || pb.hasImages || pb.hasURLs || pb.contains(pasteboardTypes: [UTType.pdf.identifier]) {
       rightItems.append(_barButton(systemImage: "doc.on.clipboard", action: #selector(smartPaste)))
     }
     let tray = _barButton(systemImage: "photo.on.rectangle.angled", action: #selector(openTray))
-    tray.isHidden = MoshroomShareTray.isEmpty()   // shown only when something's been shared to Moshroom
+    tray.isHidden = MoshroomStoreCaptureMode.enabled || MoshroomShareTray.isEmpty()
     trayButton = tray
     rightItems.append(tray)
     rightItems.append(_barButton(systemImage: "paperclip", action: #selector(openMoshdrop)))
@@ -317,6 +324,18 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
   private func _barButton(systemImage: String, action: Selector) -> UIButton {
     let b = moshkeyRoundButton()
     b.setMoshIcon(systemImage)
+    let identity: (String, String)
+    switch action {
+    case #selector(close): identity = ("close", "Close composer")
+    case #selector(openSnips): identity = ("snips", "Snips")
+    case #selector(smartPaste): identity = ("paste", "Paste")
+    case #selector(openTray): identity = ("tray", "Shared images")
+    case #selector(openMoshdrop): identity = ("attach", "Attach a file")
+    case #selector(sendAndClose): identity = ("send", "Send")
+    default: identity = (systemImage, systemImage)
+    }
+    b.accessibilityIdentifier = "composer." + identity.0
+    b.accessibilityLabel = identity.1
     b.setContentHuggingPriority(.required, for: .horizontal)
     b.addTarget(self, action: action, for: .touchUpInside)
     return b
@@ -325,7 +344,15 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
   // MARK: Actions
 
   @objc private func close() {
-    dismiss(animated: false)   // instant, no slide (see SpaceController.dismiss)
+    dismissComposer()
+  }
+
+  private func dismissComposer() {
+    // Dismissing from the child can bypass SpaceController.dismiss. Route through the presenter
+    // so terminal focus is restored after the modal and its keyboard have actually gone away.
+    let presenter = navigationController?.presentingViewController ?? presentingViewController
+    if let presenter { presenter.dismiss(animated: false) }
+    else { dismiss(animated: false) }
   }
 
   // Paste, smart about the clipboard. An image or a real (agent-readable) file becomes an inline
@@ -419,6 +446,7 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
   }
 
   @objc private func _refreshTrayButton() {
+    guard !MoshroomStoreCaptureMode.enabled else { return }
     trayButton?.isHidden = MoshroomShareTray.isEmpty()
   }
 
@@ -489,7 +517,7 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
     // as part of the same burst) and leaves from the same place: a page being rebuilt holds both, so
     // the Enter can never reach the agent without its text.
     device?.sendBracketedPaste(text, submit: true)
-    dismiss(animated: false)   // instant, no slide (see SpaceController.dismiss)
+    dismissComposer()
   }
 
   // The command as the agent will read it: typed text verbatim, each inline attachment swapped
@@ -770,6 +798,7 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
   }
 
   private func _updateSuggestions() {
+    guard !MoshroomStoreCaptureMode.enabled else { return }
     let items = _commandSuggestions()
     suggestionsStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
     if items.isEmpty {
@@ -1216,7 +1245,7 @@ extension SpaceController {
   // injecting into the read-only transcript. No-op on an empty clipboard so a stray Cmd+V is quiet.
   func openMoshkitorPasting() {
     let pb = UIPasteboard.general
-    guard pb.hasStrings || pb.hasImages || pb.hasURLs else { return }
+    guard pb.hasStrings || pb.hasImages || pb.hasURLs || pb.contains(pasteboardTypes: [UTType.pdf.identifier]) else { return }
     openMoshkitor(pasteOnOpen: true)
   }
 
@@ -1385,7 +1414,7 @@ enum MoshroomKeyboard {
     }
   }
 
-  private static func _controlBytes(for key: UIKey) -> String? {
+  static func _controlBytes(for key: UIKey) -> String? {
     // One real character only: a key with no character reports a name ("UIKeyInput…") whose first
     // letter would otherwise be folded into a control byte.
     let chars = key.charactersIgnoringModifiers

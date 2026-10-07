@@ -36,7 +36,7 @@ class DummyVC: UIViewController {
 class SceneDelegate: UIResponder, UIWindowSceneDelegate {
   var window: UIWindow? = nil
   private var _ctrl = DummyVC()
-  private var _spCtrl = SpaceController()
+  private lazy var _spCtrl = SpaceController()
 
   override var editingInteractionConfiguration: UIEditingInteractionConfiguration {
     super.editingInteractionConfiguration
@@ -46,6 +46,7 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
    Handles the `ssh://` URL scheme.
    */
   func scene(_ scene: UIScene, openURLContexts URLContexts: Set<UIOpenURLContext>) {
+    guard !MoshroomStoreCaptureMode.enabled else { return }
 
     if let sshUrlScheme = URLContexts.first(where: { $0.url.scheme == "ssh" })?.url {
       _handleSshUrlScheme(with: sshUrlScheme)
@@ -62,6 +63,16 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     guard let windowScene = scene as? UIWindowScene else {
       return
     }
+
+    #if MOSHROOM_PUBLISHING_OPTION_DEVELOPER
+    if MoshroomStoreCaptureMode.enabled {
+      let window = UIWindow(windowScene: windowScene)
+      self.window = window
+      window.rootViewController = MoshroomStoreCaptureController()
+      window.makeKeyAndVisible()
+      return
+    }
+    #endif
 
     #if targetEnvironment(macCatalyst)
     // Native Mac window: keep a sane floor so the terminal grid never collapses.
@@ -95,6 +106,7 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
   }
 
   func sceneDidBecomeActive(_ scene: UIScene) {
+    guard !MoshroomStoreCaptureMode.enabled else { return }
     guard let window = window else {
       return
     }
@@ -181,6 +193,7 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
   }
 
   func stateRestorationActivity(for scene: UIScene) -> NSUserActivity? {
+    if MoshroomStoreCaptureMode.enabled { return scene.session.stateRestorationActivity }
     _setDummyVC()
     return _spCtrl.stateRestorationActivity()
   }

@@ -1441,6 +1441,24 @@ final class MoshxploreView: UIView {
 
   // MARK: Entry points (from SpaceController)
 
+  #if MOSHROOM_PUBLISHING_OPTION_DEVELOPER
+  func showStoreCapture() {
+    guard MoshroomStoreCaptureMode.enabled else { return }
+    currentPath = "/home/dev/projects/orbit"
+    pathLabel.text = currentPath
+    showStep(browser: true)
+    let files: [(String, Bool, UInt64)] = [
+      ("assets", true, 0), ("src", true, 0), ("tests", true, 0),
+      ("README.md", false, 2840), ("dashboard.tsx", false, 6380),
+      ("design-notes.md", false, 4120), ("package.json", false, 1240),
+      ("preview.png", false, 184320), ("tsconfig.json", false, 680)
+    ]
+    renderEntries(files.map { MoshxploreEntry(name: $0.0, isDirectory: $0.1, isSymlink: false,
+      size: $0.2, modified: Date(timeIntervalSince1970: 1791360000)) })
+    isUserInteractionEnabled = false
+  }
+  #endif
+
   // Open the card. If `preferredHost` is a saved host (e.g. the current tab is connected to it),
   // jump straight into browsing it; otherwise show the host picker.
   func present(preferredHost: String?) {

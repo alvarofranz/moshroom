@@ -352,7 +352,7 @@ public func moshroom_ssh_main(argc: Int32, argv: Argv) -> Int32 {
       // Run the host's "Command on connect" once the interactive shell is up (never for an explicit
       // remote command). Written as terminal input — identical to typing it — and the remote PTY
       // buffers it until the shell reaches its prompt.
-      if command == nil,
+      if command == nil, !MoshroomDevelopment.enabled("no-on-connect"),
          let onConnect = commandOnConnect?.trimmingCharacters(in: .whitespacesAndNewlines),
          !onConnect.isEmpty {
         self.device.write(onConnect + "\r")

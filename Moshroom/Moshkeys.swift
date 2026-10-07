@@ -23,6 +23,118 @@
 
 import UIKit
 
+/// Live terminal keys for the software keyboard. The scroller keeps every key a full touch
+/// target on small phones; Compose and Hide stay reachable without scrolling.
+final class MoshroomDirectKeysBar: UIView {
+  private weak var input: MoshroomDirectInput?
+  private let control = UIButton(type: .custom)
+  private var lastControlTap = Date.distantPast
+
+  init(input: MoshroomDirectInput) {
+    self.input = input
+    super.init(frame: CGRect(x: 0, y: 0, width: 390, height: 48))
+    autoresizingMask = [.flexibleWidth]
+    backgroundColor = .secondarySystemBackground
+    let scroll = UIScrollView()
+    scroll.showsHorizontalScrollIndicator = false
+    let row = UIStackView()
+    row.axis = .horizontal
+    row.spacing = 2
+    let fixed = UIStackView()
+    fixed.axis = .horizontal
+    fixed.spacing = 2
+    for view in [scroll, row, fixed] { view.translatesAutoresizingMaskIntoConstraints = false }
+    addSubview(scroll)
+    scroll.addSubview(row)
+    addSubview(fixed)
+
+    func button(_ title: String, symbol: String? = nil, label: String, action: @escaping () -> Void) -> UIButton {
+      let button = UIButton(type: .custom)
+      var config = UIButton.Configuration.plain()
+      config.baseForegroundColor = .label
+      config.contentInsets = .zero
+      config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
+        var attributes = incoming
+        attributes.font = UIFont.systemFont(ofSize: 13, weight: .medium)
+        return attributes
+      }
+      if let symbol { config.image = UIImage(systemName: symbol) } else { config.title = title }
+      button.configuration = config
+      button.accessibilityLabel = label
+      if label == "Hide keyboard" { button.accessibilityIdentifier = "terminal.hideKeyboard" }
+      if label == "Open composer" { button.accessibilityIdentifier = "terminal.openComposer" }
+      button.widthAnchor.constraint(equalToConstant: 44).isActive = true
+      button.addAction(UIAction { _ in action() }, for: .touchUpInside)
+      return button
+    }
+    row.addArrangedSubview(button("Esc", label: "Escape") { [weak input] in input?.sendSpecial("\u{1b}") })
+    control.configuration = .plain()
+    control.configuration?.contentInsets = .zero
+    control.configuration?.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
+      var attributes = incoming
+      attributes.font = UIFont.systemFont(ofSize: 13, weight: .medium)
+      return attributes
+    }
+    control.setTitle("Ctrl", for: .normal)
+    control.accessibilityLabel = "Control"
+    control.accessibilityHint = "Tap for the next character. Double-tap to lock."
+    control.widthAnchor.constraint(equalToConstant: 44).isActive = true
+    control.addAction(UIAction { [weak self] _ in
+      guard let self, let input = self.input else { return }
+      let doubleTap = Date().timeIntervalSince(self.lastControlTap) < 0.35
+      self.lastControlTap = Date()
+      if input.controlLocked { input.controlLocked = false; input.controlLatched = false }
+      else if doubleTap { input.controlLocked = true; input.controlLatched = false }
+      else { input.controlLatched.toggle() }
+    }, for: .touchUpInside)
+    row.addArrangedSubview(control)
+    row.addArrangedSubview(button("Tab", label: "Tab") { [weak input] in input?.sendSpecial("\t") })
+    let arrows: [(String, UIKeyboardHIDUsage, String)] = [
+      ("arrow.left", .keyboardLeftArrow, "Left"), ("arrow.down", .keyboardDownArrow, "Down"),
+      ("arrow.up", .keyboardUpArrow, "Up"), ("arrow.right", .keyboardRightArrow, "Right")
+    ]
+    for (symbol, code, label) in arrows {
+      row.addArrangedSubview(button("", symbol: symbol, label: label) { [weak input] in
+        guard let input, let bytes = MoshroomKeyboard.navigationBytes(for: code, modifiers: [],
+                  applicationCursor: input.owner?.currentDevice?.moshroomApplicationCursor ?? false) else { return }
+        input.sendSpecial(bytes)
+      })
+    }
+    var pasteConfig = UIPasteControl.Configuration()
+    pasteConfig.displayMode = .iconOnly
+    let paste = UIPasteControl(configuration: pasteConfig)
+    paste.target = input
+    paste.accessibilityLabel = "Paste"
+    paste.widthAnchor.constraint(equalToConstant: 44).isActive = true
+    row.addArrangedSubview(paste)
+    fixed.addArrangedSubview(button("", symbol: "square.and.pencil", label: "Open composer") { [weak input] in input?.owner?.openMoshkitor() })
+    fixed.addArrangedSubview(button("", symbol: "keyboard.chevron.compact.down", label: "Hide keyboard") { [weak input] in input?.owner?.moshroomHideDirectKeyboard() })
+    NSLayoutConstraint.activate([
+      scroll.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4),
+      scroll.topAnchor.constraint(equalTo: topAnchor, constant: 2),
+      scroll.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -2),
+      scroll.trailingAnchor.constraint(equalTo: fixed.leadingAnchor, constant: -4),
+      row.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor),
+      row.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor),
+      row.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor),
+      row.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor),
+      row.heightAnchor.constraint(equalTo: scroll.frameLayoutGuide.heightAnchor),
+      fixed.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
+      fixed.topAnchor.constraint(equalTo: scroll.topAnchor),
+      fixed.bottomAnchor.constraint(equalTo: scroll.bottomAnchor),
+    ])
+    updateControl()
+  }
+  required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+  override var intrinsicContentSize: CGSize { CGSize(width: UIView.noIntrinsicMetric, height: 48) }
+  func updateControl() {
+    let selected = input?.controlLatched == true || input?.controlLocked == true
+    control.configuration?.baseForegroundColor = selected ? .moshroomTint : .label
+    control.accessibilityValue = input?.controlLocked == true ? "Locked" : selected ? "Next character" : "Off"
+    control.accessibilityTraits = selected ? [.button, .selected] : .button
+  }
+}
+
 enum Moshkeys {
   static func install(in sc: SpaceController) {
     // The bottom quick-keys are a TOUCH aid — on the Mac the hardware keyboard covers every one
@@ -38,6 +150,8 @@ enum Moshkeys {
     // Standalone compose button — bottom-right, on its own, same size as every other quick-key.
     let compose = moshkeyRoundButton()
     compose.setMoshIcon("square.and.pencil")
+    compose.accessibilityLabel = "Open composer"
+    compose.accessibilityIdentifier = "terminal.compose"
     compose.translatesAutoresizingMaskIntoConstraints = false
     compose.addAction(UIAction { [weak sc] _ in sc?.openMoshkitor() }, for: .touchUpInside)
     sc.view.addSubview(compose)
@@ -57,12 +171,16 @@ enum Moshkeys {
     // single apps-grid launcher on the right that opens cards for Moshxplore / Moshvault / Settings.
     let tabs = moshkeyRoundButton()
     tabs.setMoshIcon("rectangle.stack")
+    tabs.accessibilityLabel = "Tabs"
+    tabs.accessibilityIdentifier = "navigation.tabs"
     tabs.translatesAutoresizingMaskIntoConstraints = false
     tabs.addAction(UIAction { [weak sc] _ in sc?.openMoshtabs() }, for: .touchUpInside)
     sc.view.addSubview(tabs)
 
     let launcher = moshkeyRoundButton()
     launcher.setMoshIcon("square.grid.2x2")
+    launcher.accessibilityLabel = "Apps and settings"
+    launcher.accessibilityIdentifier = "navigation.launcher"
     launcher.translatesAutoresizingMaskIntoConstraints = false
     launcher.addAction(UIAction { [weak sc] _ in sc?.openMoshlauncher() }, for: .touchUpInside)
 
@@ -159,8 +277,10 @@ enum Moshkeys {
       arrowEnter.bottomAnchor.constraint(equalTo: sc.view.safeAreaLayoutGuide.bottomAnchor, constant: -10),
       // Stacked right above the compose key, so the thumb finds it without crowding the row.
       live.trailingAnchor.constraint(equalTo: compose.trailingAnchor),
-      live.bottomAnchor.constraint(equalTo: compose.topAnchor, constant: -10),
     ])
+    let liveBottom = live.bottomAnchor.constraint(equalTo: sc.moshroomTerminalArea.bottomAnchor, constant: -6)
+    liveBottom.isActive = true
+    sc.moshroomLiveBottom = liveBottom
     sc.view.bringSubviewToFront(bar)
     sc.view.bringSubviewToFront(compose)
     sc.view.bringSubviewToFront(arrowEnter)
@@ -260,6 +380,7 @@ func moshroomInstallFullScreenHeader(in vc: UIViewController, title: String,
   let close = moshkeyRoundButton(diameter: 34)
   close.layer.shadowOpacity = 0
   close.setMoshIcon("xmark", pointSize: 15, weight: .semibold)
+  close.accessibilityLabel = "Close"
   close.addTarget(target, action: action, for: .touchUpInside)
   close.translatesAutoresizingMaskIntoConstraints = false
   header.addSubview(titleLabel)
@@ -326,7 +447,7 @@ final class MoshkeysBar: UIStackView {
     pad.onKey = { [weak self] bytes in
       guard let self else { return }
       self.spaceController?.dismissMoshnector()
-      self.spaceController?.currentDevice?.write(bytes)
+      self.spaceController?.moshroomSendQuickKey(bytes)
       self._closePad()
     }
 
@@ -373,7 +494,7 @@ final class MoshkeysBar: UIStackView {
     b.titleLabel?.font = .systemFont(ofSize: 18, weight: .semibold)
     b.addAction(UIAction { [weak self] _ in
       self?.spaceController?.dismissMoshnector()
-      self?.spaceController?.currentDevice?.write("\r")
+      self?.spaceController?.moshroomSendQuickKey("\r")
     }, for: .touchUpInside)
     return b
   }
@@ -394,7 +515,7 @@ final class MoshkeysBar: UIStackView {
             let bytes = MoshroomKeyboard.navigationBytes(for: code, modifiers: [],
                                                          applicationCursor: device.moshroomApplicationCursor)
       else { return }
-      device.write(bytes)
+      self?.spaceController?.moshroomSendQuickKey(bytes)
     }, for: .touchUpInside)
     return b
   }
@@ -441,7 +562,7 @@ final class MoshkeysBar: UIStackView {
   // The far-right Enter shown during arrow mode: fire Return, then drop back to the normal bar.
   func arrowModeEnter() {
     spaceController?.dismissMoshnector()
-    spaceController?.currentDevice?.write("\r")
+    spaceController?.moshroomSendQuickKey("\r")
     if arrowModeActive { _exitArrowMode() }
   }
 
@@ -703,6 +824,8 @@ final class MoshtabsController: UIViewController {
     // ignores configuration contentInsets on .system buttons and the title sat glued to the edge.
     cfg.contentInsets = NSDirectionalEdgeInsets(top: 12, leading: 2, bottom: 12, trailing: 4)
     title.configuration = cfg
+    title.accessibilityIdentifier = "tabs.select." + tab.key.uuidString
+    title.accessibilityValue = active ? "Active" : nil
     #if targetEnvironment(macCatalyst)
     title.preferredBehavioralStyle = .pad   // keep OUR row metrics, never the native Mac push-button
     #endif
@@ -713,6 +836,8 @@ final class MoshtabsController: UIViewController {
 
     let close = moshButton()
     close.setMoshIcon("xmark", pointSize: 13, weight: .semibold, color: active ? UIColor(white: 1, alpha: 0.85) : MoshxploreStyle.gray)
+    close.accessibilityLabel = "Close tab"
+    close.accessibilityIdentifier = "tabs.close." + tab.key.uuidString
     close.translatesAutoresizingMaskIntoConstraints = false
     close.widthAnchor.constraint(equalToConstant: 44).isActive = true
     close.addAction(UIAction { [weak self] _ in self?._close(tab: tab.key) }, for: .touchUpInside)
@@ -752,6 +877,7 @@ final class MoshtabsController: UIViewController {
     // is a real constraint on a wrapper.
     cfg.contentInsets = NSDirectionalEdgeInsets(top: 14, leading: 2, bottom: 14, trailing: 14)
     b.configuration = cfg
+    b.accessibilityIdentifier = "tabs.new"
     #if targetEnvironment(macCatalyst)
     b.preferredBehavioralStyle = .pad
     #endif
@@ -799,7 +925,7 @@ final class MoshtabsController: UIViewController {
     let space = self.space
     navigationController?.dismiss(animated: false) {
       guard let space, Moshroom.scratchOnly else { return }
-      space.becomeFirstResponder()
+      space.moshroomRestoreKeyboardOwner()
       space.showMoshnectorIfIdle()
     }
   }

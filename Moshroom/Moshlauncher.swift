@@ -157,6 +157,7 @@ struct MoshlauncherView: View {
       .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
     .buttonStyle(.plain)
+    .accessibilityIdentifier("launcher." + item.id)
   }
 
   private func squareCard(_ item: MoshLauncherItem) -> some View {
@@ -174,6 +175,7 @@ struct MoshlauncherView: View {
       .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
     }
     .buttonStyle(.plain)
+    .accessibilityIdentifier("launcher." + item.id)
   }
 }
 
@@ -207,7 +209,7 @@ extension SpaceController {
       if let then {
         then()
       } else if Moshroom.scratchOnly {
-        self.becomeFirstResponder()
+        self.moshroomRestoreKeyboardOwner()
         self.showMoshnectorIfIdle()
       }
     }

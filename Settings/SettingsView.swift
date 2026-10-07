@@ -27,7 +27,10 @@ import SwiftUI
 
 struct SettingsView: View {
 
+  @ObservedObject private var typing = MoshroomTyping.shared
+
   var onClose: () -> Void = {}
+  var onWelcomeTour: () -> Void = {}
 
   @State private var _moshroomVersion = UIApplication.moshroomShortVersion() ?? ""
   @State private var _iCloudSyncOn = MoshroomDefaults.isICloudSyncEnabled()
@@ -74,6 +77,17 @@ struct SettingsView: View {
       }
 
       Section {
+        Picker(selection: Binding(get: { typing.mode }, set: { typing.select($0) })) {
+          ForEach(MoshroomTypingMode.allCases) { mode in Text(mode.title).tag(mode) }
+        } label: {
+          Label("Typing", systemImage: "keyboard")
+        }
+        .id(typing.mode) // Refresh Catalyst's native popup after a choice in the covering tour.
+        .accessibilityIdentifier("settings.typing")
+        Text(typing.mode.detail)
+          .font(.footnote)
+          .foregroundColor(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
         Row {
           Label("Style", systemImage: "paintpalette")
         } details: {
@@ -241,6 +255,13 @@ struct SettingsView: View {
       }
 
       Section {
+        Button(action: onWelcomeTour) {
+          Label("Welcome Tour", systemImage: "sparkles")
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .moshCatalystPlainButtons()
+        .accessibilityIdentifier("settings.welcome-tour")
         RowWithStoryBoardId(content: {
           HStack {
             Label("About", systemImage: "questionmark.circle")

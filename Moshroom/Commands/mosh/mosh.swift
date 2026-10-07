@@ -156,7 +156,8 @@ enum MoshError: Error, LocalizedError {
 
       // Fresh connect only (the restore branch above returns early) — remember the host's command.
       // Never for a project: its own command was started by the server, inside its session.
-      self.pendingCommandOnConnect = project == nil ? MoshHosts.withHost(command.hostAlias)?.commandOnConnect : nil
+      self.pendingCommandOnConnect = project == nil && !MoshroomDevelopment.enabled("no-on-connect")
+        ? MoshHosts.withHost(command.hostAlias)?.commandOnConnect : nil
       return moshMain(moshParams)
     }
   }

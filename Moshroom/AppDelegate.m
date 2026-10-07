@@ -63,6 +63,11 @@ void __setupProcessEnv(void) {
 }
 
 - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
+  if ([MoshroomStoreCaptureMode enabled]) {
+    [[UIView appearance] setTintColor:[UIColor moshroomTint]];
+    [MoshstyleAppearance install];
+    return YES;
+  }
   
   [AppDelegate reloadDefaults];
   [[UIView appearance] setTintColor:[UIColor moshroomTint]];
@@ -294,6 +299,7 @@ configurationForConnectingSceneSession:(UISceneSession *)connectingSceneSession
 
 
 - (void)application:(UIApplication *)application didDiscardSceneSessions:(NSSet<UISceneSession *> *)sceneSessions {
+  if ([MoshroomStoreCaptureMode enabled]) { return; }
   [SpaceController onDidDiscardSceneSessions: sceneSessions];
 }
 

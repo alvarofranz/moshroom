@@ -177,7 +177,7 @@ import ios_system
         pendingCommandOnConnect = Self._typeable(project.trimmedCommand)
       } else {
         // The host's session (main unless it names another); an alias that is not a saved host gets main.
-        p.sessionName = MoshHosts.withHost(alias)?.moshroomTmuxSession ?? MoshHosts.moshroomDefaultTmuxSession
+        p.sessionName = MoshroomDevelopment.testSession ?? MoshHosts.withHost(alias)?.moshroomTmuxSession ?? MoshHosts.moshroomDefaultTmuxSession
         pendingCommandOnConnect = Self._typeable(MoshHosts.withHost(alias)?.commandOnConnect)
       }
       // The tab's archive must know about the session from now on: a relaunch after a crash finds it.
@@ -302,6 +302,7 @@ import ios_system
   /// its own. Such a command is there for mosh (`tmux new -A -s main` and friends): typed inside this
   /// tmux session it would nest, or grab and detach a session the user keeps for other clients.
   private static func _typeable(_ raw: String?) -> String? {
+    if MoshroomDevelopment.enabled("no-on-connect") { return nil }
     guard let command = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !command.isEmpty else { return nil }
     let first = command.split(whereSeparator: { " \t;&|".contains($0) }).first.map(String.init) ?? ""
     let program = (first as NSString).lastPathComponent

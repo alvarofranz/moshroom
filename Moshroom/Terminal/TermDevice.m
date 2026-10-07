@@ -153,6 +153,7 @@ static int __sizeOfIncompleteSequenceAtTheEnd(const char *buffer, size_t len) {
   
   dispatch_semaphore_t _readlineSema;
   NSString *_readlineResult;
+  _Atomic(BOOL) _moshroomLocalShellPrompt;
 
   // Until when a replayed bell or clipboard copy is let through silently (see moshroomQuietReplay).
   _Atomic(CFAbsoluteTime) _quietReplayUntil;
@@ -320,6 +321,7 @@ static int __sizeOfIncompleteSequenceAtTheEnd(const char *buffer, size_t len) {
 }
 
 - (void)prompt:(NSString *)prompt secure:(BOOL)secure shell:(BOOL)shell {
+  _moshroomLocalShellPrompt = shell && !secure;
   [self closeReadline];
 
   // Through the setter, so the page's carriage-return translation comes back with cooked mode. A
@@ -375,6 +377,7 @@ static int __sizeOfIncompleteSequenceAtTheEnd(const char *buffer, size_t len) {
 {
   _secureTextEntry = secureTextEntry;
   dispatch_async(dispatch_get_main_queue(), ^{
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"MoshroomSecureEntryChanged" object:self];
     if (secureTextEntry == _input.secureTextEntry) {
       return;
     }
@@ -495,6 +498,11 @@ static int __sizeOfIncompleteSequenceAtTheEnd(const char *buffer, size_t len) {
 }
 
 - (void)viewSubmitLine:(NSString *)line {
+  // Only the local shell, never readline authentication. Post before onSubmit can start a child.
+  if (_moshroomLocalShellPrompt && !_readlineSema && !self.rawMode && !self.secureTextEntry) {
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"MoshroomLocalLineSubmitted"
+                                                       object:self userInfo:@{@"line": line ?: @""}];
+  }
   [self onSubmit:line];
 }
 

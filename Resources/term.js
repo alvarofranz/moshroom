@@ -1344,6 +1344,44 @@ function term_paste(str) {
   t.onPaste_({text: str || ''});
 }
 
+// Use hterm's own newline/encoding/bracketed-paste path, but return its bytes to the native
+// input FIFO. Nothing is sent here: a cancelled tab or a late evaluation cannot type anywhere.
+function term_prepareDirectPaste(str) {
+  if (!t || !t.io) return {unavailable: true};
+  if (/[\r\n\u2028\u2029]/.test(str) && !t.options_.bracketedPaste) {
+    return {needsComposer: true};
+  }
+  // Control characters in a plain paste can act as terminal commands. Let the composer review
+  // them even when they fit on one line, using its established review and send path.
+  if (/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(str)) return {needsComposer: true};
+  var io = t.io, original = io.sendString, chunks = [];
+  try {
+    io.sendString = function(bytes) { chunks.push(bytes); };
+    term_paste(str);
+  } finally {
+    io.sendString = original;
+  }
+  return {bytes: chunks.join('')};
+}
+
+var _moshroomDirectCursor = false;
+function term_setDirectCursor(on) {
+  _moshroomDirectCursor = !!on;
+  if (!t || !t.cursorNode_) return;
+  t.setCursorColor(on ? (t.prefs_.get('cursor-color') || t.scrollPort_.getForegroundColor()) : 'rgba(0, 0, 0, 0)');
+  if (on) {
+    // Paint a solid caret without emitting a focus-report escape into a covered/background tab.
+    t.cursorNode_.setAttribute('focus', true);
+    t.restyleCursor_();
+  }
+}
+
+function term_cursorRect() {
+  if (!t || !t.cursorNode_ || !t.options_.cursorVisible) return null;
+  var r = t.cursorNode_.getBoundingClientRect();
+  return {x: r.x, y: r.y, width: r.width, height: r.height};
+}
+
 var _utf8TextDecoder = new TextDecoder('utf8');
 function term_write_b64(b64str) {
   var bytes = base64js.toByteArray(b64str);
@@ -1449,7 +1487,7 @@ function _moshroomMouseReportOn() {
 // (25) twice per frame, and posting on that would be a message storm.
 var _moshroomScrollModeCodes = {
   '1': 1, '9': 1, '47': 1, '1000': 1, '1002': 1, '1003': 1,
-  '1005': 1, '1006': 1, '1015': 1, '1047': 1, '1049': 1,
+  '1005': 1, '1006': 1, '1015': 1, '1047': 1, '1049': 1, '2004': 1,
 };
 
 // The native side arms ONE of two scroll views before the gesture starts, and it cannot work out on
@@ -1472,6 +1510,7 @@ function _moshroomPostScrollMode() {
     // every terminal they must send SS3 (ESC O A) while the program asked for application cursor
     // keys and CSI (ESC [ A) otherwise. `less` ignores CSI arrows once it sets this mode.
     appCursor: !!(t.keyboard && t.keyboard.applicationCursor),
+    bracketedPaste: !!t.options_.bracketedPaste,
   });
 }
 

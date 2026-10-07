@@ -124,7 +124,17 @@ class KBConfig: ObservableObject, Codable {
     let command       = try c.decode(KeyConfigPair.self, forKey: .command)
     let fnBinding     = try c.decode(KeyBinding.self,    forKey: .fn)
     let cursorBinding = try c.decode(KeyBinding.self,    forKey: .cursor)
-    let shortcuts     = try c.decode([KeyShortcut].self, forKey: .shortcuts)
+    var shortcuts     = try c.decode([KeyShortcut].self, forKey: .shortcuts)
+    // Add the new command to old configurations without taking an existing custom binding.
+    // An explicitly cleared Compose entry stays cleared.
+    if !shortcuts.contains(where: { if case .command(.composeShow) = $0.action { return true }; return false }) {
+      let compose = KeyShortcut(.composeShow, .command, "e")
+      if shortcuts.contains(where: { $0.input == compose.input && $0.modifiers == compose.modifiers }) {
+        compose.input = ""
+        compose.modifiers = []
+      }
+      shortcuts.append(compose)
+    }
     
     self.init(
       capsLock: capsLock,

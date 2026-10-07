@@ -44,7 +44,9 @@ struct MoshClientParams {
     self.predictOverwrite = cmd.predictOverwrite ? "yes" : bkHost?.moshPredictOverwrite
     self.experimentalRemoteIP = cmd.experimentalRemoteIP ?? MoshMoshExperimentalIP(UInt32(truncating: bkHost?.moshExperimentalIP ?? 0))
     let remoteExecCommand: String? = if let command = bkHost?.moshStartup, !command.isEmpty { command } else { nil }
-    if let startup {
+    if startup == nil, let session = MoshroomDevelopment.testSession {
+      self.remoteExecCommand = "tmux new-session -A -s " + session
+    } else if let startup {
       self.remoteExecCommand = startup
     } else {
       self.remoteExecCommand = !cmd.remoteExecCommand.isEmpty ? cmd.remoteExecCommand.joined(separator: " ") : remoteExecCommand

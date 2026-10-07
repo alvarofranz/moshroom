@@ -56,6 +56,177 @@ extension TermController: MoshroomTabPage {
 // MARK: UIViewController
 class SpaceController: UIViewController {
 
+  let moshroomDirectInput = MoshroomDirectInput()
+  private var moshroomTerminalBottom: NSLayoutConstraint?
+  var moshroomLiveBottom: NSLayoutConstraint?
+  private var directKeyboardFrame: CGRect = .null
+  private var directKeyboardUpdate: DispatchWorkItem?
+  private var directCursorQueryPending = false
+  private let directCompositionLabel = UILabel()
+  private var welcomeChecked = false
+
+  private func moshroomCheckWelcome() {
+    guard !welcomeChecked, view.window != nil, foregroundActive else { return }
+    if MoshroomDevelopment.enabled("direct-probe") { welcomeChecked = true; return }
+    let forced = MoshroomDevelopment.enabled("welcome-tour")
+    guard forced || !Moshtour.hasBeenSeen else { welcomeChecked = true; return }
+    guard presentedViewController == nil else { welcomeChecked = true; return }
+    if !forced {
+      for key in _viewportsKeys {
+        guard moshroomTabKind(for: key) == .term else { welcomeChecked = true; return }
+        guard let term: TermController = SessionRegistry.shared.sessionFromIndexWith(key: key) else {
+          // Never materialize an unknown restored tab just to decide about onboarding.
+          welcomeChecked = true; return
+        }
+        if term.moshroomHasLiveChildSession || term.moshroomUploadHost != nil {
+          welcomeChecked = true; return
+        }
+        // The visible local shell may not have reached its first prompt yet. promptReady
+        // will retry; this also allows a restored empty shell to show the welcome tour.
+        guard term.moshroomIsFreshShell else { return }
+      }
+    }
+    welcomeChecked = true
+    openMoshtour()
+  }
+
+  var moshroomCanTypeDirect: Bool {
+    MoshroomTyping.shared.isDirect && presentedViewController == nil && !_isSnipsInputModeActive
+      && foregroundActive && view.window?.isKeyWindow == true
+      && _currentKey.map { moshroomTabKind(for: $0) == .term } == true
+  }
+
+  var moshroomSoftKeyboardVisible: Bool {
+    guard MoshroomTyping.shared.isDirect, moshroomDirectInput.isFirstResponder,
+          !MoshroomTyping.shared.hardwareKeyboard, !directKeyboardFrame.isNull,
+          let window = view.window else { return false }
+    let rect = view.convert(window.convert(directKeyboardFrame, from: window.screen.coordinateSpace), from: window)
+    return rect.intersects(view.bounds)
+  }
+
+  func moshroomRestoreKeyboardOwner() {
+    guard presentedViewController == nil else { return }
+    moshroomDirectInput.bind(to: currentDevice)
+    if MoshroomDevelopment.enabled("direct-probe"), currentDevice != nil {
+      moshroomDirectInput.becomeFirstResponder()
+    } else if moshroomCanTypeDirect,
+              MoshroomTyping.shared.hardwareKeyboard || moshroomDirectInput.wantsSoftKeyboard {
+      moshroomDirectInput.becomeFirstResponder()
+      moshroomPositionDirectInput()
+    } else {
+      if moshroomDirectInput.isFirstResponder { moshroomDirectInput.resignFirstResponder() }
+      becomeFirstResponder()
+    }
+  }
+
+  func moshroomSendQuickKey(_ bytes: String) {
+    if MoshroomTyping.shared.isDirect {
+      guard moshroomCanTypeDirect else { return }
+      moshroomDirectInput.wantsSoftKeyboard = true
+      moshroomRestoreKeyboardOwner()
+      moshroomDirectInput.sendSpecial(bytes)
+    } else {
+      currentDevice?.write(bytes)
+    }
+  }
+
+  @objc private func moshroomTypingChanged() {
+    moshroomDirectInput.resetComposition()
+    if !MoshroomTyping.shared.isDirect { moshroomDirectInput.wantsSoftKeyboard = false }
+    forEachActive { terminal in
+      if terminal.viewIsLoaded { terminal.termView.directCursor = MoshroomTyping.shared.isDirect }
+    }
+    moshroomDirectInput.reloadInputViews()
+    moshroomRestoreKeyboardOwner()
+    moshroomApplyDirectKeyboardFrame()
+  }
+
+  @objc private func moshroomDirectFocusLost(_ n: Notification) {
+    if let window = n.object as? UIWindow, window !== view.window { return }
+    if let scene = n.object as? UIScene, scene !== view.window?.windowScene { return }
+    moshroomDirectInput.resetComposition()
+  }
+
+  func moshroomHideDirectKeyboard() {
+    moshroomDirectInput.wantsSoftKeyboard = false
+    moshroomDirectInput.resignFirstResponder()
+    directKeyboardFrame = .null
+    moshroomApplyDirectKeyboardFrame()
+    becomeFirstResponder()
+  }
+
+  @objc private func moshroomDirectKeyboardChanged(_ n: Notification) {
+    #if !targetEnvironment(macCatalyst)
+    guard presentedViewController == nil else { return }
+    let screenFrame = (n.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?.cgRectValue ?? .null
+    directKeyboardFrame = screenFrame
+    directKeyboardUpdate?.cancel()
+    let update = DispatchWorkItem { [weak self] in self?.moshroomApplyDirectKeyboardFrame() }
+    directKeyboardUpdate = update
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: update)
+    #endif
+  }
+
+  private func moshroomApplyDirectKeyboardFrame() {
+    #if !targetEnvironment(macCatalyst)
+    guard presentedViewController == nil else { return }
+    var bottom: CGFloat = 56
+    if moshroomDirectInput.isFirstResponder, MoshroomTyping.shared.isDirect,
+       !MoshroomTyping.shared.hardwareKeyboard, !directKeyboardFrame.isNull, let window = view.window {
+      let rect = view.convert(window.convert(directKeyboardFrame, from: window.screen.coordinateSpace), from: window)
+      // Floating/undocked keyboards do not occupy the full bottom edge.
+      if rect.maxY >= view.bounds.maxY - 1, rect.width >= view.bounds.width * 0.8, rect.minY < view.bounds.maxY {
+        bottom = max(56, view.bounds.maxY - rect.minY + 4 - view.safeAreaInsets.bottom)
+      }
+    }
+    let constant = -bottom
+    if moshroomTerminalBottom?.constant != constant {
+      moshroomTerminalBottom?.constant = constant
+      view.layoutIfNeeded()
+    }
+    moshroomSyncQuickKeysVisibility()
+    moshroomLiveBottom?.constant = bottom > 56 ? -10 : -6
+    moshroomPositionDirectInput()
+    #endif
+  }
+
+  func moshroomShowComposition(_ text: String?) {
+    directCompositionLabel.text = text
+    directCompositionLabel.isHidden = text?.isEmpty != false || currentDevice?.secureTextEntry == true
+    if !directCompositionLabel.isHidden { view.bringSubviewToFront(directCompositionLabel) }
+  }
+
+  func moshroomPositionDirectInput() {
+    guard moshroomDirectInput.isFirstResponder, presentedViewController == nil,
+          !directCursorQueryPending, let device = currentDevice, let web = device.view?.webView else { return }
+    directCursorQueryPending = true
+    web.evaluateJavaScript("term_cursorRect();") { [weak self, weak device] result, _ in
+      guard let self else { return }
+      self.directCursorQueryPending = false
+      guard device === self.currentDevice, self.moshroomDirectInput.isFirstResponder,
+            let rect = result as? [String: Double], let x = rect["x"], let y = rect["y"] else { return }
+      let point = web.convert(CGPoint(x: x, y: y), to: self.view)
+      let area = self.moshroomTerminalArea.frame
+      let height = min(max(1, rect["height"] ?? 1), max(1, area.height))
+      self.moshroomDirectInput.frame = CGRect(x: max(0, min(point.x, self.view.bounds.maxX - 1)),
+                                            y: max(area.minY, min(point.y, area.maxY - height)),
+                                            width: 1, height: height)
+    }
+  }
+
+  @objc private func moshroomLocalLineSubmitted(_ n: Notification) {
+    guard MoshroomTyping.shared.isDirect, let device = n.object as? TermDevice,
+          device === currentDevice, let line = n.userInfo?["line"] as? String else { return }
+    currentTerm()?.moshroomUserHasInteracted = true
+    noteConnectionCommand(line)
+    dismissMoshnector()
+  }
+
+  @objc private func moshroomSecureEntryChanged(_ n: Notification) {
+    guard let device = n.object as? TermDevice, device === currentDevice else { return }
+    moshroomDirectInput.refreshSecureEntry()
+  }
+
   struct UIState: UserActivityCodable {
     var keys: [UUID] = []
     var currentKey: UUID? = nil
@@ -141,8 +312,10 @@ class SpaceController: UIViewController {
 
   // Configure capabilities based on input mode
   private func _configureCapabilitiesForSnipsInputMode(_ active: Bool) {
+    if active { moshroomDirectInput.resignFirstResponder() }
     canTerminalBecomeFirstResponder = !active
     canSwitchPages = !active
+    if !active { moshroomRestoreKeyboardOwner() }
   }
 
   private func _setPageViewControllerScrollEnabled(_ enabled: Bool) {
@@ -207,7 +380,7 @@ class SpaceController: UIViewController {
     guard Moshroom.scratchOnly, presentedViewController == nil else { return }
     let pageHasInput = _currentKey.map { moshroomTabKind(for: $0) == .term } ?? false
     guard !pageHasInput, !isFirstResponder else { return }
-    becomeFirstResponder()
+    moshroomRestoreKeyboardOwner()
   }
 
   // The bottom quick-keys cluster only makes sense over a terminal (its keys write into the
@@ -220,7 +393,7 @@ class SpaceController: UIViewController {
     // send a command to the local prompt, an ad-hoc `ssh user@host`).
     let quickConnect = moshroomFreshOverlayIsVisible
     for v in moshroomBottomKeys {
-      let shown = terminalTab && (!quickConnect || v === moshroomComposeKey)
+      let shown = terminalTab && !moshroomSoftKeyboardVisible && (!quickConnect || v === moshroomComposeKey)
       v.alpha = shown ? 1 : 0
       v.isUserInteractionEnabled = shown
     }
@@ -238,6 +411,11 @@ class SpaceController: UIViewController {
   override var canBecomeFirstResponder: Bool { true }
 
   override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+    if MoshroomDevelopment.enabled("direct-probe"), presentedViewController == nil {
+      MoshroomDevelopment.inputProbe("space presses=\(presses.count)")
+      moshroomDirectInput.becomeFirstResponder()
+      return
+    }
     // Moshroom: a hardware keystroke means the user is using the terminal — clear the
     // quick-connect card out of the way. Only for presses that CARRY CHARACTERS: bare modifier
     // events (the Cmd of a Cmd+Tab app switch, a stray Shift) used to hide the card "on its own"
@@ -254,16 +432,30 @@ class SpaceController: UIViewController {
        composer.acceptHardwareKeyInTransition(presses) {
       return
     }
+    let terminalOwnsKeys = _currentKey.map { moshroomTabKind(for: $0) == .term } ?? true
+    if MoshroomTyping.shared.isDirect, presentedViewController == nil, terminalOwnsKeys {
+      if moshroomCanTypeDirect { moshroomDirectInput.acceptHardwareKeys(presses) }
+      return
+    }
     // Moshroom: route hardware-keyboard input — a probe keystroke goes live to the agent,
     // typing more opens Moshkitor seeded with what's been typed. Terminal tabs (and the zero-tab
     // state, which keeps its historical behaviour) only: on a music/explorer tab the page's own
     // responders must see the keys — MoshroomKeyboard.handle would swallow them into a nil device.
-    let terminalOwnsKeys = _currentKey.map { moshroomTabKind(for: $0) == .term } ?? true
     if Moshroom.scratchOnly, presentedViewController == nil, terminalOwnsKeys,
        MoshroomKeyboard.handle(presses, device: currentDevice, openComposer: { [weak self] seed in self?.openMoshkitor(seed: seed) }) {
       return
     }
     super.pressesBegan(presses, with: event)
+  }
+
+  override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+    moshroomDirectInput.release(presses)
+    super.pressesEnded(presses, with: event)
+  }
+
+  override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+    moshroomDirectInput.release(presses)
+    super.pressesCancelled(presses, with: event)
   }
 
   override func viewDidAppear(_ animated: Bool) {
@@ -272,10 +464,11 @@ class SpaceController: UIViewController {
     // Moshroom: be the first responder so chain-dispatched command actions (config, etc.)
     // still reach SpaceController even though the terminal is keyboard-less.
     if Moshroom.scratchOnly {
-      becomeFirstResponder()
+      moshroomRestoreKeyboardOwner()
       // Reveal the quick-connect card if the visible shell is a fresh idle prompt as we appear.
       showMoshnectorIfIdle()
     }
+    DispatchQueue.main.async { [weak self] in self?.moshroomCheckWelcome() }
   }
 
   // Every full-screen Moshroom modal presents as .overFullScreen (the terminal must STAY in the
@@ -293,7 +486,8 @@ class SpaceController: UIViewController {
     super.dismiss(animated: animated) { [weak self] in
       completion?()
       guard let self, Moshroom.scratchOnly else { return }
-      self.becomeFirstResponder()
+      self.moshroomRestoreKeyboardOwner()
+      self.moshroomApplyDirectKeyboardFrame()
       self.showMoshnectorIfIdle()
     }
   }
@@ -326,6 +520,7 @@ class SpaceController: UIViewController {
     dismissMoshnector()
     moshroomCloseQuickKeys()
     guard let ctrl = make() else { return false }
+    moshroomDirectInput.resignFirstResponder()
     ctrl.modalPresentationStyle = .overFullScreen
     host.present(ctrl, animated: false)
     return true
@@ -387,7 +582,7 @@ class SpaceController: UIViewController {
       // A (re)loaded web view can grab first responder (AppKit hands it to the fresh WKContentView —
       // seen after the jettison-recovery reload): hardware keys would then type into the page instead
       // of reaching the composer probe. Take it back whenever the terminal is the frontmost thing.
-      if presentedViewController == nil { becomeFirstResponder() }
+      if presentedViewController == nil { moshroomRestoreKeyboardOwner() }
       showMoshnectorIfIdle()
     }
   }
@@ -401,12 +596,17 @@ class SpaceController: UIViewController {
     // The shell just printed its moshroom> prompt — it is idle and unconnected right now. Re-evaluate
     // and reveal the quick-connect card (kept hidden for a connected ssh/mosh session).
     showMoshnectorIfIdle()
+    moshroomCheckWelcome()
   }
   
   public override func viewDidLoad() {
     super.viewDidLoad()
     
     _setupAppearance()
+
+    moshroomDirectInput.owner = self
+    moshroomDirectInput.frame = CGRect(x: 0, y: 0, width: 1, height: 1)
+    view.addSubview(moshroomDirectInput)
     
     view.isOpaque = true
     
@@ -432,11 +632,12 @@ class SpaceController: UIViewController {
       #endif
       v.translatesAutoresizingMaskIntoConstraints = false
       view.addSubview(v)
+      moshroomTerminalBottom = v.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -bottomStrip)
       NSLayoutConstraint.activate([
         v.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 76),
         v.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
         v.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
-        v.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -bottomStrip),
+        moshroomTerminalBottom!,
       ])
     }
     
@@ -483,6 +684,22 @@ class SpaceController: UIViewController {
     // Moshroom: floating Moshkeys quick-keys (special keys / numbers / letters).
     Moshkeys.install(in: self)
 
+    directCompositionLabel.font = .preferredFont(forTextStyle: .body)
+    directCompositionLabel.adjustsFontForContentSizeCategory = true
+    directCompositionLabel.backgroundColor = .secondarySystemBackground
+    directCompositionLabel.textColor = .label
+    directCompositionLabel.layer.cornerRadius = 8
+    directCompositionLabel.clipsToBounds = true
+    directCompositionLabel.isHidden = true
+    directCompositionLabel.numberOfLines = 2
+    directCompositionLabel.translatesAutoresizingMaskIntoConstraints = false
+    view.addSubview(directCompositionLabel)
+    NSLayoutConstraint.activate([
+      directCompositionLabel.centerXAnchor.constraint(equalTo: moshroomTerminalArea.centerXAnchor),
+      directCompositionLabel.bottomAnchor.constraint(equalTo: moshroomTerminalArea.bottomAnchor, constant: -8),
+      directCompositionLabel.widthAnchor.constraint(lessThanOrEqualTo: moshroomTerminalArea.widthAnchor, multiplier: 0.85),
+    ])
+
     // Moshroom: install the fresh-terminal quick-connect card; it's revealed from
     // viewDidAppear once the launch shell's session state has settled (showMoshnectorIfIdle).
     // (Moshxplore needs no install — it presents full screen from its top-bar button.)
@@ -492,13 +709,22 @@ class SpaceController: UIViewController {
   
   
   func showAlert(msg: String) {
+    moshroomDirectInput.resignFirstResponder()
     let ctrl = UIAlertController(title: "Error", message: msg, preferredStyle: .alert)
-    ctrl.addAction(UIAlertAction(title: "Ok", style: .default))
+    ctrl.addAction(UIAlertAction(title: "Ok", style: .default) { [weak self] _ in
+      DispatchQueue.main.async { self?.moshroomRestoreKeyboardOwner() }
+    })
     self.present(ctrl, animated: true)
   }
   
   func _registerForNotifications() {
     let nc = NotificationCenter.default
+    nc.addObserver(self, selector: #selector(moshroomTypingChanged), name: MoshroomTyping.didChange, object: nil)
+    nc.addObserver(self, selector: #selector(moshroomLocalLineSubmitted(_:)), name: Notification.Name("MoshroomLocalLineSubmitted"), object: nil)
+    nc.addObserver(self, selector: #selector(moshroomSecureEntryChanged(_:)), name: Notification.Name("MoshroomSecureEntryChanged"), object: nil)
+    nc.addObserver(self, selector: #selector(moshroomDirectKeyboardChanged(_:)), name: UIResponder.keyboardWillChangeFrameNotification, object: nil)
+    nc.addObserver(self, selector: #selector(moshroomDirectFocusLost(_:)), name: UIWindow.didResignKeyNotification, object: nil)
+    nc.addObserver(self, selector: #selector(moshroomDirectFocusLost(_:)), name: UIScene.willDeactivateNotification, object: nil)
     
     nc.addObserver(self,
                    selector: #selector(_didBecomeKeyWindow),
@@ -566,6 +792,18 @@ class SpaceController: UIViewController {
     // NOT open the composer: there is nothing to send to yet, and a red caret over an idle
     // "not connected" screen is confusing. Connect via the card, or use the compose button / hardware
     // keyboard to type deliberately. Once connected or interacted, the card is gone and a tap composes.
+    if MoshroomTyping.shared.isDirect {
+      let action = n.userInfo?["action"] as? String ?? "none"
+      #if !targetEnvironment(macCatalyst)
+      if action == "selection" { return }
+      #endif
+      if action != "url", !_freshOverlayVisible {
+        moshroomDirectInput.wantsSoftKeyboard = true
+        moshroomRestoreKeyboardOwner()
+      }
+      return
+    }
+    guard n.userInfo?["input"] as? Bool != false else { return }
     if _freshOverlayVisible { return }
     openMoshkitor()
   }
@@ -718,6 +956,7 @@ class SpaceController: UIViewController {
     // Coming back to the app (Cmd+Tab, window switch) must re-evaluate the quick-connect card:
     // it is one more idempotent reveal trigger, same contract as viewDidAppear and prompt-ready.
     if Moshroom.scratchOnly { showMoshnectorIfIdle() }
+    moshroomRestoreKeyboardOwner()
   }
   
   func _createTerminal(userActivity: NSUserActivity?, sessionPayload: TermSessionPayload) {
@@ -1118,6 +1357,11 @@ extension SpaceController {
         MoshLog.log("paste", "Cmd+V → forward paste: to first responder (other modal in front)")
         _forwardEditAction(#selector(UIResponder.paste(_:)))
       } else {
+        if MoshroomTyping.shared.isDirect {
+          moshroomRestoreKeyboardOwner()
+          moshroomDirectInput.pasteClipboard()
+          return
+        }
         MoshLog.log("paste", "Cmd+V → open Moshkitor + paste (no modal in front)")
         openMoshkitorPasting()
       }
@@ -1127,7 +1371,11 @@ extension SpaceController {
     case .zoomIn: currentTerm()?.termView.increaseFontSize()
     case .zoomOut: currentTerm()?.termView.decreaseFontSize()
     case .zoomReset: currentTerm()?.termView.resetFontSize()
-    case .hideKeyboard: _ = KBTracker.shared.input?.resignFirstResponder()
+    case .composeShow:
+      if presentedViewController == nil { openMoshkitor() }
+    case .hideKeyboard:
+      if MoshroomTyping.shared.isDirect { moshroomHideDirectKeyboard() }
+      else { _ = KBTracker.shared.input?.resignFirstResponder() }
 
     }
   }
@@ -1284,6 +1532,7 @@ extension SpaceController {
   
   @objc func showConfigAction() {
     DispatchQueue.main.async {
+      self.moshroomDirectInput.resignFirstResponder()
       self.currentTerm()?.resignInput()
       let navCtrl = UINavigationController()
       navCtrl.navigationBar.prefersLargeTitles = true
@@ -1294,6 +1543,8 @@ extension SpaceController {
       // (the SpaceController.dismiss override restores first responder + Quick Connect). No flash.
       let s = SettingsHostingController.createSettings(nav: navCtrl, onClose: {
         [weak self] in self?.dismiss(animated: false)
+      }, onWelcomeTour: { [weak self] in
+        self?.openMoshtour()
       })
       navCtrl.setViewControllers([s], animated: false)
       // Stack over the launcher instead of dismissing it first (which flashed the terminal).
@@ -1399,12 +1650,16 @@ extension SpaceController {
   // page VC being right is not enough: they are siblings in one container), the top bar and quick keys
   // (both inside _showOnlyCurrentTerminal), the ground colour and the keyboard.
   private func _didShowCurrentPage(attachInput: Bool) {
+    moshroomDirectInput.resetComposition()
     moshroomPersistUIState()
     _showOnlyCurrentTerminal()
     _syncTerminalBackground()
     if attachInput, let key = _currentKey, moshroomTabKind(for: key) == .term {
       _attachInputToCurrentTerm()
     }
+    currentDevice?.view?.directCursor = MoshroomTyping.shared.isDirect
+    moshroomRestoreKeyboardOwner()
+    moshroomApplyDirectKeyboardFrame()
   }
 
   private func _showCurrentOrFirstTab() {

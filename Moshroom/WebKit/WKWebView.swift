@@ -138,6 +138,7 @@ let MoshroomTerminalTailingNotification = "MoshroomTerminalTailingNotification"
   /// The program asked for application cursor keys (DECCKM), as last reported by the page. The
   /// native arrow keys read it to send SS3 (ESC O A) instead of CSI (ESC [ A), like any terminal.
   @objc private(set) var applicationCursor = false
+  @objc private(set) var bracketedPaste = false
 
   @objc var focused: Bool = false;
 
@@ -321,15 +322,20 @@ let MoshroomTerminalTailingNotification = "MoshroomTerminalTailingNotification"
     let point = recognizer.location(in: recognizer.view)
     if let selection = selection,
        selection.tap(at: point, modifiers: recognizer.modifierFlags) == .handled {
+      if let webView = _wkWebView {
+        NotificationCenter.default.post(name: NSNotification.Name(MoshroomTerminalInputTapNotification),
+                                        object: webView, userInfo: ["input": false, "action": "selection"])
+      }
       return
     }
     _wkWebView?.evaluateJavaScript("term_tapAt(\(point.x), \(point.y));") { [weak self] result, _ in
       let response = result as? [String: Any]
       let input = response?["input"] as? Bool == true
       self?.selection?.tapDispatched(action: response?["action"] as? String ?? "none", input: input)
-      guard let webView = self?._wkWebView, input else { return }
+      guard let webView = self?._wkWebView else { return }
       NotificationCenter.default.post(
-        name: NSNotification.Name(MoshroomTerminalInputTapNotification), object: webView)
+        name: NSNotification.Name(MoshroomTerminalInputTapNotification), object: webView,
+        userInfo: ["input": input, "action": response?["action"] as? String ?? "none"])
     }
   }
 
@@ -603,6 +609,7 @@ extension WKWebViewGesturesInteraction: WKScriptMessageHandler {
       _isPrimaryScreen = msg["isPrimary"] as? Bool ?? true
       _mouseReportOn = msg["mouseReport"] as? Bool ?? false
       applicationCursor = msg["appCursor"] as? Bool ?? false
+      bracketedPaste = msg["bracketedPaste"] as? Bool ?? false
       _applyScrollMode()
 
     // Moshroom: the page changed the selection on its own (output rewrote its rows, a trim, a screen
@@ -626,6 +633,9 @@ extension WKWebViewGesturesInteraction: UIPointerInteractionDelegate {
   }
 }
 extension TermDevice {
+  var moshroomBracketedPaste: Bool {
+    view?.webView?.interactions.lazy.compactMap { $0 as? WKWebViewGesturesInteraction }.first?.bracketedPaste ?? false
+  }
   /// Whether the terminal's program is in application cursor-key mode (DECCKM), so the native arrow
   /// keys (quick keys and hardware keyboard) can encode themselves the way it expects.
   var moshroomApplicationCursor: Bool {

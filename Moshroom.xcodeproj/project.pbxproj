@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		D1AEC7200000000000000001 /* MoshroomStoreCapture.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1AEC7200000000000000101 /* MoshroomStoreCapture.swift */; };
+		D1AEC7100000000000000002 /* MoshroomDeviceUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1AEC7100000000000000001 /* MoshroomDeviceUITests.swift */; };
 		A1C0DE0000000000000000A2 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = A1C0DE0000000000000000A1 /* PrivacyInfo.xcprivacy */; };
 		A1C0DE0000000000000000A4 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = A1C0DE0000000000000000A3 /* PrivacyInfo.xcprivacy */; };
 		0716B5721CFFAB9300268B5B /* AppDelegate.m in Sources */ = {isa = PBXBuildFile; fileRef = 0716B52A1CFFAB9300268B5B /* AppDelegate.m */; };
@@ -278,9 +280,20 @@
 		E0F1A2B3C4D5E6F700000002 /* SSHProgname.c in Sources */ = {isa = PBXBuildFile; fileRef = E0F1A2B3C4D5E6F700000001 /* SSHProgname.c */; };
 		FACEB00C0000000000000102 /* Moshlight.swift in Sources */ = {isa = PBXBuildFile; fileRef = FACEB00C0000000000000101 /* Moshlight.swift */; };
 		FD2F33920A458F2DF436B85F /* Moshtray.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5564F224480DA9E38BDC9BA0 /* Moshtray.swift */; };
+		D1AEC7000000000000000001 /* MoshroomTyping.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1AEC7000000000000000101 /* MoshroomTyping.swift */; };
+		D1AEC7000000000000000002 /* MoshroomDirectInput.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1AEC7000000000000000102 /* MoshroomDirectInput.swift */; };
+		D1AEC7000000000000000003 /* MoshroomInputBuffer.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1AEC7000000000000000103 /* MoshroomInputBuffer.swift */; };
+		D1AEC7000000000000000004 /* Moshtour.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1AEC7000000000000000104 /* Moshtour.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
+		D1AEC710000000000000000D /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = EA0BA1831C0CC57B00719C1A /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = EA0BA18A1C0CC57B00719C1A;
+			remoteInfo = Moshroom;
+		};
 		07FABB9725C9AEC100E1CC2C /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = EA0BA1831C0CC57B00719C1A /* Project object */;
@@ -364,6 +377,9 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		D1AEC7200000000000000101 /* MoshroomStoreCapture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoshroomStoreCapture.swift; sourceTree = "<group>"; };
+		D1AEC7100000000000000001 /* MoshroomDeviceUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoshroomDeviceUITests.swift; sourceTree = "<group>"; };
+		D1AEC7100000000000000003 /* MoshroomUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MoshroomUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		A1C0DE0000000000000000A1 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		A1C0DE0000000000000000A3 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		0716B5291CFFAB9300268B5B /* AppDelegate.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = AppDelegate.h; sourceTree = "<group>"; };
@@ -653,6 +669,10 @@
 		E5CD8824356AF0F7187BB21D /* MoshOTPMigration.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MoshOTPMigration.swift; sourceTree = "<group>"; };
 		EA0BA18B1C0CC57B00719C1A /* Moshroom.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Moshroom.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		FACEB00C0000000000000101 /* Moshlight.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Moshlight.swift; sourceTree = "<group>"; };
+		D1AEC7000000000000000101 /* MoshroomTyping.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoshroomTyping.swift; sourceTree = "<group>"; };
+		D1AEC7000000000000000102 /* MoshroomDirectInput.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoshroomDirectInput.swift; sourceTree = "<group>"; };
+		D1AEC7000000000000000103 /* MoshroomInputBuffer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoshroomInputBuffer.swift; sourceTree = "<group>"; };
+		D1AEC7000000000000000104 /* Moshtour.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Moshtour.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -682,6 +702,7 @@
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		D1AEC7100000000000000006 /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 		07FABB8125C9AEC000E1CC2C /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -756,6 +777,13 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		D1AEC7100000000000000004 /* Device UI tests */ = {
+			isa = PBXGroup;
+			children = (D1AEC7100000000000000001 /* MoshroomDeviceUITests.swift */,);
+			name = "Device UI tests";
+			path = Tests;
+			sourceTree = "<group>";
+		};
 		0716B5231CFFAB9300268B5B /* Moshroom */ = {
 			isa = PBXGroup;
 			children = (
@@ -785,6 +813,11 @@
 				FACEB00C0000000000000101 /* Moshlight.swift */,
 				AAAAA1110001000000000002 /* HostsCloudMirror.swift */,
 				AAAAA1110002000000000002 /* Moshsync.swift */,
+				D1AEC7000000000000000101 /* MoshroomTyping.swift */,
+				D1AEC7000000000000000102 /* MoshroomDirectInput.swift */,
+				D1AEC7000000000000000103 /* MoshroomInputBuffer.swift */,
+				D1AEC7000000000000000104 /* Moshtour.swift */,
+				D1AEC7200000000000000101 /* MoshroomStoreCapture.swift */,
 				B102C0DE000000000000F11E /* Moshkitor.swift */,
 				B1D90000000000000000F11E /* Moshdrop.swift */,
 				B1F10000000000000000F11E /* Moshify.swift */,
@@ -1352,6 +1385,7 @@
 		EA0BA1821C0CC57B00719C1A = {
 			isa = PBXGroup;
 			children = (
+				D1AEC7100000000000000004 /* Device UI tests */,
 				BDEEE36B2B8951D3003003FD /* get_frameworks.sh */,
 				D23FFC69261C2D46003E9227 /* template_setup.xcconfig */,
 				D27D01232615F1BD00128C23 /* developer_setup.xcconfig */,
@@ -1380,6 +1414,7 @@
 		EA0BA18C1C0CC57B00719C1A /* Products */ = {
 			isa = PBXGroup;
 			children = (
+				D1AEC7100000000000000003 /* MoshroomUITests.xctest */,
 				EA0BA18B1C0CC57B00719C1A /* Moshroom.app */,
 				07FABB8425C9AEC000E1CC2C /* SSH.framework */,
 				07FABBAF25C9AECF00E1CC2C /* MoshroomFiles.framework */,
@@ -1445,6 +1480,17 @@
 /* End PBXHeadersBuildPhase section */
 
 /* Begin PBXNativeTarget section */
+		D1AEC7100000000000000008 /* MoshroomUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = D1AEC7100000000000000009 /* Build configuration list for PBXNativeTarget "MoshroomUITests" */;
+			buildPhases = (D1AEC7100000000000000005 /* Sources */, D1AEC7100000000000000006 /* Frameworks */, D1AEC7100000000000000007 /* Resources */,);
+			buildRules = ();
+			dependencies = (D1AEC710000000000000000C /* PBXTargetDependency */,);
+			name = MoshroomUITests;
+			productName = MoshroomUITests;
+			productReference = D1AEC7100000000000000003 /* MoshroomUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
 		07FABB8325C9AEC000E1CC2C /* SSH */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 07FABBA525C9AEC100E1CC2C /* Build configuration list for PBXNativeTarget "SSH" */;
@@ -1583,6 +1629,11 @@
 				LastUpgradeCheck = 0920;
 				ORGANIZATIONNAME = Moshroom;
 				TargetAttributes = {
+					D1AEC7100000000000000008 = {
+						CreatedOnToolsVersion = 26.6;
+						ProvisioningStyle = Automatic;
+						TestTargetID = EA0BA18A1C0CC57B00719C1A;
+					};
 					07FABB8325C9AEC000E1CC2C = {
 						CreatedOnToolsVersion = 12.4;
 						LastSwiftMigration = 1240;
@@ -1650,6 +1701,7 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
+				D1AEC7100000000000000008 /* MoshroomUITests */,
 				EA0BA18A1C0CC57B00719C1A /* Moshroom */,
 				07FABB8325C9AEC000E1CC2C /* SSH */,
 				07FABBAE25C9AECF00E1CC2C /* MoshroomFiles */,
@@ -1661,6 +1713,7 @@
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+		D1AEC7100000000000000007 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 		07FABB8225C9AEC000E1CC2C /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -1727,6 +1780,7 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		D1AEC7100000000000000005 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (D1AEC7100000000000000002 /* MoshroomDeviceUITests.swift in Sources */,); runOnlyForDeploymentPostprocessing = 0; };
 		07FABB8025C9AEC000E1CC2C /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -1921,6 +1975,11 @@
 				FACEB00C0000000000000102 /* Moshlight.swift in Sources */,
 				AAAAA1110001000000000001 /* HostsCloudMirror.swift in Sources */,
 				AAAAA1110002000000000001 /* Moshsync.swift in Sources */,
+				D1AEC7000000000000000001 /* MoshroomTyping.swift in Sources */,
+				D1AEC7000000000000000002 /* MoshroomDirectInput.swift in Sources */,
+				D1AEC7000000000000000003 /* MoshroomInputBuffer.swift in Sources */,
+				D1AEC7000000000000000004 /* Moshtour.swift in Sources */,
+				D1AEC7200000000000000001 /* MoshroomStoreCapture.swift in Sources */,
 				B102C0DE000000000000B17D /* Moshkitor.swift in Sources */,
 				B1D90000000000000000B17D /* Moshdrop.swift in Sources */,
 				B1F10000000000000000B17D /* Moshify.swift in Sources */,
@@ -1976,6 +2035,7 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
+		D1AEC710000000000000000C /* PBXTargetDependency */ = {isa = PBXTargetDependency; target = EA0BA18A1C0CC57B00719C1A /* Moshroom */; targetProxy = D1AEC710000000000000000D /* PBXContainerItemProxy */; };
 		07FABB9825C9AEC100E1CC2C /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = 07FABB8325C9AEC000E1CC2C /* SSH */;
@@ -2034,6 +2094,42 @@
 /* End PBXVariantGroup section */
 
 /* Begin XCBuildConfiguration section */
+		D1AEC710000000000000000A /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = "$(TEAM_ID)";
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.6;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(BUNDLE_ID).uitests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = Moshroom;
+			};
+			name = Debug;
+		};
+		D1AEC710000000000000000B /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = "$(TEAM_ID)";
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.6;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(BUNDLE_ID).uitests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = Moshroom;
+			};
+			name = Release;
+		};
 		07FABB9B25C9AEC100E1CC2C /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -2706,6 +2802,12 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		D1AEC7100000000000000009 /* Build configuration list for PBXNativeTarget "MoshroomUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (D1AEC710000000000000000A /* Debug */, D1AEC710000000000000000B /* Release */,);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
 		07FABBA525C9AEC100E1CC2C /* Build configuration list for PBXNativeTarget "SSH" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
