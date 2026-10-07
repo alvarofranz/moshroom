@@ -118,11 +118,29 @@ final class MoshroomDeviceUITests: XCTestCase {
   }
 
   func testWelcomeTourAccessibility() throws {
+    try auditWelcomeTour(contentSize: nil)
+  }
+
+  func testWelcomeTourLargestText() throws {
+    try auditWelcomeTour(contentSize: "UICTContentSizeCategoryAccessibilityXXXL")
+  }
+
+  private func auditWelcomeTour(contentSize: String?) throws {
     app.launchArguments = ["-moshroom-welcome-tour", "-moshroom-tour-no-hosts"]
+    if let contentSize { app.launchArguments += ["-UIPreferredContentSizeCategoryName", contentSize] }
     app.launch()
     XCUIDevice.shared.orientation = .portrait
     XCTAssertTrue(app.staticTexts["tour.title"].waitForExistence(timeout: 30))
     for page in 1...6 {
+      // The tour crossfades for 0.3 s. XCTest can report idle while SwiftUI's outgoing
+      // accessibility nodes still exist; measure the settled page, including large text.
+      Thread.sleep(forTimeInterval: 0.5)
+      if contentSize != nil {
+        let capture = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        capture.name = "tour-largest-text-\(page)"
+        capture.lifetime = .keepAlways
+        add(capture)
+      }
       try app.performAccessibilityAudit(for: [.dynamicType, .textClipped, .sufficientElementDescription])
       if page < 6 { try tap("tour.next") }
     }

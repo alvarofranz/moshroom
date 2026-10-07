@@ -132,14 +132,17 @@ struct MoshtourView: View {
         ScrollView {
           VStack(alignment: .leading, spacing: 22) {
             illustration(height: max(90, min(190, geometry.size.height * 0.25)))
+              .dynamicTypeSize(.large) // Decorative artwork; the explanatory text below scales.
               .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 12) {
               Text(["HELLO, WORLD", "HOSTS & PROJECTS", "CONNECTIONS & SESSIONS", "YOUR KEYBOARD", "MORE THAN TEXT", "READY WHEN YOU ARE"][model.step])
                 .font(.system(.caption, design: .monospaced).weight(.medium))
-                .tracking(1.5)
                 .foregroundStyle(Color.moshTint)
-              Text(title)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+              Text(typeSize.isAccessibilitySize ? title.replacingOccurrences(of: "\n", with: " ") : title)
                 .font(.system(.largeTitle, design: .default).weight(.semibold))
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .fixedSize(horizontal: false, vertical: true)
                 .accessibilityAddTraits(.isHeader)
                 .accessibilityIdentifier("tour.title")
@@ -180,31 +183,40 @@ struct MoshtourView: View {
   }
 
   private var footer: some View {
-    HStack(spacing: 16) {
-      if model.step > 0 {
-        Button { model.back() } label: { Image(systemName: "arrow.left").frame(width: 44, height: 44) }
+    let layout = typeSize.isAccessibilitySize
+      ? AnyLayout(VStackLayout(spacing: 12))
+      : AnyLayout(HStackLayout(spacing: 16))
+    return layout {
+      HStack(spacing: 16) {
+        if model.step > 0 {
+          Button { model.back() } label: {
+            Image(systemName: "arrow.left").font(.system(size: 20, weight: .medium)).frame(width: 44, height: 44)
+          }
           .buttonStyle(.plain)
           .moshCatalystPlainButtons()
           .accessibilityLabel("Previous page")
           .accessibilityIdentifier("tour.back")
-      }
-      HStack(spacing: 5) {
-        ForEach(0..<6) { index in
-          Capsule().fill(index == model.step ? Color.moshTint : Color.white.opacity(0.18))
-            .frame(width: index == model.step ? 22 : 6, height: 6)
         }
+        HStack(spacing: 5) {
+          ForEach(0..<6) { index in
+            Capsule().fill(index == model.step ? Color.moshTint : Color.white.opacity(0.18))
+              .frame(width: index == model.step ? 22 : 6, height: 6)
+          }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Page \(model.step + 1) of 6")
+        if typeSize.isAccessibilitySize { Spacer(minLength: 0) }
       }
-      .accessibilityElement(children: .ignore)
-      .accessibilityLabel("Page \(model.step + 1) of 6")
-      Spacer(minLength: 0)
+      if !typeSize.isAccessibilitySize { Spacer(minLength: 0) }
       Button { model.next() } label: {
         HStack(spacing: 10) {
           Text(model.step == 5 ? (model.hostCount == 0 ? "Later" : "Start") : "Next")
+            .fixedSize(horizontal: false, vertical: true)
           if model.step < 5 { Image(systemName: "arrow.right") }
         }
         .font(.body.weight(.semibold))
         .padding(.horizontal, 22)
-        .frame(minHeight: 46)
+        .frame(maxWidth: typeSize.isAccessibilitySize ? .infinity : nil, minHeight: 46)
         .foregroundStyle(model.step == 5 ? .white : Color(UIColor.moshroomBackground))
         .background(model.step == 5 ? Color.moshTint : .white, in: Capsule())
       }
