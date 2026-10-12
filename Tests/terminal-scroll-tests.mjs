@@ -42,16 +42,19 @@ try {
   for (const fixture of fixtures) {
     await start();
     const result = await page.evaluate(f => {
+      t.realizeSize_(80, 24);
       // Start as a TUI whose mode-off output was lost during the disconnect.
       term_write('\x1b[?1003h\x1b[?1006h\x1b[?2004h\x1b[?25l\x1b[?7l\x1b[4h');
-      if (f.path === 'alternate') term_write('\x1b[?1049h');
+      if (f.path === 'alternate' || f.path === 'leave-alternate') term_write('\x1b[?1049h');
       term_write(f.bytes);
       const mode = events.filter(e => e.op === 'scrollmode').at(-1);
       sent = [];
       term_reportWheelEvent('wheel', 120, 100, 0, -60, 3);
       return {mode, sent, mouse: _moshroomMouseReportOn(), sgr: t.vt.mouseCoordinates === t.vt.MOUSE_COORDINATES_SGR,
-              cursor: t.options_.cursorVisible, wrap: t.options_.wraparound, insert: t.options_.insertMode};
+              text: t.getRowsText(0, t.getRowCount()), cursor: t.options_.cursorVisible, wrap: t.options_.wraparound, insert: t.options_.insertMode};
     }, fixture);
+    check(result.cursor === true && result.wrap === true && result.insert === false, `${fixture.name}: restore cursor, wrap and insert modes`);
+    if (fixture.longHistory) check(result.text.includes(fixture.longHistory), `${fixture.name}: preserve the complete wrapped history line`);
     check(result.mouse === fixture.mouse, `${fixture.name}: restore current mouse mode`);
     check(result.mode.mouseReport === fixture.mouse, `${fixture.name}: native scroll owner agrees`);
     check(result.mode.bracketedPaste === false, `${fixture.name}: clear obsolete paste mode`);
@@ -106,6 +109,31 @@ try {
   check(paging.mosh.length === 0, 'Bare mosh alternate screen receives no synthetic keys in either direction');
   check(paging.shell.length === 0, 'Normal shell receives no synthetic keys in either direction');
   check(paging.mouse.length === 3 && paging.mouse.every(s => s.startsWith('\x1b[<64;')), 'Mouse-capable TUI keeps wheel reports, not page keys');
+  // Continuous motion and momentum share the same distance budget, including application-cursor mode.
+  await start();
+  const sustained = await page.evaluate(() => {
+    term_write('\x1b[?1049h\x1b[?1h');
+    const realNow = Date.now;
+    let clock = 10000;
+    Date.now = () => clock;
+    try {
+      sent = []; term_beginScrollGesture();
+      const threshold = Math.max(3, Math.floor(t.scrollPort_.visibleRowCount / 2));
+      const step = () => { clock += 16; term_reportWheelEvent('wheel', 100, 100, 0, -24, 1, true); };
+      step();
+      for (let i = 0; i < threshold - 1; i++) step();
+      const beforeThreshold = sent.slice(); step();
+      const atThreshold = sent.slice();
+      for (let i = 0; i < threshold; i++) step();
+      const momentum = sent.slice();
+      clock += 301; step();
+      return {beforeThreshold, atThreshold, momentum, afterIdle: sent.slice()};
+    } finally { Date.now = realNow; }
+  });
+  check(sustained.beforeThreshold.length === 1, 'Continuous movement accumulates before paging again');
+  check(sustained.atThreshold.length === 2, 'Half a viewport advances one more page');
+  check(sustained.momentum.length === 3 && sustained.momentum.every(s => s === '\x1b[5~'), 'Momentum remains paced with application cursor keys enabled');
+  check(sustained.afterIdle.length === 4, 'A wheel tick after idle responds immediately');
   check(errors.length === 0, `No renderer exceptions: ${errors.join('; ')}`);
   console.log(`Terminal scroll (${engine}): ${fixtures.length} reconnect fixtures; ${assertions} assertions passed`);
 } finally { await browser.close(); }

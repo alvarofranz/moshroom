@@ -673,11 +673,9 @@ import ios_system
     let rows = device.rows > 0 ? device.rows : snap.state.height
     // The snapshot is authoritative when tmux exposes the flag. Do not carry a previous TUI's
     // mouse mode into later reconnects after it turned that mode off while we were away.
-    if let mouseAny = snap.state.mouseAny {
-      modeTracker.restoreMouseAnyMotion(mouseAny)
-      p.mouseAnyMotion = mouseAny
-    }
+    modeTracker.restoreSnapshot(mouseAny: snap.state.mouseAny, pendingEscape: snap.pendingEscape)
     let modes = modeTracker.modes
+    p.mouseAnyMotion = modes.mouseAnyMotion
     MoshLog.log("tmux", "resync: kind=\(kind.rawValue) alternate=\(snap.state.alternateOn) history=\(snap.state.historySize) mouse=\(snap.state.mouseStandard || snap.state.mouseButton || (snap.state.mouseAny ?? modes.mouseAnyMotion))")
     let bytes: [UInt8]
     switch kind {

@@ -229,6 +229,10 @@ enum TmuxResync {
   private static let esc: UInt8 = 0x1B
   private static func bytes(_ s: String) -> [UInt8] { Array(s.utf8) }
 
+  // Captures are painted independently of the program's previous insertion/wrapping modes.
+  // In particular, joined history lines must wrap even when the disconnected TUI disabled it.
+  private static let paintModes = "\u{1b}[4l\u{1b}[?7h"
+
   /// A full refill. `rows` is the terminal's own height. A `marker` means the terminal still shows
   /// something: that is pushed up into its scrollback first, so nothing on it is painted over, and a
   /// non-empty marker goes above the refill as a short dim line.
@@ -240,7 +244,7 @@ enum TmuxResync {
     var lines: [[UInt8]] = []
     var out: [UInt8]
     if let marker {
-      out = bytes("\u{1b}[0m")
+      out = bytes("\u{1b}[0m" + paintModes)
       if leaveAlternate {
         out += bytes("\u{1b}[?1049l")
       }
@@ -250,7 +254,7 @@ enum TmuxResync {
         lines.append(bytes("\u{1b}[2m\(marker)\u{1b}[0m"))
       }
     } else {
-      out = bytes("\u{1b}[0m\u{1b}[r\u{1b}[H\u{1b}[2J")
+      out = bytes("\u{1b}[0m" + paintModes + "\u{1b}[r\u{1b}[H\u{1b}[2J")
     }
     lines += snap.history.map(trimTrailingSpaces)
     out += _primary(snap, lines: lines, rows: rows, eraseRows: marker != nil)
@@ -261,7 +265,7 @@ enum TmuxResync {
   /// An overlap append: the terminal still holds everything up to `newFrom` (an index into the
   /// snapshot's history), so only what comes after it is written, from the top of a cleared screen.
   static func overlapAppend(_ snap: TmuxSnapshot, newFrom: Int, rows: Int, modes: TmuxTrackedModes) -> [UInt8] {
-    var out = bytes("\u{1b}[0m\u{1b}[r\u{1b}[H\u{1b}[J")
+    var out = bytes("\u{1b}[0m" + paintModes + "\u{1b}[r\u{1b}[H\u{1b}[J")
     let fresh = newFrom < snap.history.count ? Array(snap.history[newFrom...]) : []
     out += _primary(snap, lines: fresh.map(trimTrailingSpaces), rows: rows)
     out += _tail(snap, rows: rows, modes: modes)
@@ -271,7 +275,7 @@ enum TmuxResync {
   /// The alternate screen only, for a terminal that is on its alternate screen and missed nothing
   /// else (the program was full screen the whole time).
   static func alternateRepaint(_ snap: TmuxSnapshot, rows: Int, modes: TmuxTrackedModes) -> [UInt8] {
-    var out = bytes("\u{1b}[0m\u{1b}[r\u{1b}[H\u{1b}[2J")
+    var out = bytes("\u{1b}[0m" + paintModes + "\u{1b}[r\u{1b}[H\u{1b}[2J")
     out += _alternateRows(snap.screen, rows: rows)
     out += _tail(snap, rows: rows, modes: modes)
     return out
@@ -452,8 +456,12 @@ struct TmuxModeTracker {
     self.modes = modes
   }
 
-  mutating func restoreMouseAnyMotion(_ enabled: Bool) {
-    modes.mouseAnyMotion = enabled
+  mutating func restoreSnapshot(mouseAny: Bool?, pendingEscape: [UInt8]) {
+    if let mouseAny { modes.mouseAnyMotion = mouseAny }
+    // Output may have completed the old partial sequence while disconnected. Only the snapshot's
+    // unfinished escape can be continued by the next live bytes, just as in the terminal renderer.
+    carry = []
+    scan(pendingEscape)
   }
 
   mutating func scan(_ bytes: [UInt8]) {

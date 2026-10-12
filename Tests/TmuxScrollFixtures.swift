@@ -4,6 +4,19 @@ import Foundation
 
 @main enum TmuxScrollFixtures {
   static func main() throws {
+    var tracker = TmuxModeTracker(TmuxTrackedModes(bracketedPaste: false, mouseAnyMotion: true))
+    tracker.scan(Array("\u{1b}[?2004".utf8))
+    tracker.restoreSnapshot(mouseAny: false, pendingEscape: [])
+    tracker.scan(Array("h".utf8))
+    precondition(!tracker.modes.bracketedPaste, "Reconnect must discard an obsolete partial mode sequence")
+    precondition(!tracker.modes.mouseAnyMotion, "Snapshot false must replace archived true")
+    tracker.restoreSnapshot(mouseAny: true, pendingEscape: Array("\u{1b}[?2004".utf8))
+    tracker.scan(Array("h".utf8))
+    precondition(tracker.modes.bracketedPaste, "Continue the snapshot's pending sequence")
+    tracker.restoreSnapshot(mouseAny: nil, pendingEscape: [])
+    precondition(tracker.modes.mouseAnyMotion, "Old tmux keeps tracked mouse mode")
+    tracker.scan(Array("\u{1b}[?2004l\u{1b}[?1003l".utf8))
+    precondition(tracker.modes == TmuxTrackedModes(), "Live output still disables both modes")
     var fixtures: [[String: Any]] = []
     let base = "%0|80|24|120|0|0|0|0|23|1|0|0|0|1|0|23|0|0|0|0|0|123|@0|1"
     // The server's explicit false must defeat stale archived true, while an unavailable format
@@ -40,6 +53,19 @@ import Foundation
         fixtures.append(["name": "\(mode)-sgr-\(sgr)", "path": "full", "mouse": true,
                          "sgr": sgr, "bytes": String(decoding: bytes, as: UTF8.self)])
       }
+    }
+    // Joined history can be wider than the terminal even if the old TUI disabled wrapping.
+    for path in ["full", "overlap", "retained", "leave-alternate"] {
+      let state = TmuxPaneState(line: base + "|0")!
+      let longLine = String(repeating: "W", count: 160) + "END OF LONG HISTORY"
+      let snapshot = TmuxSnapshot(state: state, history: [Array(longLine.utf8)], plainHistory: nil,
+        screen: (0..<24).map { Array("SCREEN ROW \($0)".utf8) }, savedNormal: [], pendingEscape: [])
+      let bytes = path == "overlap"
+        ? TmuxResync.overlapAppend(snapshot, newFrom: 0, rows: 24, modes: TmuxTrackedModes())
+        : TmuxResync.fullRefill(snapshot, rows: 24, modes: TmuxTrackedModes(),
+            marker: path == "full" ? nil : "", leaveAlternate: path == "leave-alternate")
+      fixtures.append(["name": "\(path)-long-history", "path": path, "mouse": false,
+        "longHistory": longLine, "bytes": String(decoding: bytes, as: UTF8.self)])
     }
     let data = try JSONSerialization.data(withJSONObject: fixtures, options: [.prettyPrinted, .sortedKeys])
     FileHandle.standardOutput.write(data)
