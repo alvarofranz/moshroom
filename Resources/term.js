@@ -1449,28 +1449,13 @@ function _setTermCoordinates(event, x, y) {
 //      screen, and a full-screen program that SCROLLS (a pager walking down a file) banks its lines
 //      into whichever one it is on, so that history is real; it was simply unreachable, because the
 //      gesture was hard-wired to wheel reports nothing was listening for.
-//   3. nothing local to move -> one cursor key per row, DOWNWARDS ONLY, which is the safe half of
-//      what desktop terminals call alternate scroll: a pager that repaints in place pages forward
-//      on Down, an editor moves its cursor down, and at a shell prompt Down is readline's
-//      next-history, which does nothing when no history is being walked. Unconditional, and it needs
-//      no user setting: the half that could hurt is the one that is never sent (see below), so the
-//      only alternative to this rung is a swipe that does nothing at all.
+//   3. a remote alternate screen with no mouse support -> Page Up / Page Down. The native side
+//      explicitly permits this for SSH and tmux control mode only: mosh itself uses the alternate
+//      screen even at a shell prompt. A plain shell or an unknown transport receives NO input.
 //
-// The direction asymmetry is the whole design, and it is measured, not cautious: Up at a shell
-// prompt is previous-history, which is what made 1.0.4 unbearable (a swipe to read back typed the
-// last command onto the prompt). Nothing needs Up either, because a program that scrolled has its
-// lines in the local bank (rung 2 shows exactly the content the user is reaching for) and a program
-// that did not has nothing above its first screen to show. So Up is never sent, in any state.
-//
-// Before all this, "alternate screen" alone armed the remote path, so a swipe in any full-screen
-// program that had not asked for the mouse produced literally nothing: no report to send, no local
-// scroll attempted. That is the whole "sometimes scrolling does nothing" class of bug.
-//
-// Measured on the live demo host (2026-08-17), because the ladder's shape follows from it: `less`
-// answers to SS3 (\x1bOB) and ignores CSI (\x1b[B) once it sets DECCKM, and it DOES bank the lines
-// that scroll off it (18 -> 21 scrollback rows for 3 lines). A mosh session banks nothing at all
-// (120 lines of output, scrollback still 0): mosh repaints frames rather than scrolling, which is
-// why it has no scrollback anywhere and why tmux (with `mouse on`, so rung 1) is the answer there.
+// Never synthesize Up/Down arrows: they can edit a prompt or recall shell history. Page keys let
+// full-screen pagers and transcript views without mouse reporting navigate their own content.
+// Mouse-capable programs keep ordinary wheel events and local history keeps pixel-smooth scrolling.
 // How far above the viewport to look for text before offering a local scroll. A window, not the row
 // about to be revealed: blank lines inside real history must not stall the scroll, while the run of
 // blank rows that entering the alternate screen leaves behind must not be walked into. Bounded
@@ -1708,7 +1693,7 @@ hterm.ScrollPort.prototype.syncRowNodesDimensions_ = function() {
 // The native side quantises the finger into whole rows and passes the COUNT, because hterm's VT
 // encodes exactly ONE wheel report per event: a single report for a 3-row flick made every TUI
 // scroll a third of the way the finger went, which is what read as sluggish and imprecise.
-function term_reportWheelEvent(name, x, y, deltaX, deltaY, rows) {
+function term_reportWheelEvent(name, x, y, deltaX, deltaY, rows, canPageAlternateScreen) {
   if (!t || !t.prompt || !t.scrollPort_ || !t.vt) {
     return;
   }
@@ -1729,14 +1714,13 @@ function term_reportWheelEvent(name, x, y, deltaX, deltaY, rows) {
     return;
   }
 
-  // Rungs 2 and 3 apply on EITHER screen. The native side sends the gesture here whenever the local
-  // scrollback cannot serve it, which includes a full-screen program rendering inline on the normal
-  // screen: rung 2's own guards find nothing above such a screen and rung 3 pages it.
+  // Read any locally banked history first. Only a known remote alternate screen may then turn the
+  // gesture into page keys; an inline prompt and a bare mosh shell must remain untouched.
   var up = deltaY < 0;
   if (_moshroomScrollAltLocally(up, count)) {
     return;
   }
-  _moshroomSendAltScrollKeys(up, count);
+  _moshroomPageAlternateScreen(up, count, canPageAlternateScreen);
 }
 
 // Rung 2: the alternate screen's own scrollback. Up is offered while there is text within reach
@@ -1764,21 +1748,34 @@ function _moshroomScrollAltLocally(up, count) {
   return true;
 }
 
-// Rung 3: one Down per row, and never an Up (see the ladder's note). The whole gesture goes out as
-// ONE write, which is what keeps tmux's escape-time from splitting the sequence and leaking a
-// literal "[B" onto the command line, and the burst is capped so a flick cannot run away. SS3 vs CSI
-// is not cosmetic: with DECCKM set (every pager and full-screen app sets it) `less` answers to
-// \x1bOB and ignores \x1b[B.
-function _moshroomSendAltScrollKeys(up, count) {
-  if (up) {
+// Page navigation is necessarily coarser than a wheel report. Respond to the first row of a new
+// gesture, then accumulate half a viewport before another page so a small trackpad swipe cannot
+// race through dozens of pages. Native resets this at drag start; the timeout covers wheel ticks.
+var _moshroomPaging = null;
+function term_beginScrollGesture() {
+  _moshroomPaging = null;
+}
+
+function _moshroomPageAlternateScreen(up, count, allowed) {
+  if (allowed !== true || t.isPrimaryScreen()) {
+    _moshroomPaging = null;
     return;
   }
-  var prefix = (t.keyboard && t.keyboard.applicationCursor) ? '\x1bO' : '\x1b[';
-  var out = '';
-  for (var i = 0; i < Math.min(count, 3); i++) {
-    out += prefix + 'B';
+  var now = Date.now();
+  var fresh = !_moshroomPaging || _moshroomPaging.up !== up || now - _moshroomPaging.at > 300;
+  var threshold = Math.max(3, Math.floor(t.scrollPort_.visibleRowCount / 2));
+  if (fresh) {
+    _moshroomPaging = {up: up, rows: 0, at: now};
+  } else {
+    _moshroomPaging.rows += count;
+    _moshroomPaging.at = now;
+    if (_moshroomPaging.rows < threshold) {
+      return;
+    }
+    _moshroomPaging.rows %= threshold;
   }
-  t.io.sendString(out);
+  // Standard VT page keys do not depend on application-cursor mode (DECCKM).
+  t.io.sendString(up ? '\x1b[5~' : '\x1b[6~');
 }
 
 // ---- Universal tap interactivity ------------------------------------------------------------

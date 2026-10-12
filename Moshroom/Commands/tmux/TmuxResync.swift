@@ -105,7 +105,8 @@ struct TmuxPaneState {
   var mouseButton = false
   var mouseUTF8 = false
   var mouseSGR = false
-  var mouseAny = false
+  // nil means this tmux does not expose the flag; an explicit false overrides cached output.
+  var mouseAny: Bool? = nil
   var inMode = false
   var sessionCreated = ""
   var windowId = ""
@@ -147,11 +148,11 @@ struct TmuxPaneState {
     mouseButton = b(17)
     mouseUTF8 = b(18)
     mouseSGR = b(19)
-    // Any-motion tracking (DECSET 1003): what a full-screen agent asks for (Claude Code's fullscreen
-    // mode does, with SGR). Missing it on attach left the pane with NO mouse reporting, so the wheel had
-    // nothing to talk to and the conversation could not be scrolled at all. Appended last so a tmux
-    // that does not know the format (it expands to nothing) still parses.
-    mouseAny = f.count > 24 && b(24)
+    // An unsupported format expands to nothing. Keep that distinct from "0": a program may have
+    // turned mouse reporting OFF while we were disconnected, making the tracked value stale.
+    if f.count > 24, ["0", "1"].contains(f[24]) {
+      mouseAny = b(24)
+    }
     inMode = b(20)
     sessionCreated = f[21]
     windowId = f[22]
@@ -330,15 +331,19 @@ enum TmuxResync {
     out += bytes(cup)
     out += bytes(s.appCursorKeys ? "\u{1b}[?1h" : "\u{1b}[?1l")
     out += bytes(s.appKeypad ? "\u{1b}=" : "\u{1b}>")
-    if !s.cursorVisible { out += bytes("\u{1b}[?25l") }
-    if !s.wrap { out += bytes("\u{1b}[?7l") }
-    if s.insertMode { out += bytes("\u{1b}[4h") }
+    out += bytes(s.cursorVisible ? "\u{1b}[?25h" : "\u{1b}[?25l")
+    out += bytes(s.wrap ? "\u{1b}[?7h" : "\u{1b}[?7l")
+    out += bytes(s.insertMode ? "\u{1b}[4h" : "\u{1b}[4l")
+    // A surviving page may still have the previous program's mouse modes. Clear the whole group
+    // before enabling the snapshot's modes, or a shell restored after a TUI keeps sending its
+    // scroll gestures as mouse reports instead of moving the local history.
+    out += bytes("\u{1b}[?9l\u{1b}[?1000l\u{1b}[?1002l\u{1b}[?1003l\u{1b}[?1005l\u{1b}[?1006l\u{1b}[?1015l")
     if s.mouseStandard { out += bytes("\u{1b}[?1000h") }
     if s.mouseButton { out += bytes("\u{1b}[?1002h") }
-    if s.mouseAny || modes.mouseAnyMotion { out += bytes("\u{1b}[?1003h") }
+    if s.mouseAny ?? modes.mouseAnyMotion { out += bytes("\u{1b}[?1003h") }
     if s.mouseUTF8 { out += bytes("\u{1b}[?1005h") }
     if s.mouseSGR { out += bytes("\u{1b}[?1006h") }
-    if modes.bracketedPaste { out += bytes("\u{1b}[?2004h") }
+    out += bytes(modes.bracketedPaste ? "\u{1b}[?2004h" : "\u{1b}[?2004l")
     out += snap.pendingEscape
     return out
   }
@@ -445,6 +450,10 @@ struct TmuxModeTracker {
 
   init(_ modes: TmuxTrackedModes = TmuxTrackedModes()) {
     self.modes = modes
+  }
+
+  mutating func restoreMouseAnyMotion(_ enabled: Bool) {
+    modes.mouseAnyMotion = enabled
   }
 
   mutating func scan(_ bytes: [UInt8]) {

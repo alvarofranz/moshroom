@@ -614,6 +614,13 @@ extension TermController: SuspendableSession {
     (_session as? MCPSession)?.sessionParams?.childSessionType == "tmux"
   }
 
+  /// In SSH and tmux control mode, an alternate screen belongs to the remote program. Mosh uses
+  /// an alternate screen even for a shell, so it must never opt into wheel-to-page-key translation.
+  var moshroomCanPageAlternateScreen: Bool {
+    let type = (_session as? MCPSession)?.sessionParams?.childSessionType
+    return type == "ssh" || type == "tmux"
+  }
+
   /// Reconnect this tab's mosh session in place: what closing the tab and connecting again from Quick
   /// Connect does, without losing the tab. For a session whose server no longer answers (it rebooted,
   /// or the network in between blocks it): mosh itself never gives up on a server it has heard from.

@@ -130,6 +130,7 @@ let MoshroomTerminalTailingNotification = "MoshroomTerminalTailingNotification"
   private var _isPrimaryScreen = true
   private var _mouseReportOn = false
   private var _pendingScrollModeApply = false
+  private var _lastScrollModeLog: String?
 
   /// The viewport is at the live end of the transcript. Read by TermView to skip a pointless
   /// scroll-to-bottom on every keystroke, and mirrored to SpaceController's "back to live" chip.
@@ -373,6 +374,13 @@ let MoshroomTerminalTailingNotification = "MoshroomTerminalTailingNotification"
     // instead, the viewport is moved by the page a row at a time (or not at all, when the remote is
     // the one scrolling), so showing this bar being dragged would be a lie.
     _scrollView.showsVerticalScrollIndicator = local
+    // Record routing changes, not gestures or terminal text. A support log can then distinguish
+    // local history from a TUI that owns the wheel after a reconnect or renderer recovery.
+    let modeLog = "owner=\(local ? "history" : "terminal") primary=\(_isPrimaryScreen) mouse=\(_mouseReportOn)"
+    if _lastScrollModeLog != modeLog {
+      _lastScrollModeLog = modeLog
+      MoshLog.log("scroll", modeLog)
+    }
     _updateTailing()
   }
 
@@ -489,8 +497,10 @@ extension WKWebViewGesturesInteraction: UIScrollViewDelegate {
       // event, so a 3-row flick used to move the remote a single line. The page sends one report per
       // row instead, and walks its ladder from there (see the Scrolling section in term.js).
       let rows = min(abs(steps), 12)
+      let controller = (_wkWebView?.superview as? TermView)?.termController as? TermController
+      let canPage = controller?.moshroomCanPageAlternateScreen ?? false
       _wkWebView?.evaluateJavaScript(
-        "term_reportWheelEvent(\"wheel\", \(point.x), \(point.y), \(0), \(dY), \(rows));",
+        "term_reportWheelEvent(\"wheel\", \(point.x), \(point.y), \(0), \(dY), \(rows), \(canPage));",
         completionHandler: nil)
     }
   }
@@ -498,6 +508,7 @@ extension WKWebViewGesturesInteraction: UIScrollViewDelegate {
   func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
     selection?.scrollActivity(true)
     if scrollView == _termScrollView {
+      _wkWebView?.evaluateJavaScript("term_beginScrollGesture();", completionHandler: nil)
       if _termScrollView.panGestureRecognizer.numberOfTouches > 0 {
         _scrollPoint = _termScrollView.panGestureRecognizer.location(in: view)
       } else {
