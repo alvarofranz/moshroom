@@ -41,7 +41,8 @@ final class SelectionUITests: XCTestCase {
     let end = point(column: 22, row: 1)
     point().press(forDuration: 0.8, thenDragTo: end)
     XCTAssertTrue(app.buttons["Copy"].waitForExistence(timeout: 5))
-    XCTAssertEqual(state()["text"] as? String, "Select this paragraph and copy clean text.")
+    // The status label samples the asynchronous WebKit bridge; wait for its final drag reply.
+    expect("text", "Select this paragraph and copy clean text.")
     let capture = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
     capture.name = "touch-selection"
     capture.lifetime = .keepAlways

@@ -479,12 +479,6 @@ extension TermController: TermDeviceDelegate {
     deviceView.webView.reportFocus(true)
     _termDevice.focus()
 
-    let input = KBTracker.shared.input
-
-    if input != KBTracker.shared.input {
-      input?.reportFocus(false)
-    }
-
     _ = _termDevice.view?.webView.becomeFirstResponder()
   }
     

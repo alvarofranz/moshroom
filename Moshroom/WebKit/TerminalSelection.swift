@@ -127,6 +127,7 @@ struct TerminalSelectionGeometry {
   }
   private var _queue: [Call] = []
   private var _inFlight = false
+  private var _pageGeneration: UInt = 0
 
   private var _drag = Drag.none
   private var _dragPoint = CGPoint.zero
@@ -178,6 +179,17 @@ struct TerminalSelectionGeometry {
     #endif
   }
 
+  deinit {
+    _displayLink?.invalidate()
+    #if !targetEnvironment(macCatalyst)
+    _pillTimer?.invalidate()
+    _loupe?.invalidate()
+    _startHandle.removeFromSuperview()
+    _endHandle.removeFromSuperview()
+    _pill.removeFromSuperview()
+    #endif
+  }
+
   // MARK: - Page calls
 
   private func _call(_ js: String, coalesce: String? = nil, done: ((TerminalSelectionGeometry?) -> Void)? = nil) {
@@ -202,8 +214,11 @@ struct TerminalSelectionGeometry {
     }
     let call = _queue.removeFirst()
     _inFlight = true
+    let generation = _pageGeneration
     webView.evaluateJavaScript(call.js()) { [weak self] result, _ in
-      guard let self = self else { return }
+      // A destroyed page may reply after its replacement is already selecting text. It must
+      // neither restore old geometry nor release the replacement page's in-flight call.
+      guard let self = self, self._pageGeneration == generation else { return }
       self._inFlight = false
       let geo = TerminalSelectionGeometry(result)
       if let geo = geo {
@@ -260,9 +275,14 @@ struct TerminalSelectionGeometry {
 
   /// The terminal page was (re)built: whatever was selected lived in the page that is gone.
   @objc func pageDidReload() {
+    _pageGeneration &+= 1
+    _inFlight = false
     _queue.removeAll()
     _stopAutoScroll()
     _drag = .none
+    _tapCount = 0
+    _lastTapTime = 0
+    _multiClickAllowed = true
     var reset = TerminalSelectionGeometry()
     reset.seq = 0
     geometry = reset
@@ -271,6 +291,9 @@ struct TerminalSelectionGeometry {
       onSelectionStateChange?()
     }
     #if !targetEnvironment(macCatalyst)
+    _scrolling = false
+    _loupe?.invalidate()
+    _loupe = nil
     _pillWanted = false
     _layoutChrome()
     #endif
@@ -303,7 +326,12 @@ struct TerminalSelectionGeometry {
       completion(nil)
       return
     }
-    webView.evaluateJavaScript("term_selText({raw: \(raw), oneLine: \(oneLine)});") { result, _ in
+    let generation = _pageGeneration
+    webView.evaluateJavaScript("term_selText({raw: \(raw), oneLine: \(oneLine)});") { [weak self] result, _ in
+      guard let self = self, self._pageGeneration == generation else {
+        completion(nil)
+        return
+      }
       let text = result as? String
       completion(text?.isEmpty == false ? text : nil)
     }
