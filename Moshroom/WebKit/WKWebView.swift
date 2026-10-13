@@ -282,6 +282,10 @@ let MoshroomTerminalTailingNotification = "MoshroomTerminalTailingNotification"
     _tapRecognizer.cancelsTouchesInView = false
     _tapRecognizer.delegate = self
     _tapRecognizer.addTarget(self, action: #selector(_onTap(_:)))
+    // A stationary long press can also satisfy UITapGestureRecognizer. If both finish, the
+    // release toggles away the Copy pill that the press just opened. A short tap still runs as
+    // soon as the finger lifts (the long press fails then); a completed press owns its release.
+    _tapRecognizer.require(toFail: _longPressRecognizer)
 
     #if targetEnvironment(macCatalyst)
     // On the Mac a left-button DRAG selects text, like any terminal. The two scroll pans exist

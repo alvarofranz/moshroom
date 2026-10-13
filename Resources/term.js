@@ -495,7 +495,11 @@ function _mshTakeSnapshot() {
   for (var i = 0; i < n; i++) {
     var rec = t.getRowNode(sR + i);
     var range = _mshRowRange(sel, i, n);
-    snap.push({rec: rec, txt: _mshCellsText(_mshCells(rec), range[0], range[1]), o: _mshRowWraps(rec)});
+    var cells = _mshCells(rec);
+    snap.push({rec: rec, txt: _mshCellsText(cells, range[0], range[1]), o: _mshRowWraps(rec),
+      // Keep the row's context as it was selected, even if a TUI later rewrites it. The first
+      // selected row often starts AFTER a border; that must not hide the common gutter.
+      full: _mshCellsText(cells, 0, Infinity), offset: _mshCellsText(cells, 0, range[0]).length});
   }
   sel.snap = snap;
 }
@@ -508,7 +512,8 @@ function _mshSnapshotIfNeeded() {
 
 // -- Text --
 
-var _mshGutterRegex = /^[─-╿|]$/;
+var _mshGutterRegex = /^[│┃┆┇┊┋║╎╏▏▎▍▌▐▕]$/;
+var _mshDecorationRegex = /^[\s\u2500-\u257F▏▎▍▌▐▕]*$/;
 
 // rows: [{txt, o}] in order. linear: a wrapped row joins the next with no newline and keeps its
 // trailing blanks (the line continues there); any other row loses its trailing blanks (unless raw)
@@ -532,58 +537,59 @@ function _mshJoinRows(rows, mode, raw) {
 
 // "One line": the selection as a single line, for pasting a wrapped command or a paragraph a TUI
 // broke into rows. Rows join with one space (wrapped rows with none), runs of blanks collapse, and a
-// box-drawing gutter that every row carries at the same column (a TUI's border, a diff's bar) is
-// dropped on either side.
+// repeated gutter at the same terminal column is dropped on either side. Detection uses the
+// full rows, but removal stays inside the selection. Inline symbols and shell pipes are content.
 function _mshOneLine(rows) {
   // A row that is nothing but box drawing (a TUI's top or bottom border, a rule) carries no text.
   // (Unless that is all there is: then the user asked for exactly that.)
   var withText = rows.filter(function(r) {
-    return /[^\s\u2500-\u257F]/.test(r.txt);
+    return !_mshDecorationRegex.test(r.txt);
   });
-  if (withText.length) {
-    rows = withText;
+  if (!withText.length) {
+    return _mshJoinRows(rows, 'linear', false).replace(/\s+/g, ' ').trim();
   }
-  var txts = [];
-  var i;
-  for (i = 0; i < rows.length; i++) {
-    txts.push(rows[i].txt);
-  }
-  if (rows.length > 1) {
-    txts = _mshStripGutter(txts, false);
-    txts = _mshStripGutter(txts, true);
-  }
+  rows = withText;
+  var left = _mshCommonGutter(rows, false);
+  var right = _mshCommonGutter(rows, true);
   var out = '';
-  for (i = 0; i < txts.length; i++) {
-    out += txts[i];
-    if (i < txts.length - 1 && !rows[i].o) {
+  for (var i = 0; i < rows.length; i++) {
+    var row = rows[i];
+    var offset = row.offset || 0;
+    var from = left ? Math.max(0, left[i] + 1 - offset) : 0;
+    var to = right ? Math.max(0, right[i] - offset) : row.txt.length;
+    out += row.txt.slice(from, to);
+    if (i < rows.length - 1 && !row.o) {
       out += ' ';
     }
   }
   return out.replace(/\s+/g, ' ').trim();
 }
 
-function _mshStripGutter(txts, right) {
-  var at = -1;
-  for (var i = 0; i < txts.length; i++) {
-    var s = txts[i];
+function _mshCommonGutter(rows, right) {
+  if (rows.length < 2) {
+    return null;
+  }
+  var column = -1, glyph = '', count = 0, offsets = [];
+  for (var i = 0; i < rows.length; i++) {
+    var s = rows[i].full;
+    if (typeof s !== 'string') {
+      return null;
+    }
     if (!/\S/.test(s)) {
+      offsets.push(right ? s.length : -1);
       continue;
     }
     var k = right ? s.replace(/\s+$/, '').length - 1 : s.search(/\S/);
-    if (!_mshGutterRegex.test(s[k]) || (at >= 0 && k !== at)) {
-      return txts;
+    var col = lib.wc.strWidth(s.slice(0, k));
+    if (!_mshGutterRegex.test(s[k]) || (column >= 0 && (col !== column || s[k] !== glyph))) {
+      return null;
     }
-    at = k;
+    column = col;
+    glyph = s[k];
+    count++;
+    offsets.push(k);
   }
-  if (at < 0) {
-    return txts;
-  }
-  return txts.map(function(s) {
-    if (!/\S/.test(s)) {
-      return s;
-    }
-    return right ? s.slice(0, at) : s.slice(at + 1);
-  });
+  return count >= 2 ? offsets : null;
 }
 
 // The selected rows as [{txt, o}]: live from the records, or the snapshot once the text is gone.
