@@ -308,7 +308,8 @@ struct KeyDetailsView: View {
     _pendingDelete = MoshDeletePrompt(
       name: card.id,
       what: "this identity",
-      extra: "Anything using it to connect will stop working."
+      extra: "Anything using it to connect will stop working.",
+      syncedSecret: card.hasSynchronizableSecret() ? "Its private key" : nil
     ) {
       _deleteCard()
     }
@@ -455,7 +456,7 @@ struct KeyDetailsView: View {
           } footer: {
             Text(_privateKeyRestored
                  ? "Private key restored on this device."
-                 : "Both ask for Face ID first. Export writes an OpenSSH key file you can AirDrop or save — it is the private key itself, so treat it like one.")
+                 : "Both ask for Face ID first. Export writes an OpenSSH key file you can AirDrop or save. It is the private key itself, so treat it like one.")
               .foregroundColor(_privateKeyRestored ? Color.green : nil)
           }
         } else {
@@ -476,7 +477,7 @@ struct KeyDetailsView: View {
           } header: {
             Text("Private Key")
           } footer: {
-            Text("Copy or export it from the device that has it. Moshroom checks the key really is this identity before storing it, and the identity itself is left alone — nothing is deleted and nothing is re-synced.\n\n" + Moshsync.incompleteKeysHint)
+            Text("Copy or export it from the device that has it. Moshroom checks the key really is this identity before storing it, and the identity itself is left alone: nothing is deleted and nothing is re-synced.\n\n" + Moshsync.incompleteKeysHint)
           }
         }
       }

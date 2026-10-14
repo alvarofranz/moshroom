@@ -118,7 +118,7 @@ final class MoshnectorView: UIView {
     emptyPara.alignment = .center
     emptyPara.lineSpacing = 7
     emptyLabel.attributedText = NSAttributedString(
-      string: "No saved hosts yet.\nAdd one in Settings → Hosts.",
+      string: "No saved hosts yet.\nAdd one in Settings › Hosts.",
       attributes: [.paragraphStyle: emptyPara,
                    .font: UIFont.systemFont(ofSize: 13),
                    .foregroundColor: UIColor.secondaryLabel])
@@ -391,7 +391,7 @@ final class MoshonboardView: UIView {
     title.numberOfLines = 0
 
     let message = UILabel()
-    message.text = "To get started, add a host you can reach over SSH or Mosh, plus an SSH key for secure login."
+    message.text = "To get started, add a server you can reach over SSH. Log in with a password or an SSH key."
     message.font = .systemFont(ofSize: 15)
     message.textColor = .secondaryLabel
     message.textAlignment = .center
@@ -399,7 +399,7 @@ final class MoshonboardView: UIView {
 
     let addHost = _primaryButton("Add your first host")
     addHost.addAction(UIAction { [weak self] _ in self?.onAddHost?() }, for: .touchUpInside)
-    let addKey = _secondaryButton("Add an SSH key")
+    let addKey = _secondaryButton("Set up an SSH key")
     addKey.addAction(UIAction { [weak self] _ in self?.onAddKey?() }, for: .touchUpInside)
 
     let stack = UIStackView(arrangedSubviews: [icon, title, message, addHost, addKey])
@@ -536,8 +536,9 @@ enum Moshnector {
     // narrower than the host card since it's text-centric.
     let onboard = MoshonboardView()
     onboard.isHidden = true
-    onboard.onAddHost = { [weak sc] in sc?.openSettings() }
-    onboard.onAddKey = { [weak sc] in sc?.openSettings() }
+    // Straight to the host editor or the key list, the same destinations as the welcome tour.
+    onboard.onAddHost = { [weak sc] in sc?.moshroomOpenTourSetup(.addHost) }
+    onboard.onAddKey = { [weak sc] in sc?.moshroomOpenTourSetup(.keys) }
     sc.view.addSubview(onboard)
     NSLayoutConstraint.activate([
       onboard.topAnchor.constraint(equalTo: sc.view.safeAreaLayoutGuide.topAnchor, constant: 76),
@@ -666,6 +667,12 @@ extension SpaceController {
           term?.moshroomUserHasInteracted = false
         }
         term?.moshroomConnectedHost = nil
+        // The persisted name goes too, or the Tabs list keeps naming a host this tab left.
+        if let meta = term?.meta, meta.connectedHost != nil || meta.connectedProject != nil {
+          meta.connectedHost = nil
+          meta.connectedProject = nil
+          SessionRegistry.shared.persistMetaIndex()
+        }
       }
       // Only reveal on a brand-new, untouched terminal. Once a command has run here, the shell is still
       // "fresh" (local prompt) but now has content on screen — don't pop the card back over it.

@@ -72,17 +72,11 @@ struct NewSecurityKeyView: View {
     }
     .listStyle(.insetGrouped)
     .moshReadableWidth()
-    .toolbar {
-      MoshNavBarItem(placement: .navigationBarLeading) {
-        Button(action: onCancel) { MoshNavLabel(title: "Cancel") }
-      }
-      MoshNavBarItem(placement: .navigationBarTrailing) {
-        Button(action: _createKey) { MoshNavLabel(title: "Create") }
-          .disabled(!_state.isValid)
-      }
+    .moshSheetChrome(title: "New Security Key", onClose: onCancel) {
+      Button(action: _createKey) { MoshNavLabel(title: "Create") }
+        .buttonStyle(.plain)
+        .disabled(!_state.isValid)
     }
-    .navigationTitle("New Security Key")
-    .navigationBarTitleDisplayMode(.inline)
     .alert(errorMessage: $_state.errorMessage)
     .onAppear(perform: {
       FixedTextField.becomeFirstReponder(id: "keyName")

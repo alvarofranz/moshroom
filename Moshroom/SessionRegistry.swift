@@ -30,8 +30,8 @@ class SessionMeta: Codable {
   fileprivate(set) var isSuspended: Bool = false
   // A user-forced tab name; when set it overrides the program's own terminal title.
   var customName: String? = nil
-  // The saved host this tab last connected to (Quick Connect). Persisted so a named tab keeps
-  // its name across an app relaunch, until the user renames or closes it.
+  // The saved host this tab is connected to (Quick Connect). Persisted so a named tab keeps its
+  // name across an app relaunch; cleared when the connection ends and the tab is fresh again.
   var connectedHost: String? = nil
   // The project of that host the tab is on (its session name, MoshProject.session), nil for the host's
   // own session. Persisted with the host: the tab reads "host · project" and reconnects to it.
@@ -183,6 +183,9 @@ protocol SuspendableSession: AnyObject {
   func remove(forKey key: UUID, keepArchive: Bool = false) {
     _metaIndex.removeValue(forKey: key)
     if !keepArchive {
+      _removedKeys.insert(key)
+    }
+    if !keepArchive {
       _fsRemove(forKey: key)
     }
     _sessionsIndex.removeValue(forKey: key)
@@ -191,7 +194,15 @@ protocol SuspendableSession: AnyObject {
   
   
   @objc func suspend() {
-    MoshLog.log("session", "parking \(_sessionsIndex.values.filter { !$0.meta.isSuspended }.count) tab(s)")
+    let parking = _sessionsIndex.values.filter { !$0.meta.isSuspended }
+    MoshLog.log("session", "parking \(parking.count) tab(s)")
+    // Every tab is asked to park first and all of them are waited for together, against one deadline:
+    // one after another, each allowed its own two seconds, could outlast what is left of the
+    // background time. The suspend below then finds each one parked (or out of time) and archives it.
+    let running = parking.compactMap { MCPSessionPayload.runningSession(forKey: $0.meta.key.uuidString) }
+    running.forEach { $0.moshroomRequestPark() }
+    let deadline = Date().addingTimeInterval(2)
+    running.forEach { $0.moshroomAwaitPark(until: deadline) }
     _sessionsIndex.forEach { self.suspendIfNeeded(session: $1) }
     _fsWriteMetaIndex()
   }
@@ -237,6 +248,9 @@ protocol SuspendableSession: AnyObject {
   private var _awaitingProtectedData = Set<UUID>()
 
   @objc private func _protectedDataDidBecomeAvailable() {
+    if _metaIndexIsSealed {
+      _fsMergeMetaIndexFromDisk()
+    }
     // Only for a tab the user is looking at: an unlock to the home screen or to another app must not
     // start sessions in the background (a restored mosh client would run there with nothing to park
     // it). The foreground triggers resume the rest, and find the data available by then.
@@ -344,6 +358,9 @@ protocol SuspendableSession: AnyObject {
   }
   
   private func _fsWriteMetaIndex() {
+    // An index that could not be read yet (the device was locked) still holds every tab's name and
+    // host: written over now, with only this run's tabs, they would be gone for good.
+    guard !_metaIndexIsSealed else { return }
     let jsonEncoder = JSONEncoder()
     do {
       let data = try jsonEncoder.encode(_metaIndex)
@@ -357,21 +374,63 @@ protocol SuspendableSession: AnyObject {
   
   // Whether `_metaIndex` reflects the index on disk (read fine, or there was none yet).
   private var _metaIndexIsTrustworthy = false
+  // The index exists but could not be read (sealed while the device is locked): read again, and
+  // merged, once the data is available. Nothing writes it until then.
+  private var _metaIndexIsSealed = false
+  // Tabs closed in this run: a late merge must not bring their names back.
+  private var _removedKeys = Set<UUID>()
+
+  private func _fsIndexURL() throws -> URL {
+    try _fsSessionsFolder().appendingPathComponent("index.json")
+  }
 
   private func _fsReadMetaIndex() {
     do {
-      let sessionsFolder = try _fsSessionsFolder()
-      let indexURL = sessionsFolder.appendingPathComponent("index.json")
+      let indexURL = try _fsIndexURL()
       guard FileManager.default.fileExists(atPath: indexURL.path) else {
         _metaIndexIsTrustworthy = true
         return
       }
-      let data = try Data(contentsOf: indexURL)
+      let data: Data
+      do {
+        data = try Data(contentsOf: indexURL)
+      } catch {
+        // Sealed only while the device is locked: an unlock re-reads it. Any other read failure keeps
+        // the old behaviour, or nothing would ever unseal it and no tab change would be saved.
+        _metaIndexIsSealed = Thread.isMainThread ? !UIApplication.shared.isProtectedDataAvailable : true
+        throw error
+      }
       let jsonDecoder = JSONDecoder()
       _metaIndex = try jsonDecoder.decode(type(of: _metaIndex), from: data)
       _metaIndexIsTrustworthy = true
     } catch let e {
       debugPrint(e)
     }
+  }
+
+  // The index on disk, read late: its tabs join the ones this run already has, and for a tab both
+  // know, what this run set wins and only what it never set is taken from disk.
+  private func _fsMergeMetaIndexFromDisk() {
+    guard let indexURL = try? _fsIndexURL(), let data = try? Data(contentsOf: indexURL) else { return }
+    _metaIndexIsSealed = false
+    guard let disk = try? JSONDecoder().decode(type(of: _metaIndex), from: data) else {
+      MoshLog.log("sessions", "the tab index could not be decoded")
+      return
+    }
+    for (key, saved) in disk where !_removedKeys.contains(key) {
+      if let meta = _metaIndex[key] {
+        meta.customName = meta.customName ?? saved.customName
+        // Host and project go together: a host this run recorded keeps its own project (or none).
+        if meta.connectedHost == nil {
+          meta.connectedHost = saved.connectedHost
+          meta.connectedProject = saved.connectedProject
+        }
+      } else {
+        _metaIndex[key] = saved
+      }
+    }
+    _metaIndexIsTrustworthy = true
+    MoshLog.log("sessions", "tab index read after unlock")
+    _fsWriteMetaIndex()
   }
 }

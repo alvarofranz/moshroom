@@ -51,9 +51,11 @@ try {
       sent = [];
       term_reportWheelEvent('wheel', 120, 100, 0, -60, 3);
       return {mode, sent, mouse: _moshroomMouseReportOn(), sgr: t.vt.mouseCoordinates === t.vt.MOUSE_COORDINATES_SGR,
-              text: t.getRowsText(0, t.getRowCount()), cursor: t.options_.cursorVisible, wrap: t.options_.wraparound, insert: t.options_.insertMode};
+              text: t.getRowsText(0, t.getRowCount()), cursor: t.options_.cursorVisible, wrap: t.options_.wraparound, insert: t.options_.insertMode,
+              top: t.getRowsText(t.scrollbackRows_.length, t.scrollbackRows_.length + 1), cursorRow: t.screen_.cursorPosition.row};
     }, fixture);
     check(result.cursor === true && result.wrap === true && result.insert === false, `${fixture.name}: restore cursor, wrap and insert modes`);
+    if (fixture.screenTop) check(result.top.trim() === fixture.screenTop && result.cursorRow === fixture.cursorRow, `${fixture.name}: written rows keep their places`);
     if (fixture.longHistory) check(result.text.includes(fixture.longHistory), `${fixture.name}: preserve the complete wrapped history line`);
     check(result.mouse === fixture.mouse, `${fixture.name}: restore current mouse mode`);
     check(result.mode.mouseReport === fixture.mouse, `${fixture.name}: native scroll owner agrees`);

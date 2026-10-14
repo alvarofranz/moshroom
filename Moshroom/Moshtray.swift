@@ -118,7 +118,8 @@ final class MoshtrayController: UIViewController, UICollectionViewDataSource, UI
   // MARK: Actions
 
   // Insert AFTER the sheet is gone, so the composer is frontmost and first responder when the chip
-  // lands. onPick removes the file from the tray; onFinished refreshes the composer's tray button.
+  // lands. The composer removes the file from the tray once it is sent; onFinished refreshes the
+  // composer's tray button.
   private func _insert(_ url: URL) {
     dismiss(animated: false) { [onPick, onFinished] in
       onPick(url)
@@ -194,6 +195,7 @@ final class MoshtrayCell: UICollectionViewCell {
     deleteButton.layer.shadowOffset = CGSize(width: 0, height: 1)
     deleteButton.translatesAutoresizingMaskIntoConstraints = false
     deleteButton.addTarget(self, action: #selector(_deleteTapped), for: .touchUpInside)
+    deleteButton.accessibilityLabel = "Remove from tray"
     contentView.addSubview(deleteButton)
 
     NSLayoutConstraint.activate([

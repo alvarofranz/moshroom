@@ -41,6 +41,21 @@ struct MoshroomInputBuffer {
   mutating func reset() { sent = "" }
 }
 
+/// Ctrl + a character, as a terminal sends it. ASCII only: Unicode case mapping would turn
+/// German ß into "SS" (^S, XOFF, which freezes output) and Turkish ı into "I" (^I, Tab).
+enum MoshroomControlKey {
+  static func bytes(for characters: String) -> String? {
+    guard characters.unicodeScalars.count == 1, let scalar = characters.unicodeScalars.first,
+          scalar.isASCII else { return nil }
+    var v = scalar.value
+    if (0x61...0x7A).contains(v) { v -= 0x20 }   // a-z → A-Z
+    // Ctrl+6 is Ctrl-^ on every terminal (the key the caret shares): mosh's own escape.
+    if v == 0x36 { return "\u{1E}" }
+    guard v >= 0x40, v <= 0x5F else { return nil }   // Ctrl+@ A ... Z [ \ ] ^ _
+    return String(UnicodeScalar(UInt8(v & 0x1F)))
+  }
+}
+
 /// One FIFO for text, special keys and pastes. Preparing a paste has NO side effects: the
 /// terminal bytes come back to this queue before being written. Invalidating the generation
 /// therefore makes a late JavaScript reply harmless, even after a timeout or a tab change.

@@ -48,6 +48,10 @@ final class MoshFolderBrowserView: UIView, UITableViewDataSource, UITableViewDel
   private var session: MoshxploreSession?
   /// Counts loads, so a slow answer for a folder the user already left is dropped.
   private var generation = 0
+  // A connect or listing that never answers (the connection went silent) ends here instead of
+  // spinning until the user backs out. Same budget as Moshxplore's.
+  private var watchdog: DispatchWorkItem?
+  private static let watchdogSeconds: TimeInterval = 45
 
   private let titleLabel = UILabel()
   private let upButton = moshkeyRoundButton(diameter: 34)
@@ -199,8 +203,10 @@ final class MoshFolderBrowserView: UIView, UITableViewDataSource, UITableViewDel
     generation += 1
     let gen = generation
     _status(busy: "Connecting to \(hostAlias)\u{2026}")
+    _armWatchdog(generation: gen, reopenAt: startAt)
     s.connect(hostAlias: hostAlias) { [weak self] result in
       guard let self, self.generation == gen else { return }
+      self._disarmWatchdog()
       switch result {
       case .success(let home):
         self.home = home
@@ -218,8 +224,30 @@ final class MoshFolderBrowserView: UIView, UITableViewDataSource, UITableViewDel
 
   func stop() {
     generation += 1
+    _disarmWatchdog()
     session?.stop()
     session = nil
+  }
+
+  private func _armWatchdog(generation gen: Int, reopenAt: String?) {
+    watchdog?.cancel()
+    let work = DispatchWorkItem { [weak self] in
+      guard let self, self.generation == gen, let alias = self.hostAlias else { return }
+      // Abandon the silent session; a late answer is ignored by the generation bump. Retry dials anew.
+      self.generation += 1
+      self.session?.stop()
+      self.session = nil
+      self._failed("\(alias) is not answering. Try again in a moment.") { [weak self] in
+        self?.start(hostAlias: alias, startAt: reopenAt)
+      }
+    }
+    watchdog = work
+    DispatchQueue.main.asyncAfter(deadline: .now() + Self.watchdogSeconds, execute: work)
+  }
+
+  private func _disarmWatchdog() {
+    watchdog?.cancel()
+    watchdog = nil
   }
 
   private static func _expand(_ path: String, home: String) -> String {
@@ -239,8 +267,10 @@ final class MoshFolderBrowserView: UIView, UITableViewDataSource, UITableViewDel
     generation += 1
     let gen = generation
     _status(busy: "Loading\u{2026}")
+    _armWatchdog(generation: gen, reopenAt: target)
     session.list(path: target) { [weak self] result in
       guard let self, self.generation == gen else { return }
+      self._disarmWatchdog()
       switch result {
       case .success(let entries):
         self.path = target

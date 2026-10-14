@@ -24,9 +24,9 @@
 import UIKit
 import SwiftUI
 
-// Moshvault — the credentials hub, opened from the key button in the top bar (between Moshxplore and
-// Settings). Full screen over the current tab, like Moshxplore and Settings, and mutually exclusive
-// with Quick Connect / Moshxplore (only one modal is ever up). Hosts the SwiftUI MoshvaultRootView.
+// Moshvault — the credentials hub, opened from its card in the launcher. Full screen over the current
+// tab, like Settings, and mutually exclusive with Quick Connect (only one modal is ever up). Hosts the
+// SwiftUI MoshvaultRootView.
 final class MoshvaultController: UIHostingController<MoshvaultRootView> {
   weak var space: SpaceController?
 

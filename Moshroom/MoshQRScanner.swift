@@ -85,7 +85,7 @@ final class MoshQRScannerController: UIViewController, AVCaptureMetadataOutputOb
         }
       }
     default:
-      delegate?.scannerDidFail(self, reason: "Camera access is off — enable it in Settings › Moshroom.")
+      delegate?.scannerDidFail(self, reason: "Camera access is off. Enable it in Settings › Moshroom.")
     }
   }
 

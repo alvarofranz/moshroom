@@ -52,9 +52,11 @@ final class MoshroomDirectInput: UITextView, UITextViewDelegate {
     accessibilityLabel = "Terminal input"
     accessibilityIdentifier = "terminal.input"
     pasteConfiguration = UIPasteConfiguration(acceptableTypeIdentifiers: [UTType.text.identifier, UTType.image.identifier, UTType.fileURL.identifier, UTType.pdf.identifier])
-    output.isAllowed = { [weak self] in self?.canWrite == true }
+    // Losing focus cancels the queue (resetComposition), so the queue itself only needs the
+    // focus-free gate; that lets quick keys share the FIFO without raising the keyboard.
+    output.isAllowed = { [weak self] in self?.canDeliver == true }
     output.write = { [weak self] bytes in
-      guard let self, self.canWrite else { return }
+      guard let self, self.canDeliver else { return }
       self.owner?.dismissMoshnector()
       if self.device?.secureTextEntry != true { MoshroomDevelopment.inputBytes(bytes) }
       self.device?.write(bytes)
@@ -79,7 +81,7 @@ final class MoshroomDirectInput: UITextView, UITextViewDelegate {
       guard let self else { return }
       self.clearText()
       if case .needsComposer = error { self.owner?.openMoshkitor(seed: text) }
-      else { self.owner?.showAlert(msg: "The paste could not be sent. Input queued behind it was cancelled. Please paste again when the terminal is ready.") }
+      else { self.owner?.showAlert(msg: "Couldn't paste. Anything you typed after it was not sent. Try again in a moment.") }
     }
   }
   required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -88,9 +90,11 @@ final class MoshroomDirectInput: UITextView, UITextViewDelegate {
     action == #selector(terminalKey(_:)) && markedTextRange == nil
   }
 
-  private var canWrite: Bool {
-    !probeOnly && isFirstResponder && owner?.moshroomCanTypeDirect == true
-      && device != nil && device === owner?.currentDevice && device?.view?.isReady == true
+  // Keys go to stdin and need no page. Only a paste needs it (preparePaste checks readiness), so
+  // typing during a cold restore or a renderer reload is delivered instead of dropped.
+  private var canWrite: Bool { isFirstResponder && canDeliver }
+  private var canDeliver: Bool {
+    !probeOnly && owner?.moshroomCanTypeDirect == true && device != nil && device === owner?.currentDevice
   }
   func bind(to device: TermDevice?) {
     guard self.device !== device else { return }
@@ -248,6 +252,13 @@ final class MoshroomDirectInput: UITextView, UITextViewDelegate {
     guard !probeOnly, canWrite else { return }
     clearText()
     output.send(bytes)
+  }
+  /// An on-screen quick key: same FIFO as typed text, but it never takes focus, so the software
+  /// keyboard stays down. Bind the current device first.
+  @discardableResult func sendQuickKey(_ bytes: String) -> Bool {
+    guard canDeliver else { return false }
+    if isFirstResponder { clearText() }
+    return output.send(bytes)
   }
   private func startRepeating(key: UIKeyboardHIDUsage, bytes: String) {
     stopRepeating()

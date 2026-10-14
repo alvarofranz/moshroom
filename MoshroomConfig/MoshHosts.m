@@ -38,13 +38,15 @@ static BOOL __hostsUnreadable = NO;
 // Host passwords live under the build's KEYCHAIN_ID1 plus ".pwd" (e.g. com.alvarofranz.moshroom.pwd),
 // never a hardcoded foreign namespace. The store and the write that never loses the old value are the
 // shared ones in MoshPubKey.m (declared in MoshPubKey.h): when sync is ON passwords ride the iCloud
-// Keychain, when OFF they stay on this device, and each item keeps the flavor of its last write.
+// Keychain, when OFF new ones stay on this device, and an existing item always keeps its own flavor
+// (changing a synced password with sync off must not delete it from the other devices). A password
+// moving to a new name (a renamed host) takes the flavor of the item it replaces.
 static UICKeyChainStore *__get_keychain() {
   return MoshroomKeychainStore(@"pwd");
 }
 
-static BOOL __kc_set(UICKeyChainStore *keychain, NSString *value, NSString *key) {
-  return MoshroomKeychainSetString(keychain, value, key);
+static BOOL __kc_set(UICKeyChainStore *keychain, NSString *value, NSString *key, NSString *inheritFrom) {
+  return MoshroomKeychainSetStringInheriting(keychain, value, key, inheritFrom);
 }
 
 @implementation MoshHosts
@@ -247,9 +249,10 @@ sshConfigAttachment:(NSString *)sshConfigAttachment
   NSString *oldRef = bkHost.passwordRef.length ? bkHost.passwordRef : nil;
   NSString *pwdRef = oldRef ?: @"";
   NSString *staleRef = nil;
+  BOOL clearing = NO;
   if (password.length) {
     NSString *newRef = [newHost stringByAppendingString:@".pwd"];
-    if (!__kc_set(keychain, password, newRef)) {
+    if (!__kc_set(keychain, password, newRef, oldRef)) {
       // The keychain refused it and the previous value is back. Saving the rest would tell the user
       // the password was stored when it was not.
       return nil;
@@ -260,13 +263,14 @@ sshConfigAttachment:(NSString *)sshConfigAttachment
     }
   } else if (password) {
     staleRef = oldRef;
+    clearing = YES;
     pwdRef = @"";
   } else if (oldRef && bkHost && ![bkHost.host isEqualToString:newHost]) {
     // Renamed with the password untouched: move it to the new alias's name so a future host that
     // takes the old alias cannot overwrite it. If it cannot be read right now, the old name stays.
     NSString *newRef = [newHost stringByAppendingString:@".pwd"];
     NSString *current = [keychain stringForKey:oldRef];
-    if (current && __kc_set(keychain, current, newRef)) {
+    if (current && __kc_set(keychain, current, newRef, oldRef)) {
       pwdRef = newRef;
       staleRef = oldRef;
     }
@@ -333,11 +337,18 @@ sshConfigAttachment:(NSString *)sshConfigAttachment
   if (![MoshHosts saveHosts]) {
     return nil;
   }
-  // Only now, with the host saved pointing at its new ref, can the old item go.
-  if (staleRef) {
+  // Only now, with the host saved pointing at its new ref, can the old item go. A rename with sync
+  // OFF leaves a SYNCED old item alone: the rename does not reach the other devices, whose copy of
+  // this host still points at it, and deleting it would delete it there too. Clearing the password
+  // is a deletion on purpose (the editor says where it goes first).
+  if (staleRef && (clearing || MoshroomICloudSyncEnabled() || !MoshroomKeychainIsSynchronizable(keychain, staleRef))) {
     [keychain removeItemForKey:staleRef];
   }
   return bkHost;
+}
+
+- (BOOL)hasSynchronizablePassword {
+  return _passwordRef.length && MoshroomKeychainIsSynchronizable(__get_keychain(), _passwordRef);
 }
 
 - (void)removePasswordFromKeychain {

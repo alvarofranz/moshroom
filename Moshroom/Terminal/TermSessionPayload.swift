@@ -74,6 +74,15 @@ class MCPSessionPayload : TermSessionPayload {
 
   var session: Session? { _session }
 
+  // Running sessions by tab key, so the app can park every tab at once (SessionRegistry.suspend).
+  // Main thread only, like start and suspend.
+  private static let _running = NSMapTable<NSString, MCPSession>.strongToWeakObjects()
+
+  /// The session running in the tab with this key, if any.
+  static func runningSession(forKey key: String) -> MCPSession? {
+    _running.object(forKey: key as NSString)
+  }
+
   init(params: MCPParams) {
     self._initialParams = params
   }
@@ -85,6 +94,7 @@ class MCPSessionPayload : TermSessionPayload {
       _snapshot = nil
     }
     self._session = MCPSession(device: device, andParams: _initialParams)
+    Self._running.setObject(_session, forKey: sessionKey as NSString)
     _session!.execute(withArgs: "")
   }
 

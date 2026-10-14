@@ -25,8 +25,8 @@
 //
 // The Moshroom share extension (a SEPARATE process, no terminal / no connection required) drops
 // images shared to Moshroom here. Later — whenever you want, on any tab — the Moshkitor composer
-// surfaces the tray as a grid and lets you drop one inline exactly like a paste, deleting it from
-// the tray as it goes (a shared screenshot is a one-shot; there's no point keeping it around).
+// surfaces the tray as a grid and lets you drop one inline exactly like a paste. It leaves the tray
+// once the message carrying it is sent (a shared screenshot is a one-shot), never before.
 //
 // This file compiles into BOTH the app and the extension. It resolves the shared container from the
 // `MOSHROOM_GROUP_ID` Info.plist key, which is present in both bundles (the app's Info.plist and the
@@ -91,6 +91,8 @@ enum MoshroomShareTray {
     do {
       try FileManager.default.copyItem(at: source, to: tmp)
       try FileManager.default.moveItem(at: tmp, to: dest)
+      // A copy keeps the source's date; the tray is ordered by when it was shared.
+      try? FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: dest.path)
       return dest
     } catch {
       try? FileManager.default.removeItem(at: tmp)

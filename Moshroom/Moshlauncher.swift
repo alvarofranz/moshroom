@@ -25,7 +25,7 @@ import UIKit
 import SwiftUI
 
 // Moshlauncher — one apps-grid button in the top bar (right side) opens this launcher instead of a
-// row of separate buttons. It shows a card per destination (Moshxplore, Moshvault, Settings) with a
+// row of separate buttons. It shows a card per destination (Moshxplore, Moshify, Moshvault, Settings) with a
 // label and a one-line description. Full-width stacked cards on iPhone; a grid of square cards on
 // iPad and Mac. Tapping a card dismisses the launcher and opens that destination (only one
 // full-screen surface is ever up at a time).
@@ -187,9 +187,6 @@ extension SpaceController {
   // True while the launcher is on screen — Quick Connect checks this so the two never overlap.
   var moshroomMoshlauncherIsOpen: Bool { moshlauncherController != nil }
 
-  // The topmost presented controller. A launcher destination is presented ON TOP of the launcher
-  // (over this) instead of dismissing the launcher first — dismiss-then-present flashed the terminal
-  // for a frame in between. Closing a destination dismisses the whole stack at once (see the closes).
   // Open the launcher full screen. Works on any tab; needs no shell/connection.
   func openMoshlauncher() {
     moshroomPresentFullScreen(from: self) {
@@ -199,19 +196,13 @@ extension SpaceController {
     }
   }
 
-  // Dismiss the launcher, then run `then` (used to open a chosen destination once the launcher is
-  // gone — only one full-screen surface may be presented at a time). With no `then`, restore first
-  // responder + Quick Connect like the other hubs do.
-  func dismissMoshlauncher(then: (() -> Void)? = nil) {
-    guard let ctrl = moshlauncherController else { then?(); return }
+  // Close the launcher, then restore the keyboard owner + Quick Connect like the other hubs do.
+  func dismissMoshlauncher() {
+    guard let ctrl = moshlauncherController else { return }
     ctrl.dismiss(animated: false) { [weak self] in
-      guard let self else { return }
-      if let then {
-        then()
-      } else if Moshroom.scratchOnly {
-        self.moshroomRestoreKeyboardOwner()
-        self.showMoshnectorIfIdle()
-      }
+      guard let self, Moshroom.scratchOnly else { return }
+      self.moshroomRestoreKeyboardOwner()
+      self.showMoshnectorIfIdle()
     }
   }
 }

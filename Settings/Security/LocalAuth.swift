@@ -50,8 +50,15 @@ import LocalAuthentication
     guard
       context.canEvaluatePolicy(.deviceOwnerAuthentication, error: &error)
     else {
-      debugPrint(error?.localizedDescription ?? "Can't evaluate policy")
       _inProgress = false
+      // No device passcode: there is nothing to ask with, and failing here made every gated action
+      // (delete, reveal, copy a private key) silently do nothing. Same rule as the app lock: proceed.
+      if error?.domain == LAErrorDomain, error?.code == LAError.Code.passcodeNotSet.rawValue {
+        MoshLog.log("lock", "no device passcode: proceeding without authentication")
+        callback(true)
+        return
+      }
+      debugPrint(error?.localizedDescription ?? "Can't evaluate policy")
       callback(false)
       return
     }

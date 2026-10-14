@@ -130,28 +130,16 @@ struct NewKeyMenuContentView: View {
   @ObservedObject fileprivate var _state: KeysObservable
 
   var body: some View {
-    NavigationView {
-      Form {
-        plainTextKeySection
-        secureEnclaveKeySection
-        passkeySection
-      }
-      .onAppear {
-        UITableView.appearance().sectionFooterHeight = 0
-      }
-      .navigationTitle("New Key")
-      .navigationBarTitleDisplayMode(.inline)
-      .toolbar {
-        MoshNavBarItem(placement: .navigationBarTrailing) {
-          Button {
-            dismissView()
-          } label: {
-            MoshNavGlyph(systemName: "xmark")
-          }
-        }
-      }
+    Form {
+      plainTextKeySection
+      secureEnclaveKeySection
+      passkeySection
     }
-    //.alert(errorMessage: $state.errorMessage)
+    .onAppear {
+      UITableView.appearance().sectionFooterHeight = 0
+    }
+    .moshReadableWidth()
+    .moshSheetChrome(title: "New Key", onClose: dismissView) { EmptyView() }
   }
 }
 
@@ -170,25 +158,22 @@ private extension NewKeyMenuContentView {
 
         VStack(alignment: .leading) {
           baseCellTitle("Plain-text Key")
-          baseCellSubtitle("Create ED25519, ECDSA or RSA keys, stored in your iCloud Keychain — end-to-end encrypted, they survive reinstalls and follow your devices.")
+          baseCellSubtitle("Create ED25519, ECDSA or RSA keys, kept in the keychain. With iCloud sync on they ride your iCloud Keychain, end-to-end encrypted, and follow your devices.")
 
           actionsDivider()
           actionButtonTitle(title: "Generate New", tintColor: .moshroomTint)
             .onTapGesture {
-              dismissView()
-              self._state.modal = .newKey
+              then { self._state.modal = .newKey }
             }
           actionsDivider()
           actionButtonTitle(title: "Import from File", tintColor: .label)
             .onTapGesture {
-              dismissView()
-              self._state.filePickerIsPresented = true
+              then { self._state.filePickerIsPresented = true }
             }
           actionsDivider()
           actionButtonTitle(title: "Import from Clipboard", tintColor: .label)
             .onTapGesture {
-              dismissView()
-              self._state.importFromClipboard()
+              then { self._state.importFromClipboard() }
             }
         }
 
@@ -208,13 +193,12 @@ private extension NewKeyMenuContentView {
 
         VStack(alignment: .leading) {
           baseCellTitle("Secure Enclave Key")
-          baseCellSubtitle("Isolated in this device's hardware — the private key can never be exported, synced, or leave the device.")
+          baseCellSubtitle("Isolated in this device's hardware: the private key can never be exported, synced, or leave the device.")
 
           actionsDivider()
           actionButtonTitle(title: "Generate New", tintColor: .moshroomTint)
             .onTapGesture {
-              dismissView()
-              self._state.modal = .newSEKey
+              then { self._state.modal = .newSEKey }
             }
         }
         .padding([.top], 4)
@@ -238,14 +222,12 @@ private extension NewKeyMenuContentView {
           actionsDivider()
           actionButtonTitle(title: "Generate on device", tintColor: .moshroomTint)
             .onTapGesture {
-              dismissView()
-              self._state.modal = .newPasskey
+              then { self._state.modal = .newPasskey }
             }
           actionsDivider()
           actionButtonTitle(title: "Generate on Hardware key", tintColor: .label)
             .onTapGesture {
-              dismissView()
-              self._state.modal = .newSecurityKey
+              then { self._state.modal = .newSecurityKey }
             }
         }
         .padding([.top], 4)
@@ -257,6 +239,13 @@ private extension NewKeyMenuContentView {
   //MARK: Fast methods
   func dismissView() {
     self.isMenuPresented = false
+  }
+
+  // Close this menu, THEN open what was chosen (from the cover's onDismiss): presenting the next
+  // screen while this one is still going away is refused.
+  func then(_ action: @escaping () -> Void) {
+    _state.afterMenu = action
+    dismissView()
   }
 
 
@@ -324,7 +313,7 @@ struct KeyListView: View {
         }
       } else {
         MoshSettingsList(
-          footer: "Secure Enclave keys never leave this device. Keychain keys live in your iCloud Keychain — end-to-end encrypted, they survive reinstalls and follow your devices.",
+          footer: "Secure Enclave keys never leave this device. With iCloud sync on, keychain keys ride your iCloud Keychain, end-to-end encrypted, and follow your devices.",
           header: {
             if !_state.duplicateNames.isEmpty {
               // Two devices that each made "id_ed25519" end up with both once sync merges them: they
@@ -349,7 +338,7 @@ struct KeyListView: View {
                   Image(systemName: "exclamationmark.triangle.fill").foregroundColor(.orange)
                   Text("Some identities are missing their private half, so they can't sign in anywhere.")
                 }
-                Text("Open one to add it from the device that has it — the identity is kept, so nothing is deleted anywhere. " + Moshsync.incompleteKeysHint)
+                Text("Open one to add it from the device that has it: the identity is kept, so nothing is deleted anywhere. " + Moshsync.incompleteKeysHint)
                   .font(.footnote)
                   .foregroundColor(.secondary)
                   .fixedSize(horizontal: false, vertical: true)
@@ -370,7 +359,8 @@ struct KeyListView: View {
               _pendingDelete = MoshDeletePrompt(
                 name: card.name,
                 what: "this identity",
-                extra: "Anything using it to connect will stop working."
+                extra: "Anything using it to connect will stop working.",
+                syncedSecret: card.key.hasSynchronizableSecret() ? "Its private key" : nil
               ) {
                 _state.removeKey(card: card.key)
               }
@@ -419,14 +409,19 @@ struct KeyListView: View {
         if _state.errorMessage != nil { showAlert = true }
       }
     )
-    .sheet(isPresented: $isMenuPresented,
+    // Full-screen covers with in-content headers, never `.sheet`: a sheet's toolbar chips take no
+    // clicks on Mac Catalyst (Create did nothing, Cancel only answered Esc).
+    .fullScreenCover(isPresented: $isMenuPresented,
            onDismiss: {
+             let next = _state.afterMenu
+             _state.afterMenu = nil
+             next?()
              if _state.errorMessage != nil { showAlert = true }
            }
     ) {
       NewKeyMenuContentView(isMenuPresented: $isMenuPresented, _state: _state)
     }
-    .sheet(item: $_state.modal) { modal in
+    .fullScreenCover(item: $_state.modal) { modal in
       NavigationView {
         switch (modal) {
         case .passphrasePrompt(let keyBlob, let proposedName):
@@ -472,6 +467,8 @@ struct KeyListView: View {
           }
         }
       }
+      // One column at full screen too: a regular-width iPad/Mac would otherwise split it in two.
+      .navigationViewStyle(.stack)
     }
   }
 
@@ -508,6 +505,8 @@ fileprivate class KeysObservable: ObservableObject {
   @Published var list: [KeyCard] = KeyCard.all().sorted(by: KeySortType.nameAsc.sortFn)
   @Published var filePickerIsPresented: Bool = false
   @Published var modal: KeyModals? = nil
+  // What the New Key menu chose, run once the menu has finished closing.
+  var afterMenu: (() -> Void)? = nil
   @Published var errorMessage: String? = nil
   // The clipboard's change count when a key was imported from it; see onModalSuccess.
   private var clipboardChangeCount: Int? = nil

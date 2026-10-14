@@ -161,6 +161,7 @@ enum Moshkeys {
     let arrowEnter = moshkeyRoundButton()
     arrowEnter.setTitle("⏎", for: .normal)
     arrowEnter.titleLabel?.font = .systemFont(ofSize: 18, weight: .semibold)
+    arrowEnter.accessibilityLabel = "Return"
     arrowEnter.translatesAutoresizingMaskIntoConstraints = false
     arrowEnter.isHidden = true
     arrowEnter.addAction(UIAction { [weak bar] _ in bar?.arrowModeEnter() }, for: .touchUpInside)
@@ -452,16 +453,25 @@ final class MoshkeysBar: UIStackView {
     }
 
     specialBtn = _padButton(.special, title: "⌃", systemImage: nil)
+    specialBtn.accessibilityLabel = "Control keys"
     numbersBtn = _padButton(.numbers, title: "123", systemImage: nil)
+    numbersBtn.accessibilityLabel = "Numbers"
     lettersBtn = _padButton(.letters, title: "abc", systemImage: nil)
+    lettersBtn.accessibilityLabel = "Letters"
     enterBtn   = _enterButton()
+    enterBtn.accessibilityLabel = "Return"
     arrowsBtn  = moshkeyRoundButton()
     arrowsBtn.setMoshIcon("dpad")
+    arrowsBtn.accessibilityLabel = "Arrow keys"
     arrowsBtn.addAction(UIAction { [weak self] _ in self?._toggleArrowMode() }, for: .touchUpInside)
     arrowLeftBtn  = _arrowKeyButton("arrow.left",  .keyboardLeftArrow)
+    arrowLeftBtn.accessibilityLabel = "Left"
     arrowRightBtn = _arrowKeyButton("arrow.right", .keyboardRightArrow)
+    arrowRightBtn.accessibilityLabel = "Right"
     arrowDownBtn  = _arrowKeyButton("arrow.down",  .keyboardDownArrow)
+    arrowDownBtn.accessibilityLabel = "Down"
     arrowUpBtn    = _arrowKeyButton("arrow.up",    .keyboardUpArrow)
+    arrowUpBtn.accessibilityLabel = "Up"
 
     // ↕ sits third (centre of five) so it never shifts when arrow mode swaps the others out.
     [specialBtn, numbersBtn, arrowsBtn, lettersBtn, enterBtn].forEach { addArrangedSubview($0) }
@@ -523,6 +533,7 @@ final class MoshkeysBar: UIStackView {
   private func _setArrowsActive(_ active: Bool) {
     arrowsBtn.backgroundColor = active ? .moshroomTint : Moshstyle.chipFill
     arrowsBtn.setMoshIcon("dpad", color: active ? .white : Moshstyle.ink)
+    arrowsBtn.accessibilityValue = active ? "On" : "Off"
   }
 
   // The ↕ button toggles a focused arrow-keys mode: the rest of the bottom bar (and the compose button)
@@ -711,6 +722,10 @@ final class MoshkeysPad: UIView {
   private func _key(_ label: String, _ bytes: String) -> UIButton {
     let b = moshButton()
     b.setTitle(label, for: .normal)
+    // VoiceOver would read "caret C" and an open-box glyph.
+    if label == "␣" { b.accessibilityLabel = "Space" }
+    else if label == "Esc" { b.accessibilityLabel = "Escape" }
+    else if label.hasPrefix("^"), label.count == 2 { b.accessibilityLabel = "Control " + label.dropFirst() }
     b.titleLabel?.font = .systemFont(ofSize: 17, weight: .medium)
     b.titleLabel?.adjustsFontSizeToFitWidth = true
     b.titleLabel?.minimumScaleFactor = 0.6
@@ -807,8 +822,17 @@ final class MoshtabsController: UIViewController {
     let title = UIButton(type: .system)
     var cfg = UIButton.Configuration.plain()
     var attr = AttributeContainer()
-    attr.font = .systemFont(ofSize: 15, weight: active ? .semibold : .regular)
-    cfg.attributedTitle = AttributedString(tab.title, attributes: attr)
+    // Follows the reader's text size, capped so a long title still leaves room for its × button.
+    attr.font = UIFontMetrics(forTextStyle: .body).scaledFont(
+      for: .systemFont(ofSize: 15, weight: active ? .semibold : .regular), maximumPointSize: 28)
+    var label = AttributedString(tab.title, attributes: attr)
+    if let transport = tab.transport {
+      var dim = AttributeContainer()
+      dim.font = UIFontMetrics(forTextStyle: .footnote).scaledFont(for: .systemFont(ofSize: 13), maximumPointSize: 24)
+      dim.foregroundColor = active ? UIColor(white: 1, alpha: 0.75) : MoshxploreStyle.gray
+      label += AttributedString("  " + transport, attributes: dim)
+    }
+    cfg.attributedTitle = label
     cfg.titleLineBreakMode = .byWordWrapping   // the whole title, however long
     // The kind's glyph in front of the title, so a music or files tab reads as one at a glance.
     let kindIcon: String
@@ -860,6 +884,12 @@ final class MoshtabsController: UIViewController {
       let rename = _TabLongPress(target: self, action: #selector(_rowLongPressed(_:)))
       rename.key = tab.key
       row.addGestureRecognizer(rename)
+      // The long-press has no VoiceOver or Switch Control equivalent; the action does.
+      let key = tab.key
+      title.accessibilityCustomActions = [UIAccessibilityCustomAction(name: "Rename") { [weak self] _ in
+        self?.space?.moshroomRename(tab: key) { [weak self] in self?.reload() }
+        return true
+      }]
     }
     return row
   }
@@ -870,7 +900,7 @@ final class MoshtabsController: UIViewController {
     cfg.image = moshFixedWidthSymbol("plus", pointSize: 13, weight: .semibold)
     cfg.imagePadding = 8
     var attr = AttributeContainer()
-    attr.font = .systemFont(ofSize: 15, weight: .medium)
+    attr.font = UIFontMetrics(forTextStyle: .body).scaledFont(for: .systemFont(ofSize: 15, weight: .medium), maximumPointSize: 28)
     cfg.attributedTitle = AttributedString("New tab", attributes: attr)
     cfg.baseForegroundColor = MoshxploreStyle.dark
     // Same Catalyst quirk as the tab rows: contentInsets are ignored there, so the leading space

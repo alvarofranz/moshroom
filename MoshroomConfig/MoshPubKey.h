@@ -28,7 +28,7 @@
 //
 // One home for what MoshPubKey.m, MoshHosts.m, MoshroomDefaults.m and the Swift stores used to copy
 // by hand: the "Sync with iCloud" flag (kept in the app-group defaults so this framework can read it
-// without importing the app target) and the delete-then-add write that never loses the old value.
+// without importing the app target) and the write that never deletes a synced item to change it.
 // Implemented in MoshPubKey.m.
 
 // The app-group defaults key that carries the "Sync with iCloud" toggle.
@@ -40,12 +40,24 @@ FOUNDATION_EXPORT BOOL MoshroomICloudSyncEnabled(void);
 // A store for `<KEYCHAIN_ID1>.<serviceSuffix>` whose writes take the CURRENT sync flavor.
 FOUNDATION_EXPORT UICKeyChainStore * _Nonnull MoshroomKeychainStore(NSString * _Nonnull serviceSuffix)
   NS_SWIFT_UNAVAILABLE("ObjC keychain plumbing");
-// Write a string so the item takes the current sync flavor. SecItemUpdate cannot change
-// kSecAttrSynchronizable, so any existing variant is deleted and the value added fresh; the previous
-// value is read first and put back, in its OWN flavor and accessibility, if the add is refused.
+// Write a string without ever deleting a synchronizable item to do it: a synced item keeps its flavor
+// and only its value changes (in place); a local-only item moves to iCloud (add first, then the local
+// copy goes) when sync is ON and is updated in place when OFF; a NEW item takes the toggle's flavor.
 FOUNDATION_EXPORT BOOL MoshroomKeychainSetString(UICKeyChainStore * _Nonnull keychain,
                                                  NSString * _Nonnull value,
                                                  NSString * _Nonnull key)
+  NS_SWIFT_UNAVAILABLE("ObjC keychain plumbing");
+// The same, except that a NEW item takes the flavor of the item under `inheritFrom` when there is one
+// (a value moving to a new name stays synced, or local, as it was).
+FOUNDATION_EXPORT BOOL MoshroomKeychainSetStringInheriting(UICKeyChainStore * _Nonnull keychain,
+                                                           NSString * _Nonnull value,
+                                                           NSString * _Nonnull key,
+                                                           NSString * _Nullable inheritFrom)
+  NS_SWIFT_UNAVAILABLE("ObjC keychain plumbing");
+// YES when a synchronizable (iCloud Keychain) item exists under `key`: deleting it deletes it on every
+// device, whatever the toggle says. Attributes only.
+FOUNDATION_EXPORT BOOL MoshroomKeychainIsSynchronizable(UICKeyChainStore * _Nonnull keychain,
+                                                        NSString * _Nonnull key)
   NS_SWIFT_UNAVAILABLE("ObjC keychain plumbing");
 // The account names under a service, from an attributes-only query (no secret is read). nil when the
 // keychain could not answer (locked before first unlock, busy), an empty set when there is nothing.
@@ -82,6 +94,9 @@ typedef enum: NSUInteger {
 // pull the secret out of the keychain. Always YES for Secure Enclave / passkey identities, whose
 // material lives in hardware by design.
 - (BOOL)hasPrivateKeyMaterial;
+// Does any of this identity's keychain material ride the iCloud Keychain? Then deleting it deletes it
+// on every device, sync switch on or off. Attributes only.
+- (BOOL)hasSynchronizableSecret;
 // Every identity whose private half is missing, resolved from a single keychain listing. Main thread
 // (it reads the shared identities array), like +all.
 + (nonnull NSArray<MoshPubKey *> *)identitiesMissingPrivateMaterial;

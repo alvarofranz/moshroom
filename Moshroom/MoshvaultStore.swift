@@ -28,8 +28,8 @@ import MoshroomConfig
 // Moshvault storage. The password vault and the 2FA accounts are Moshroom's own personal secrets
 // store — nothing the connect path uses. Each record is ONE data-protection-keychain generic-password
 // item (one per record), so the keychain IS both the source of truth AND the sync transport: when
-// "Sync with iCloud" is on the items ride the iCloud Keychain (end-to-end encrypted, follows the
-// user's devices); when off they stay local. There is no separate index file, so there is no
+// "Sync with iCloud" is on new items ride the iCloud Keychain (end-to-end encrypted, follows the
+// user's devices); when off new ones stay local. An existing item keeps its flavor (see upsert). There is no separate index file, so there is no
 // metadata that could fall out of sync with the secrets — the whole record travels together.
 
 // MARK: - The shared "Sync with iCloud" flag (mirrored by MoshroomDefaults into the app group)
@@ -169,21 +169,24 @@ final class MoshSecretStore<T: MoshVaultRecord> {
     return try? Self.decoder.decode(T.self, from: data)
   }
 
-  // What an item holds right now, flavor included — read before a replace so a refused write can be
-  // undone. Attributes AND data, because restoring needs both.
-  private func rawItem(id: String) -> (data: Data, synchronizable: Bool, accessible: CFString)? {
+  // Does an item of exactly this flavor exist? nil when the keychain cannot answer right now (locked
+  // before first unlock, busy). Attributes only: nothing is decrypted to ask.
+  private func exists(id: String, synchronizable: Bool) -> Bool? {
     var q = baseQuery()
+    q[kSecAttrSynchronizable as String] = synchronizable
     q[kSecAttrAccount as String] = id
-    q[kSecReturnData as String] = true
     q[kSecReturnAttributes as String] = true
-    var result: CFTypeRef?
-    guard SecItemCopyMatching(q as CFDictionary, &result) == errSecSuccess,
-          let item = result as? [String: Any],
-          let data = item[kSecValueData as String] as? Data else { return nil }
-    let sync = (item[kSecAttrSynchronizable as String] as? Bool) ?? false
-    let accessible = (item[kSecAttrAccessible as String] as? String).map { $0 as CFString }
-      ?? kSecAttrAccessibleAfterFirstUnlock
-    return (data, sync, accessible)
+    switch SecItemCopyMatching(q as CFDictionary, nil) {
+    case errSecSuccess: return true
+    case errSecItemNotFound: return false
+    default: return nil
+    }
+  }
+
+  /// Does this record ride the iCloud Keychain? Then deleting it deletes it on every device, whatever
+  /// the sync switch says.
+  func isSynchronizable(id: String) -> Bool {
+    exists(id: id, synchronizable: true) == true
   }
 
   private func add(id: String, data: Data, synchronizable: Bool, accessible: CFString) -> Bool {
@@ -195,30 +198,70 @@ final class MoshSecretStore<T: MoshVaultRecord> {
     return SecItemAdd(attrs as CFDictionary, nil) == errSecSuccess
   }
 
-  // Insert or replace. Like the SSH stores, we delete any existing variant first and add fresh, so
-  // the item always takes the CURRENT sync flavor (SecItemUpdate can't change kSecAttrSynchronizable).
-  //
-  // Between that delete and that add the record exists NOWHERE else — there is no index file behind
-  // it, the keychain item IS the record. So the old bytes are kept in hand and put back if the add is
-  // refused (locked before first unlock, keychain busy, quota): a failed save costs you the edit you
-  // just made, never the entry you already had.
+  private func updateValue(id: String, synchronizable: Bool, data: Data) -> Bool {
+    var q = baseQuery()
+    q[kSecAttrSynchronizable as String] = synchronizable
+    q[kSecAttrAccount as String] = id
+    return SecItemUpdate(q as CFDictionary, [kSecValueData as String: data] as CFDictionary) == errSecSuccess
+  }
+
+  private func delete(id: String, synchronizable: Bool) {
+    var q = baseQuery()
+    q[kSecAttrSynchronizable as String] = synchronizable
+    q[kSecAttrAccount as String] = id
+    SecItemDelete(q as CFDictionary)
+  }
+
+  // Insert or replace, without ever deleting a synchronizable item to do it: a synced item deleted
+  // here is deleted on every device, so "edit with sync off" used to mean "remove it from my other
+  // devices". A synced record keeps its flavor and only its value changes, in place (SecItemUpdate
+  // is one atomic step, so the old value is never missing). When both flavors exist (a divergent
+  // pair the migration left alone) the synced one takes the value and the local leftover goes; a
+  // device-local delete never travels. A local-only record with sync ON moves to iCloud the way
+  // Moshsync.migrate moves it, add first and then drop the local copy: editing the local copy in
+  // place raced the migration, which could add the OLD bytes as the synced copy and then delete the
+  // local one holding the new value. With sync OFF it is updated in place. Only a NEW record takes
+  // the toggle's flavor.
   @discardableResult
   func upsert(_ record: T) -> Bool {
     guard let data = try? Self.encoder.encode(record) else { return false }
+    guard let synced = exists(id: record.id, synchronizable: true),
+          let local = exists(id: record.id, synchronizable: false) else {
+      MoshLog.log("vault", "keychain could not answer for \(service), nothing written")
+      return false
+    }
 
-    let previous = rawItem(id: record.id)
-    delete(id: record.id)
+    if synced {
+      guard updateValue(id: record.id, synchronizable: true, data: data) else {
+        MoshLog.log("vault", "keychain refused an update to \(service), previous value kept")
+        return false
+      }
+      if local { delete(id: record.id, synchronizable: false) }
+      return true
+    }
+
+    if local {
+      if MoshKeychainSync.enabled {
+        // The migration may have added the old bytes in the meantime: the new value goes over them.
+        if add(id: record.id, data: data, synchronizable: true, accessible: kSecAttrAccessibleAfterFirstUnlock)
+            || updateValue(id: record.id, synchronizable: true, data: data) {
+          delete(id: record.id, synchronizable: false)
+          return true
+        }
+        MoshLog.log("vault", "keychain could not move a record of \(service) to iCloud, updating it in place")
+      }
+      guard updateValue(id: record.id, synchronizable: false, data: data) else {
+        MoshLog.log("vault", "keychain refused an update to \(service), previous value kept")
+        return false
+      }
+      return true
+    }
 
     if add(id: record.id, data: data, synchronizable: MoshKeychainSync.enabled,
            accessible: kSecAttrAccessibleAfterFirstUnlock) {
       return true
     }
-
-    if let previous {
-      _ = add(id: record.id, data: previous.data, synchronizable: previous.synchronizable,
-              accessible: previous.accessible)
-    }
-    MoshLog.log("vault", "keychain refused a write to \(service) — \(previous == nil ? "nothing to restore" : "previous value restored")")
+    MoshLog.log("vault", "keychain refused a write to \(service)")
     return false
   }
 
@@ -245,6 +288,7 @@ final class MoshVaultStore {
     var e = e; e.lastModified = Date(); return store.upsert(e)
   }
   func delete(_ e: MoshVaultEntry) { store.delete(id: e.id) }
+  func isSynchronizable(_ e: MoshVaultEntry) -> Bool { store.isSynchronizable(id: e.id) }
 }
 
 final class MoshTOTPStore {
@@ -263,12 +307,23 @@ final class MoshTOTPStore {
     var a = a; a.lastModified = Date(); return store.upsert(a)
   }
   func delete(_ a: MoshTOTPAccount) { store.delete(id: a.id) }
+  func isSynchronizable(_ a: MoshTOTPAccount) -> Bool { store.isSynchronizable(id: a.id) }
 
   // Import many at once (Google migration / batch), de-duping by (issuer, account, secret) so a
   // repeated scan doesn't pile up copies. Returns how many were newly added.
+  private static func key(_ a: MoshTOTPAccount) -> String {
+    "\(a.issuer)\u{1}\(a.account)\u{1}\(a.secret)".lowercased()
+  }
+
+  /// Is this account (same issuer, account and secret) already stored? A second scan of the same QR.
+  func containsSame(_ a: MoshTOTPAccount) -> Bool {
+    let k = Self.key(a)
+    return all().contains { Self.key($0) == k }
+  }
+
   @discardableResult func importAccounts(_ incoming: [MoshTOTPAccount]) -> Int {
     let existing = all()
-    func key(_ a: MoshTOTPAccount) -> String { "\(a.issuer)\u{1}\(a.account)\u{1}\(a.secret)".lowercased() }
+    let key = Self.key
     var seen = Set(existing.map(key))
     var added = 0
     // `seen` grows as we go, so the same account appearing twice in one import lands once.

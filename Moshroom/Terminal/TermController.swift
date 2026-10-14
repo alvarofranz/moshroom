@@ -257,14 +257,6 @@ class TermController: UIViewController {
     _proxyView.prepareForWindowMove()
   }
 
-  public override func viewWillTransition(to size: CGSize, with coordinator: UIViewControllerTransitionCoordinator) {
-    if !coordinator.isAnimated {
-      return
-    }
-
-    super.viewWillTransition(to: size, with: coordinator)
-  }
-
   public override func loadView() {
     super.loadView()
     _termDevice.delegate = self
@@ -571,14 +563,18 @@ extension TermController: SuspendableSession {
     if (_session as? MCPSession)?.moshroomRepaintMoshSession() == true {
       return
     }
-    let state = _termView.termUIState
-    if state.cols > 1 {
-      let rows = UInt16(clamping: state.rows)
-      _termDevice.viewWinSizeChanged(winsize(ws_row: rows, ws_col: UInt16(clamping: state.cols - 1), ws_xpixel: 0, ws_ypixel: 0))
+    // Around the size the rebuilt page just reported (the device's), never an archived one.
+    let live = _termDevice.win
+    if live.ws_col > 1 {
+      var narrow = live
+      narrow.ws_col -= 1
+      _termDevice.viewWinSizeChanged(narrow)
       DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
         guard let self else { return }
-        let s = self._termView.termUIState
-        self._termDevice.viewWinSizeChanged(winsize(ws_row: UInt16(clamping: s.rows), ws_col: UInt16(clamping: s.cols), ws_xpixel: 0, ws_ypixel: 0))
+        // A real resize in between already set the true size.
+        let now = self._termDevice.win
+        guard now.ws_col == narrow.ws_col, now.ws_row == narrow.ws_row else { return }
+        self._termDevice.viewWinSizeChanged(live)
       }
     }
     (_session as? MCPSession)?.moshroomReprintPromptIfIdle()
@@ -601,6 +597,18 @@ extension TermController: SuspendableSession {
     let host = (tmuxHost ?? meta.connectedHost ?? moshroomConnectedHost ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
     guard !host.isEmpty, MoshHosts.withHost(host) != nil else { return nil }
     return host
+  }
+
+  /// How this tab is connected ("tmux", "mosh" or "ssh"), for the Tabs list: two tabs on the same host
+  /// read the same otherwise. Nil on a local prompt.
+  var moshroomTransportName: String? {
+    guard moshroomUploadHost != nil else { return nil }
+    switch (_session as? MCPSession)?.sessionParams?.childSessionType {
+    case "tmux": return "tmux"
+    case "mosh": return "mosh"
+    case "ssh": return "ssh"
+    default: return nil
+    }
   }
 
   /// Whether this tab's live child is a tmux control-mode session (reconnecting re-attaches it).

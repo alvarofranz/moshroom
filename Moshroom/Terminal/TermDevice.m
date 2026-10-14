@@ -22,6 +22,7 @@
 ////////////////////////////////////////////////////////////////////////////////
 
 #import "TermDevice.h"
+#import "Moshroom-Swift.h"
 
 static int __sizeOfIncompleteSequenceAtTheEnd(const char *buffer, size_t len) {
   // Find the first UTF mark and compare with the iterator.
@@ -65,11 +66,14 @@ static int __sizeOfIncompleteSequenceAtTheEnd(const char *buffer, size_t len) {
 - (instancetype) initWithQueue:(dispatch_queue_t) queue fd:(dispatch_fd_t)fd
 {
   if (self = [super init]) {
+    // The channel never closes the descriptor it reads: its cleanup handler is where the owner does,
+    // once the channel is closed (or failed to open). Without it every closed tab kept this fd.
     _channel = dispatch_io_create(DISPATCH_IO_STREAM, fd, queue,
                                    ^(int error) {
                                      if (error) {
                                        printf("Error creating channel");
                                      }
+                                     close(fd);
                                    });
     dispatch_io_set_low_water(_channel, 1);
     dispatch_io_read(_channel, 0, SIZE_MAX, queue, [self _streamHandler]);
@@ -155,6 +159,13 @@ static int __sizeOfIncompleteSequenceAtTheEnd(const char *buffer, size_t len) {
   NSString *_readlineResult;
   _Atomic(BOOL) _moshroomLocalShellPrompt;
 
+  // A paste still on its way out through the page (see -sendBracketedPaste:submit:), and the input
+  // that arrived behind it, in order: an NSString to write, or @[text, @(submit)] for another paste.
+  // Guarded by @synchronized(self): -write: can come from any thread.
+  BOOL _pasteInFlight;
+  NSUInteger _pasteGeneration;
+  NSMutableArray *_heldInput;
+
   // Until when a replayed bell or clipboard copy is let through silently (see moshroomQuietReplay).
   _Atomic(CFAbsoluteTime) _quietReplayUntil;
 }
@@ -168,11 +179,26 @@ static int __sizeOfIncompleteSequenceAtTheEnd(const char *buffer, size_t len) {
   
   if (self) {
     _isReady = FALSE;
+    _heldInput = [[NSMutableArray alloc] init];
 
-    pipe(_pinput);
-    pipe(_poutput);
-    pipe(_perror);
-    
+    // Out of descriptors (EMFILE): a device with no streams, which writes and prints nowhere,
+    // instead of FILEs built on descriptors that do not exist.
+    int pin[2] = {-1, -1}, pout[2] = {-1, -1}, perr[2] = {-1, -1};
+    if (pipe(pin) != 0 || pipe(pout) != 0 || pipe(perr) != 0) {
+      [MoshLogBridge log:@"terminal" message:[NSString stringWithFormat:@"could not create the terminal pipes (errno %d)", errno]];
+      for (int i = 0; i < 2; i++) {
+        if (pin[i] >= 0) close(pin[i]);
+        if (pout[i] >= 0) close(pout[i]);
+        if (perr[i] >= 0) close(perr[i]);
+      }
+      _pinput[0] = _pinput[1] = _poutput[0] = _poutput[1] = _perror[0] = _perror[1] = -1;
+      _stream = [[TermStream alloc] init];
+      return self;
+    }
+    memcpy(_pinput, pin, sizeof(pin));
+    memcpy(_poutput, pout, sizeof(pout));
+    memcpy(_perror, perr, sizeof(perr));
+
     // TODO: Change the interface
     // Initialize on the stream
     _stream = [[TermStream alloc] init];
@@ -208,6 +234,22 @@ static int __sizeOfIncompleteSequenceAtTheEnd(const char *buffer, size_t len) {
   // as frozen on stale text.
   [self.view moshroomScrollToBottom];
 
+  // Behind a paste that has not gone out yet: wait for it, or these bytes would reach the program
+  // before the text (and the Enter) that was sent first.
+  @synchronized (self) {
+    if (_pasteInFlight || _heldInput.count > 0) {
+      if (input) {
+        [_heldInput addObject:input];
+      }
+      return;
+    }
+  }
+  [self _writeInput:input];
+}
+
+// The input itself, cooked or raw, with no viewport or ordering concerns (see -write:).
+- (void)_writeInput:(NSString *)input
+{
   NSString *ctrlC = @"\x03";
   NSString *ctrlD = @"\x04";
 
@@ -222,10 +264,10 @@ static int __sizeOfIncompleteSequenceAtTheEnd(const char *buffer, size_t len) {
 
     [self _EOT];
     //if (_readlineSema) {
-    if ([input isEqualToString: ctrlC]) {
+    if ([input isEqualToString: ctrlC] && _stream.err) {
       fprintf(_stream.err, "^C\n");
     }
-    if ([input isEqualToString: ctrlD]) {
+    if ([input isEqualToString: ctrlD] && _stream.err) {
       fprintf(_stream.err, "^D\n");
     }
       //}
@@ -255,11 +297,63 @@ static int __sizeOfIncompleteSequenceAtTheEnd(const char *buffer, size_t len) {
   [self sendBracketedPaste:input submit:NO];
 }
 
+// Main thread. The paste leaves through the page and its Enter a beat after that, so a key typed
+// right after the send could reach the program first. Until both have gone out, every later -write:
+// and paste waits here, then they follow in the order they came.
 - (void)sendBracketedPaste:(NSString *)input submit:(BOOL)submit
 {
   // A paste is user input too — same reason as -write:.
   [self.view moshroomScrollToBottom];
-  [self.view pasteString:input submit:submit];
+  @synchronized (self) {
+    if (_pasteInFlight || _heldInput.count > 0) {
+      [_heldInput addObject:@[input ?: @"", @(submit)]];
+      return;
+    }
+  }
+  [self _startPaste:input submit:submit];
+}
+
+- (void)_startPaste:(NSString *)input submit:(BOOL)submit
+{
+  NSUInteger generation;
+  @synchronized (self) {
+    _pasteInFlight = YES;
+    generation = ++_pasteGeneration;
+  }
+  __weak typeof(self) weakSelf = self;
+  // Never for good: a page that does not come back must not swallow every key typed after.
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    [weakSelf _pasteDidGoOut:generation];
+  });
+  [self.view pasteString:input submit:submit completion:^{
+    [weakSelf _pasteDidGoOut:generation];
+  }];
+}
+
+- (void)_pasteDidGoOut:(NSUInteger)generation
+{
+  @synchronized (self) {
+    if (!_pasteInFlight || generation != _pasteGeneration) {
+      return;
+    }
+    _pasteInFlight = NO;
+  }
+  // What waited, in order, until the next paste among it starts (and holds the rest again).
+  while (YES) {
+    id next = nil;
+    @synchronized (self) {
+      if (_pasteInFlight || _heldInput.count == 0) {
+        return;
+      }
+      next = _heldInput.firstObject;
+      [_heldInput removeObjectAtIndex:0];
+    }
+    if ([next isKindOfClass:[NSArray class]]) {
+      [self _startPaste:next[0] submit:[next[1] boolValue]];
+    } else {
+      [self _writeInput:next];
+    }
+  }
 }
 
 - (void)moshroomQuietReplay
@@ -276,11 +370,24 @@ static int __sizeOfIncompleteSequenceAtTheEnd(const char *buffer, size_t len) {
 {
   _delegate = NULL;
   _readlineListener = NULL;
+  @synchronized (self) {
+    [_heldInput removeAllObjects];
+  }
   
   // Closing the Device streams. These are the main device, usually duped in Sessions.
   [_stream close];
   [_outStream close];
   [_errStream close];
+  // The write end of stdin is ours alone (-writeInDirectly:); the read ends of output close with
+  // their channels (see ViewStream).
+  int stdinWrite = _pinput[1];
+  _pinput[1] = -1;
+  // The read end went with [_stream close]; forget its number so a late _EOT cannot close it twice
+  // (by then it may belong to another tab).
+  _pinput[0] = -1;
+  if (stdinWrite >= 0) {
+    close(stdinWrite);
+  }
 }
 
 - (void)attachView:(TermView *)termView
@@ -311,6 +418,10 @@ static int __sizeOfIncompleteSequenceAtTheEnd(const char *buffer, size_t len) {
 }
 
 - (void)setAutoCR:(BOOL)autoCR {
+  if (!_stream.out) {
+    _autoCR = autoCR;
+    return;
+  }
   if (autoCR) {
     fprintf(_stream.out, "\x1b]1337;MoshroomAutoCR=1\x07");
   } else {
@@ -339,7 +450,9 @@ static int __sizeOfIncompleteSequenceAtTheEnd(const char *buffer, size_t len) {
   NSData *data = [NSJSONSerialization dataWithJSONObject:dict options:kNilOptions error:nil];
   NSString *cmd = [NSString stringWithFormat: @"\x1b]1337;MoshroomPrompt=%@\x07", [data base64EncodedStringWithOptions:kNilOptions]];
   
-  fprintf(_stream.out, "%s", cmd.UTF8String);
+  if (_stream.out) {
+    fprintf(_stream.out, "%s", cmd.UTF8String);
+  }
 }
 
 - (NSString *)readline:(NSString *)prompt secure:(BOOL)secure {
@@ -366,9 +479,17 @@ static int __sizeOfIncompleteSequenceAtTheEnd(const char *buffer, size_t len) {
   // through the Terminal Delegate so sessions can "restore" stdin and continue reading from it if necessary.
   // TODO We should return the last input we have from the device, but not easy to do atm.
   [self closeReadline];
+  if (_pinput[0] < 0) {
+    // Already closed with the device.
+    return;
+  }
   close(_pinput[1]);
   close(_pinput[0]);
-  pipe(_pinput);
+  if (pipe(_pinput) != 0) {
+    _pinput[0] = _pinput[1] = -1;
+    _stream.in = NULL;
+    return;
+  }
   _stream.in = fdopen(_pinput[0], "rb");
   setvbuf(_stream.in, NULL, _IONBF, 0);
 }
@@ -495,6 +616,20 @@ static int __sizeOfIncompleteSequenceAtTheEnd(const char *buffer, size_t len) {
 - (void)viewSendString:(NSString *)data
 {
   [self write:data];
+}
+
+// The terminal answering by itself (device attributes, cursor position, colour queries, focus
+// reports): not the user's input, so it never moves the viewport, and never waits behind a paste.
+- (void)viewSendReply:(NSString *)data
+{
+  [self _writeInput:data];
+}
+
+// The bytes of a paste, and the Enter that submits it: they ARE the paste in flight, so they go now.
+- (void)viewSendPastedString:(NSString *)data
+{
+  [self.view moshroomScrollToBottom];
+  [self _writeInput:data];
 }
 
 - (void)viewSubmitLine:(NSString *)line {

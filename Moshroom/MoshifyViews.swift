@@ -153,8 +153,10 @@ final class MoshifyMiniPlayer: UIView {
     Moshstyle.applyChipShadow(layer)
 
     playButton.setMoshIcon("play.fill", pointSize: 12, weight: .semibold)
+    playButton.accessibilityLabel = "Play"
     playButton.addAction(UIAction { _ in MoshifyEngine.shared.togglePlayPause() }, for: .touchUpInside)
     nextButton.setMoshIcon("forward.end.fill", pointSize: 11, weight: .semibold)
+    nextButton.accessibilityLabel = "Next track"
     nextButton.addAction(UIAction { _ in MoshifyEngine.shared.next() }, for: .touchUpInside)
 
     titleLabel.font = .systemFont(ofSize: 13, weight: .medium)
@@ -163,6 +165,8 @@ final class MoshifyMiniPlayer: UIView {
     titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
     titleLabel.isUserInteractionEnabled = true
     titleLabel.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(_open)))
+    titleLabel.accessibilityTraits = .button
+    titleLabel.accessibilityHint = "Opens the music tab."
 
     let stack = UIStackView(arrangedSubviews: [playButton, nextButton, titleLabel])
     stack.axis = .horizontal
@@ -195,14 +199,17 @@ final class MoshifyMiniPlayer: UIView {
     case .playing(let t):
       titleLabel.text = t.title
       playButton.setMoshIcon("pause.fill", pointSize: 12, weight: .semibold)
+      playButton.accessibilityLabel = "Pause"
       return true
     case .paused(let t):
       titleLabel.text = t.title
       playButton.setMoshIcon("play.fill", pointSize: 12, weight: .semibold)
+      playButton.accessibilityLabel = "Play"
       return true
     case .downloading(let t, _):
       titleLabel.text = t.title
       playButton.setMoshIcon("play.fill", pointSize: 12, weight: .semibold)
+      playButton.accessibilityLabel = "Play"
       return true
     default:
       return false
@@ -362,14 +369,17 @@ final class MoshifyTabController: UIViewController, MoshroomTabPage,
     bottomBar.addSubview(progressBar)
 
     shuffleButton.setMoshIcon("shuffle", pointSize: 17, weight: .semibold)
+    shuffleButton.accessibilityLabel = "Shuffle"
     shuffleButton.addAction(UIAction { _ in
       MoshifyEngine.shared.shuffle.toggle()
     }, for: .touchUpInside)
     playButton.setMoshIcon("play.fill", pointSize: 24, weight: .semibold)
+    playButton.accessibilityLabel = "Play"
     playButton.addAction(UIAction { _ in
       MoshifyEngine.shared.togglePlayPause()
     }, for: .touchUpInside)
     nextButton.setMoshIcon("forward.end.fill", pointSize: 17, weight: .semibold)
+    nextButton.accessibilityLabel = "Next track"
     nextButton.addAction(UIAction { _ in
       MoshifyEngine.shared.next()
     }, for: .touchUpInside)
@@ -636,6 +646,7 @@ final class MoshifyTabController: UIViewController, MoshroomTabPage,
     case .playing(let t):
       nowPlayingLabel.text = t.title
       playButton.setMoshIcon("pause.fill", pointSize: 24, weight: .semibold)
+      playButton.accessibilityLabel = "Pause"
     case .paused(let t):
       nowPlayingLabel.text = t.title
       playButton.setMoshIcon("play.fill", pointSize: 24, weight: .semibold)
@@ -646,8 +657,10 @@ final class MoshifyTabController: UIViewController, MoshroomTabPage,
       nowPlayingLabel.text = " "
       playButton.setMoshIcon("play.fill", pointSize: 24, weight: .semibold)
     }
+    if case .playing = state {} else { playButton.accessibilityLabel = "Play" }
 
     // Shuffle ON = the one filled-red round key.
+    shuffleButton.accessibilityValue = engine.shuffle ? "On" : "Off"
     if engine.shuffle {
       shuffleButton.backgroundColor = .moshroomTint
       shuffleButton.setMoshIcon("shuffle", pointSize: 17, weight: .semibold, color: .white)

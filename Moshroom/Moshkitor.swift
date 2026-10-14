@@ -50,7 +50,7 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
   private var uploader: MoshdropUploader?
   private var progressOverlay: UIView?
   private var progressLabel: UILabel?
-  private var progressBar: UIProgressView?
+  private var progressBar: MoshifyProgressLine?
   private var isSending = false   // a send/upload is in flight (blocks re-entrancy + editing)
   private var isClosing = false   // the composer is going away (cancels a late upload completion)
 
@@ -68,6 +68,12 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
   // The Share-tray button in the control bar. Present only when the tray holds items (images shared
   // to Moshroom via the system share sheet); tapping it opens the tray grid — see openTray / Moshtray.
   private var trayButton: UIButton?
+  // Shown only while the clipboard holds something; re-read when the app comes back to the front.
+  private var pasteButton: UIButton?
+  private static var _clipboardHasContent: Bool {
+    let pb = UIPasteboard.general
+    return pb.hasStrings || pb.hasImages || pb.hasURLs || pb.contains(pasteboardTypes: [UTType.pdf.identifier])
+  }
 
   // The host attachments upload to (see TermController.moshroomUploadHost), or nil when this tab has
   // no session to attach for.
@@ -76,11 +82,19 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
   // `ssh`/`mosh` connect and record its host as the next upload target.
   var onSend: ((String) -> Void)?
 
-  init(device: TermDevice, tabKey: UUID?, seed: String = "", connectedHost: String? = nil, pasteOnAppear: Bool = false) {
+  // Local built-ins (ssh, mosh, help…) mean something only at this tab's own fresh prompt.
+  private let offersLocalCommands: Bool
+  // Images inserted from the Share tray, by staged copy. They leave the tray only once sent.
+  private static var trayOrigins: [URL: URL] = [:]
+  private let placeholder = UILabel()
+
+  init(device: TermDevice, tabKey: UUID?, seed: String = "", connectedHost: String? = nil,
+       offersLocalCommands: Bool = true, pasteOnAppear: Bool = false) {
     self.device = device
     self.tabKey = tabKey
     self.seed = seed
     self.connectedHost = connectedHost
+    self.offersLocalCommands = offersLocalCommands
     self._pastesOnAppear = pasteOnAppear
     super.init(nibName: nil, bundle: nil)
   }
@@ -116,7 +130,25 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
   // The composer's baseline text style — kept on `typingAttributes` so typing never inherits an
   // attachment's styling and inserted runs match the rest of the prose.
   private var _defaultTypingAttributes: [NSAttributedString.Key: Any] {
-    [.font: UIFont.monospacedSystemFont(ofSize: 17, weight: .regular), .foregroundColor: UIColor.label]
+    [.font: Self._editorFont, .foregroundColor: UIColor.label]
+  }
+  // Follows the Dynamic Type setting, like the rest of the text in the app.
+  private static var _editorFont: UIFont {
+    UIFontMetrics(forTextStyle: .body).scaledFont(for: .monospacedSystemFont(ofSize: 17, weight: .regular), maximumPointSize: 40)
+  }
+
+  private static var _placeholderText: String {
+    #if targetEnvironment(macCatalyst)
+    return "Write a command or a prompt…\nReturn adds a line. ⌘+Return or Ctrl+Return sends. Esc closes."
+    #else
+    return MoshroomTyping.shared.hardwareKeyboard
+      ? "Write a command or a prompt…\nReturn adds a line. Ctrl+Return or ⌘+Return sends. Esc closes."
+      : "Write a command or a prompt…"
+    #endif
+  }
+
+  private func _refreshPlaceholder() {
+    placeholder.isHidden = textView.textStorage.length > 0
   }
 
   override func viewDidLoad() {
@@ -128,7 +160,8 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
     textView.delegate = self
     textView.accessibilityLabel = "Composer text"
     textView.accessibilityIdentifier = "composer.input"
-    textView.font = .monospacedSystemFont(ofSize: 17, weight: .regular)
+    textView.font = Self._editorFont
+    textView.adjustsFontForContentSizeCategory = true
     textView.textColor = .label
     textView.allowsEditingTextAttributes = false
     textView.textContainerInset = UIEdgeInsets(top: 14, left: 12, bottom: 14, right: 12)
@@ -145,6 +178,16 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
     textView.alwaysBounceVertical = true
     textView.translatesAutoresizingMaskIntoConstraints = false
     view.addSubview(textView)
+
+    placeholder.text = Self._placeholderText
+    placeholder.font = UIFontMetrics(forTextStyle: .body).scaledFont(for: .systemFont(ofSize: 17), maximumPointSize: 40)
+    placeholder.textColor = .tertiaryLabel
+    placeholder.numberOfLines = 0
+    placeholder.isAccessibilityElement = false
+    placeholder.isUserInteractionEnabled = false
+    placeholder.translatesAutoresizingMaskIntoConstraints = false
+    view.addSubview(placeholder)
+    textView.accessibilityHint = Self._placeholderText.replacingOccurrences(of: "\n", with: " ")
 
     suggestionsScroll.translatesAutoresizingMaskIntoConstraints = false
     suggestionsScroll.showsHorizontalScrollIndicator = false
@@ -176,6 +219,10 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
     NSLayoutConstraint.activate([
       textView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
       textView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+      // Where the first line of text starts: the text container inset plus the line padding.
+      placeholder.topAnchor.constraint(equalTo: textView.topAnchor, constant: 14),
+      placeholder.leadingAnchor.constraint(equalTo: textView.leadingAnchor, constant: 17),
+      placeholder.trailingAnchor.constraint(lessThanOrEqualTo: textView.trailingAnchor, constant: -17),
       textView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
       textView.bottomAnchor.constraint(equalTo: suggestionsScroll.topAnchor),
 
@@ -289,10 +336,10 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
     let back = _barButton(systemImage: "chevron.left", action: #selector(close))
 
     var rightItems: [UIView] = [_barButton(systemImage: "chevron.left.forwardslash.chevron.right", action: #selector(openSnips))]
-    let pb = UIPasteboard.general
-    if pb.hasStrings || pb.hasImages || pb.hasURLs || pb.contains(pasteboardTypes: [UTType.pdf.identifier]) {
-      rightItems.append(_barButton(systemImage: "doc.on.clipboard", action: #selector(smartPaste)))
-    }
+    let paste = _barButton(systemImage: "doc.on.clipboard", action: #selector(smartPaste))
+    paste.isHidden = !Self._clipboardHasContent
+    pasteButton = paste
+    rightItems.append(paste)
     let tray = _barButton(systemImage: "photo.on.rectangle.angled", action: #selector(openTray))
     tray.isHidden = MoshroomStoreCaptureMode.enabled || MoshroomShareTray.isEmpty()
     trayButton = tray
@@ -383,7 +430,7 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
       case .failure(.notReadable):
         MoshLog.log("paste", "attachable rejected (not agent-readable): \(name)")
         _composerAlert(title: "Can't attach that",
-                       message: "Moshdrop takes images, PDFs and text/code files — what your agent can read. Not video, audio, archives or apps.")
+                       message: "Moshdrop takes images, PDFs and text/code files: what your agent can read. Not video, audio, archives or apps.")
         return
       case .failure(.failed):
         MoshLog.log("paste", "attach staging failed for \(name) → falling back to text")
@@ -417,8 +464,8 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
   }
 
   // The Share tray: images shared to Moshroom (system share sheet → the Moshroom share extension)
-  // wait in a small App-Group tray. This opens the grid to drop one inline; inserting removes it from
-  // the tray (a shared screenshot is a one-shot). Works on any tab, connected or not.
+  // wait in a small App-Group tray. This opens the grid to drop one inline; it leaves the tray once
+  // the message carrying it is sent (a shared screenshot is a one-shot). Works on any tab.
   @objc private func openTray() {
     MoshLog.log("tray", "open: \(MoshroomShareTray.count()) item(s)")
     let tray = MoshtrayController(
@@ -435,8 +482,9 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
     if !textView.isFirstResponder { textView.becomeFirstResponder() }
     switch Moshdrop.makeAttachment(localURL: url, displayName: url.lastPathComponent) {
     case .success(let attachment):
-      MoshroomShareTray.remove(url)   // one-shot: a shared image isn't reused
-      MoshLog.log("tray", "inserted 1 inline, \(MoshroomShareTray.count()) left")
+      // Kept in the tray until the send succeeds: removing the chip or quitting must not lose it.
+      Self.trayOrigins[attachment.localURL] = url
+      MoshLog.log("tray", "inserted 1 inline")
       _insertAttachment(attachment)
     case .failure:
       MoshLog.log("tray", "insert failed (not agent-readable / staging)")
@@ -446,6 +494,7 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
   }
 
   @objc private func _refreshTrayButton() {
+    pasteButton?.isHidden = !Self._clipboardHasContent
     guard !MoshroomStoreCaptureMode.enabled else { return }
     trayButton?.isHidden = MoshroomShareTray.isEmpty()
   }
@@ -482,7 +531,7 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
   @objc private func sendAndClose() {
     guard !isSending else { return }
     guard device != nil else {
-      _composerAlert(title: "No active session", message: "Reopen a terminal session, then send.")
+      _composerAlert(title: "No active session", message: "This tab's session has ended. Open a new tab to send.")
       return
     }
     let attachments = _attachments()
@@ -492,8 +541,8 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
       return
     }
     guard let host = connectedHost else {
-      _composerAlert(title: "Not connected",
-                     message: "You must be in an active connection with a server so the attachment can be uploaded.")
+      _composerAlert(title: "Can't upload yet",
+                     message: "Attachments upload to the saved host this tab is connected to. Connect to one of your hosts, then send again, or remove the attachments to send just the text.")
       return
     }
     isSending = true
@@ -583,13 +632,16 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
       let stillUsed = Self._draftAttachmentURLs(excluding: tabKey)
       attachments.filter { !stillUsed.contains($0.localURL) }
         .forEach { try? FileManager.default.removeItem(at: $0.localURL) }
+      for a in attachments {
+        if let origin = Self.trayOrigins.removeValue(forKey: a.localURL) { MoshroomShareTray.remove(origin) }
+      }
       _hideProgress()
       _writeAndDismiss(_composeCommand())
       return
     }
     let a = attachments[index]
     _setProgress("Uploading \(index + 1) of \(attachments.count)\n\(a.displayName) → \(host)")
-    progressBar?.setProgress(0, animated: false)
+    progressBar?.progress = 0
     let up = MoshdropUploader()
     uploader = up
     // Headless (no device): the upload connects on the user's behalf, so a question it cannot answer
@@ -604,7 +656,7 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
         self._endSending()
         MoshLog.log("upload", "\(a.displayName) failed: \(error.localizedDescription)")
         self._composerAlert(title: "Upload failed",
-                            message: "Couldn't upload \(a.displayName):\n\(error.localizedDescription)\n\nYou're back in the editor — fix it and send again.")
+                            message: "Couldn't upload \(a.displayName):\n\(error.localizedDescription)\n\nYou're back in the editor: fix it and send again.")
       }
     }
   }
@@ -638,10 +690,9 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
     label.text = text
 
     // A real (mushroom-red) progress bar, driven by true SFTP byte counts — see _uploadStep.
-    let bar = UIProgressView(progressViewStyle: .default)
+    // Hand-painted: UIProgressView fills gray on Mac Catalyst whatever its tint says.
+    let bar = MoshifyProgressLine()
     bar.translatesAutoresizingMaskIntoConstraints = false
-    bar.progressTintColor = .moshroomTint
-    bar.trackTintColor = UIColor.moshroomTint.withAlphaComponent(Moshstyle.faintTintAlpha)
     bar.progress = 0
 
     // Top-right ✕ — cancel the upload and drop straight back into the editor with everything intact.
@@ -679,6 +730,7 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
       bar.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 20),
       bar.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -20),
       bar.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -22),
+      bar.heightAnchor.constraint(equalToConstant: 4),
 
       cancel.topAnchor.constraint(equalTo: card.topAnchor, constant: 8),
       cancel.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -8),
@@ -691,7 +743,7 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
   private func _setProgress(_ text: String) { progressLabel?.text = text }
 
   private func _setProgressFraction(_ fraction: Double) {
-    progressBar?.setProgress(Float(fraction), animated: true)
+    progressBar?.progress = Float(fraction)
   }
 
   private func _hideProgress() {
@@ -798,6 +850,7 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
   }
 
   private func _updateSuggestions() {
+    _refreshPlaceholder()
     guard !MoshroomStoreCaptureMode.enabled else { return }
     let items = _commandSuggestions()
     suggestionsStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
@@ -805,7 +858,7 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
       suggestionsHeight.constant = 0
     } else {
       items.forEach { suggestionsStack.addArrangedSubview(_chip($0)) }
-      suggestionsHeight.constant = 44
+      suggestionsHeight.constant = min(76, UIFontMetrics(forTextStyle: .subheadline).scaledValue(for: 44))
     }
   }
 
@@ -813,7 +866,7 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
     let isSnip: Bool = { if case .snip = suggestion { return true } else { return false } }()
     var cfg = UIButton.Configuration.plain()
     var attr = AttributeContainer()
-    attr.font = UIFont.monospacedSystemFont(ofSize: 15, weight: .medium)
+    attr.font = UIFontMetrics(forTextStyle: .subheadline).scaledFont(for: .monospacedSystemFont(ofSize: 15, weight: .medium), maximumPointSize: 26)
     attr.foregroundColor = UIColor.label
     cfg.attributedTitle = AttributedString(suggestion.label, attributes: attr)
     // Snips read in a red tint so they stand apart from plain commands.
@@ -834,7 +887,7 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
     let word = (textView.text as NSString).substring(with: range)
     let lower = word.lowercased()
 
-    let commands = (Self._extraCommands + Complete._allCommands())
+    let commands = (Self._extraCommands + (offersLocalCommands ? Complete._allCommands() : []))
       .filter { $0.hasPrefix(word) && $0 != word }
       .map { Suggestion.command($0) }
 
@@ -1229,6 +1282,7 @@ extension SpaceController {
       MoshkitorComposer.pruneDrafts(keeping: Set(moshroomTabs().map { $0.key }))
       let composer = MoshkitorComposer(device: device, tabKey: currentTerm()?.meta.key, seed: seed,
                                        connectedHost: currentTerm()?.moshroomUploadHost,
+                                       offersLocalCommands: currentTerm()?.moshroomIsFreshShell ?? true,
                                        pasteOnAppear: pasteOnOpen)
       composer.onSend = { [weak self] command in
         // The user ran something in this tab → the terminal now has content; don't pop Quick Connect back.
@@ -1417,13 +1471,6 @@ enum MoshroomKeyboard {
   static func _controlBytes(for key: UIKey) -> String? {
     // One real character only: a key with no character reports a name ("UIKeyInput…") whose first
     // letter would otherwise be folded into a control byte.
-    let chars = key.charactersIgnoringModifiers
-    guard chars.unicodeScalars.count == 1, let scalar = chars.uppercased().unicodeScalars.first else { return nil }
-    let v = scalar.value
-    // Ctrl+6 is Ctrl-^ on every terminal (the key the caret shares): mosh's own escape, so a session
-    // that lost its server can be quit the way mosh's banner says ("Ctrl-^ .").
-    if v == 0x36 { return "\u{1E}" }
-    guard v >= 0x40, v <= 0x5F else { return nil }   // Ctrl+@ A ... Z [ \ ] ^ _
-    return String(UnicodeScalar(v & 0x1F)!)
+    MoshroomControlKey.bytes(for: key.charactersIgnoringModifiers)
   }
 }

@@ -280,7 +280,7 @@ struct HostView: View {
 
   @State private var _projects: [MoshProject] = []
   @State private var _editingProject: HostProjectEdit? = nil
-  @State private var _pendingProjectDelete: MoshDeletePrompt? = nil
+  @State private var _pendingDelete: MoshDeletePrompt? = nil
 
   private var _reloadList: () -> ()
   private var _cleanAlias: String {
@@ -323,7 +323,7 @@ struct HostView: View {
     if alias.count < 2 {
       alias = "[alias]"
     }
-    return "Connect from Quick Connect, or type `ssh \(alias)`, `tmux \(alias)` or `mosh \(alias)`."
+    return "Tap it on a new tab, or type `ssh \(alias)`, `tmux \(alias)` or `mosh \(alias)`."
   }
 
   // `user@address:port`, live as the fields change: the header's summary of where this host is.
@@ -463,7 +463,7 @@ struct HostView: View {
     .listSectionSpacing(18)
     .moshReadableWidth()
     .alert(errorMessage: $_errorMessage)
-    .moshDeleteConfirmation($_pendingProjectDelete)
+    .moshDeleteConfirmation($_pendingDelete)
     .fullScreenCover(item: $_editingProject) { edit in
       MoshProjectEditor(
         hostAlias: _host?.host ?? _cleanAlias,
@@ -483,12 +483,18 @@ struct HostView: View {
       Button(action: {
         // A validation failure shows the alert and keeps the editor open — never save a bad host.
         guard _validate() else { return }
-        guard _saveHost() else {
-          _errorMessage = "The host could not be saved. If you changed the password, the keychain refused it: unlock the device and try again."
+        // Clearing a password that rides the iCloud Keychain deletes it on every device: ask first,
+        // in the same words as every other delete.
+        if _passwordToSave == "", let host = _host, host.hasSynchronizablePassword() {
+          _pendingDelete = MoshDeletePrompt(
+            title: "Remove the saved password?",
+            message: "Saving removes the password of \u{201C}\(host.host ?? "")\u{201D}. It is in your iCloud Keychain, so it also disappears from your other devices."
+          ) {
+            _commitSave()
+          }
           return
         }
-        _reloadList()
-        _nav.navController.popViewController(animated: true)
+        _commitSave()
       }) { MoshNavLabel(title: "Save") }
     })
     .onAppear {
@@ -497,6 +503,15 @@ struct HostView: View {
       }
     }
 
+  }
+
+  private func _commitSave() {
+    guard _saveHost() else {
+      _errorMessage = "The host could not be saved. If you changed the password, the keychain refused it: unlock the device and try again."
+      return
+    }
+    _reloadList()
+    _nav.navController.popViewController(animated: true)
   }
 
   // MARK: Projects
@@ -534,7 +549,7 @@ struct HostView: View {
 
   private func _confirmDeleteProject(_ project: MoshProject) {
     let host = _host?.host ?? "the server"
-    _pendingProjectDelete = MoshDeletePrompt(
+    _pendingDelete = MoshDeletePrompt(
       name: project.name.isEmpty ? project.session : project.name,
       what: "this project",
       extra: "Its session on \(host) is left running: end it there if you no longer need it."
@@ -543,9 +558,16 @@ struct HostView: View {
     }
   }
 
-  // Straight onto the saved host (stamped, so the iCloud merge takes this edit) and to disk.
+  // Straight onto the saved host (stamped, so the iCloud merge takes this edit) and to disk. The host
+  // is looked up by alias each time: an iCloud pull while this editor is open reloads the list with
+  // new objects, and writing to the one captured at open saved nothing.
   private func _persistProjects() {
-    guard let host = _host else { return }
+    guard let captured = _host else { return }
+    guard let host = MoshHosts.withHost(captured.host) else {
+      _errorMessage = "This host is no longer in the list: it may have been renamed or deleted on another device. Close the editor and open it again."
+      return
+    }
+    _host = host
     host.projectsJSON = MoshProject.json(_projects)
     host.lastModified = Date()
     guard MoshHosts.save() else {

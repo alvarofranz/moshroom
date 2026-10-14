@@ -88,6 +88,11 @@ struct MoshvaultRootView: View {
         guard let acc = MoshTOTP.parse(uri: uri) else {
           return "That isn't a 2FA setup code. Point the camera at the QR the service shows."
         }
+        // A second scan of the same QR (unsure the first one worked) must not add a twin.
+        if MoshTOTPStore.shared.containsSame(acc) {
+          totpBanner = "\(acc.title) is already in Moshvault"
+          return nil
+        }
         // Only a stored account counts as scanned: otherwise the sheet closes on a code that went
         // nowhere, and the QR is usually gone by the time anyone notices.
         return MoshTOTPStore.shared.save(acc)
@@ -286,6 +291,7 @@ struct MoshSheetHeader<Trailing: View>: View {
       HStack {
         Button(action: onClose) { MoshNavGlyph(systemName: "xmark") }
           .buttonStyle(.plain)
+          .keyboardShortcut(.cancelAction)   // Esc closes, as it did when the key screens were sheets
           .accessibilityLabel("Close")
         Spacer()
         trailing()
@@ -299,6 +305,22 @@ struct MoshSheetHeader<Trailing: View>: View {
 extension MoshSheetHeader where Trailing == EmptyView {
   init(title: String, onClose: @escaping () -> Void) {
     self.init(title: title, onClose: onClose, trailing: { EmptyView() })
+  }
+}
+
+extension View {
+  /// A full-screen editor's chrome for content that lives in a NavigationView (the key sheets): the
+  /// in-content header above it on the grouped ground, the navigation bar hidden. A chip in a
+  /// `.sheet`'s toolbar takes no clicks on Mac Catalyst, so these present as a fullScreenCover and
+  /// carry their buttons here instead.
+  func moshSheetChrome<Trailing: View>(title: String, onClose: @escaping () -> Void,
+                                       @ViewBuilder trailing: @escaping () -> Trailing) -> some View {
+    VStack(spacing: 0) {
+      MoshSheetHeader(title: title, onClose: onClose, trailing: trailing)
+      self
+    }
+    .background(Color(.systemGroupedBackground).ignoresSafeArea())
+    .toolbar(.hidden, for: .navigationBar)
   }
 }
 
@@ -423,7 +445,7 @@ struct MoshvaultPasswordsView: View {
         MoshEmptyState(
           icon: "lock.rectangle.stack",
           title: "Your password vault",
-          message: "Keep your service logins here — service, username, email, password, notes and URL. Everything is stored in your iCloud Keychain, end-to-end encrypted, and follows your devices when iCloud sync is on."
+          message: "Keep your service logins here: service, username, email, password, notes and URL. They are stored in the keychain, and with iCloud sync on they follow your devices, end-to-end encrypted."
         )
       } else {
         MoshSearchList(query: $query, prompt: "Search passwords", showSearch: entries.count > 10, noMatches: filtered.isEmpty) {
@@ -472,7 +494,9 @@ struct MoshvaultPasswordsView: View {
     let name = targets.count == 1 ? (targets[0].service.isEmpty ? "Untitled" : targets[0].service) : ""
     pendingDelete = MoshDeletePrompt(
       name: name,
-      what: targets.count == 1 ? "this password" : "\(targets.count) passwords"
+      what: targets.count == 1 ? "this password" : "\(targets.count) passwords",
+      syncedSecret: targets.contains { MoshVaultStore.shared.isSynchronizable($0) }
+        ? (targets.count == 1 ? "It" : "At least one") : nil
     ) {
       deleteEntries(targets)
     }
@@ -505,7 +529,7 @@ private struct MoshvaultPasswordEditor: View {
   // new entry, the whole entry. The editor stays open and says so rather than closing on a save that
   // did not happen.
   private static let writeRefused =
-    "The keychain refused to save this. Nothing was changed — unlock the device and try again." 
+    "The keychain refused to save this. Nothing was changed: unlock the device and try again." 
 
   var body: some View {
     VStack(spacing: 0) {
@@ -556,15 +580,14 @@ private struct MoshvaultPasswordEditor: View {
   // A labeled row: the field name on the left, the editable value, and a copy chip on the right
   // (green check in place on tap). Consistent with the password field and across every row.
   private func labeledField(_ title: String, text: Binding<String>, keyboard: UIKeyboardType = .default) -> some View {
-    HStack {
-      Text(title)
-        .foregroundColor(.secondary)
-        .frame(width: 92, alignment: .leading)
-      TextField(title, text: text)
-        .keyboardType(keyboard)
-        .autocorrectionDisabled()
-        .textInputAutocapitalization(keyboard == .default ? .sentences : .never)
-      MoshVaultCopyButton(icon: "doc.on.doc", value: text.wrappedValue, field: title)
+    MoshVaultLabeledRow(title: title, labelWidth: 92) {
+      HStack {
+        TextField(title, text: text)
+          .keyboardType(keyboard)
+          .autocorrectionDisabled()
+          .textInputAutocapitalization(keyboard == .default ? .sentences : .never)
+        MoshVaultCopyButton(icon: "doc.on.doc", value: text.wrappedValue, field: title)
+      }
     }
   }
 }
@@ -596,7 +619,7 @@ struct MoshvaultTOTPView: View {
         MoshEmptyState(
           icon: "lock.shield",
           title: "Your authentication codes",
-          message: "Add your two-factor (2FA) codes here. Scan a QR code, migrate from Google Authenticator, or enter a setup key by hand. Codes are generated on-device and the accounts sync through your iCloud Keychain."
+          message: "Add your two-factor (2FA) codes here. Scan a QR code, migrate from Google Authenticator, or enter a setup key by hand. Codes are generated on-device, and with iCloud sync on the accounts follow your devices through your iCloud Keychain."
         )
       } else {
         MoshSearchList(query: $query, prompt: "Search codes", showSearch: accounts.count > 10, noMatches: filtered.isEmpty) {
@@ -646,7 +669,8 @@ struct MoshvaultTOTPView: View {
     pendingDelete = MoshDeletePrompt(
       name: account.title,
       what: "this 2FA account",
-      extra: "You'd need to set it up again from the service to get codes back."
+      extra: "You'd need to set it up again from the service to get codes back.",
+      syncedSecret: MoshTOTPStore.shared.isSynchronizable(account) ? "It" : nil
     ) {
       delete(account)
     }
@@ -702,7 +726,7 @@ private struct MoshTOTPRow: View {
       .frame(width: 26)
       Text(grouped(code))
         .font(.system(size: sizeClass == .compact ? 26 : 32, weight: .semibold, design: .monospaced))
-        .foregroundColor(expiring ? .red : .moshGreen)
+        .foregroundColor(expiring ? .moshTint : .moshGreen)
         .monospacedDigit()
         .lineLimit(1)
         .fixedSize()   // the code keeps its full size; a long title truncates instead of shrinking it
@@ -742,7 +766,7 @@ private struct MoshTOTPManualEntry: View {
           if MoshTOTPStore.shared.save(account) {
             dismiss()
           } else {
-            saveError = "The keychain refused to save this account. Nothing was changed — unlock the device and try again."
+            saveError = "The keychain refused to save this account. Nothing was changed: unlock the device and try again."
           }
         } label: { MoshNavLabel(title: "Save") }
           .buttonStyle(.plain)
@@ -796,9 +820,31 @@ private struct MoshTOTPManualEntry: View {
   }
 
   private func field(_ title: String, text: Binding<String>) -> some View {
-    HStack {
-      Text(title).foregroundColor(.secondary).frame(width: 100, alignment: .leading)
+    MoshVaultLabeledRow(title: title, labelWidth: 100) {
       TextField(title, text: text).autocorrectionDisabled()
+    }
+  }
+}
+
+// An editor row: the field name in a fixed column beside its value, or above it at the accessibility
+// text sizes, where the fixed column cut "Service" and "Account" short.
+private struct MoshVaultLabeledRow<Content: View>: View {
+  @Environment(\.dynamicTypeSize) private var typeSize
+  let title: String
+  let labelWidth: CGFloat
+  @ViewBuilder let content: () -> Content
+
+  var body: some View {
+    if typeSize.isAccessibilitySize {
+      VStack(alignment: .leading, spacing: 4) {
+        Text(title).foregroundColor(.secondary)
+        content()
+      }
+    } else {
+      HStack {
+        Text(title).foregroundColor(.secondary).frame(width: labelWidth, alignment: .leading)
+        content()
+      }
     }
   }
 }
@@ -893,7 +939,7 @@ private struct MoshTOTPMigrateSheet: View {
     if collected.count >= batchSize {
       complete()
     } else {
-      status = "Scanned \(collected.count) of \(batchSize) — scan the next QR code"
+      status = "Scanned \(collected.count) of \(batchSize): scan the next QR code"
     }
   }
 

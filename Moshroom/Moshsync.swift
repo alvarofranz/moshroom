@@ -51,8 +51,9 @@ import MoshroomConfig
 //
 // Deliberately NOT here: a downgrade pass for turning sync OFF. Making a synced item local again
 // means DELETING the synced one, and the OS propagates that deletion to every other device — so a
-// tidy-looking "unsync" on the Mac would wipe the iPhone's keys. Turning the switch off stops new
-// writes from syncing and leaves what is already there alone; the Settings footer says exactly that.
+// tidy-looking "unsync" on the Mac would wipe the iPhone's keys. Turning the switch off stops NEW
+// secrets from syncing; an item already in the iCloud Keychain stays there, an edit updates it in
+// place (still synced) and a delete still removes it everywhere. The Settings footer says so.
 enum Moshsync {
 
   // MARK: - The four services Moshroom keeps secrets in
@@ -290,8 +291,8 @@ enum Moshsync {
 // MARK: - The one "are you sure" for anything that deletes a secret
 
 /// Every destructive action in Moshroom now goes through this: a title naming the exact thing, a
-/// message saying what is lost, and — when sync is on — the sentence nobody was being told, that a
-/// deletion here is a deletion everywhere. Keys and hosts propagate through their tombstone, vault
+/// message saying what is lost, and — when sync is on, or the item itself is in the iCloud Keychain —
+/// the sentence nobody was being told, that a deletion here is a deletion everywhere. Keys and hosts propagate through their tombstone, vault
 /// entries and 2FA accounts through the iCloud Keychain itself; none of it is recoverable, and it
 /// used to happen behind a swipe.
 struct MoshDeletePrompt: Identifiable {
@@ -307,13 +308,22 @@ struct MoshDeletePrompt: Identifiable {
   }
 
   /// `what` completes "Deleting <what> can't be undone." — e.g. "this password", "the key “work”".
-  init(name: String, what: String, extra: String = "", confirm: @escaping () -> Void) {
-    let synced = MoshroomDefaults.isICloudSyncEnabled()
-      ? " Sync is on, so it also disappears from your other devices."
-      : ""
+  /// `syncedSecret` names what of it rides the iCloud Keychain ("It", "Its saved password"), nil when
+  /// nothing does. A synchronizable item deleted here is deleted on every device even with the switch
+  /// off, so the warning follows the item itself, not only the switch.
+  init(name: String, what: String, extra: String = "", syncedSecret: String? = nil,
+       confirm: @escaping () -> Void) {
+    let travels: String
+    if MoshroomDefaults.isICloudSyncEnabled() {
+      travels = " Sync is on, so it also disappears from your other devices."
+    } else if let syncedSecret {
+      travels = " \(syncedSecret) is in your iCloud Keychain, so it also disappears from your other devices."
+    } else {
+      travels = ""
+    }
     self.init(
       title: name.isEmpty ? "Delete?" : "Delete \u{201C}\(name)\u{201D}?",
-      message: "Deleting \(what) can't be undone." + (extra.isEmpty ? "" : " " + extra) + synced,
+      message: "Deleting \(what) can't be undone." + (extra.isEmpty ? "" : " " + extra) + travels,
       confirm: confirm
     )
   }

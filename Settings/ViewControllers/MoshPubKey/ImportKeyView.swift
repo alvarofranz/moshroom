@@ -87,26 +87,20 @@ struct ImportKeyView: View {
       
       Section(
         header: Text("INFORMATION"),
-        footer: Text("The key is kept in OpenSSH format inside the device keychain — encrypted at rest by the device, and by your iCloud Keychain end-to-end if sync is on. Use \"ssh-copy-id [name]\" to copy the public key to the server.")
+        footer: Text("The key is kept in OpenSSH format inside the device keychain, encrypted at rest by the device, and by your iCloud Keychain end-to-end if sync is on. Use \"ssh-copy-id [name]\" to copy the public key to the server.")
       ) { }
     }
     .listStyle(.insetGrouped)
     .moshReadableWidth()
-    .toolbar {
-      MoshNavBarItem(placement: .navigationBarLeading) {
-        Button(action: onCancel) { MoshNavLabel(title: "Cancel") }
-      }
-      MoshNavBarItem(placement: .navigationBarTrailing) {
-        Button(action: {
-          if state.saveKey() {
-            onSuccess()
-          }
-        }) { MoshNavLabel(title: state.incompleteMatch == nil ? "Import" : "Restore") }
-          .disabled(!state.isValid)
-      }
+    .moshSheetChrome(title: state.incompleteMatch == nil ? "Import \(state.keyType) Key" : "Restore \(state.keyType) Key", onClose: onCancel) {
+      Button(action: {
+        if state.saveKey() {
+          onSuccess()
+        }
+      }) { MoshNavLabel(title: state.incompleteMatch == nil ? "Import" : "Restore") }
+        .buttonStyle(.plain)
+        .disabled(!state.isValid)
     }
-    .navigationTitle(state.incompleteMatch == nil ? "Import \(state.keyType) Key" : "Restore \(state.keyType) Key")
-    .navigationBarTitleDisplayMode(.inline)
     .alert(errorMessage: $state.errorMessage)
   }
 }

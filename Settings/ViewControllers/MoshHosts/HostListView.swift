@@ -134,7 +134,7 @@ struct HostListView: View {
         MoshEmptyState(
           icon: "server.rack",
           title: "Your hosts",
-          message: "Save a server once — alias, address, user and key — and connect from anywhere with one tap."
+          message: "Save a server once (alias, address, user and key) and connect from anywhere with one tap."
         ) {
           Button(action: _addHost) { Label("Add new Host", systemImage: "plus") }
         }
@@ -227,7 +227,8 @@ struct HostListView: View {
       what: "this host",
       extra: projects == 0
         ? "Its address, user and connect settings go with it."
-        : "Its address, user, connect settings and \(projects == 1 ? "its project" : "its \(projects) projects") go with it."
+        : "Its address, user, connect settings and \(projects == 1 ? "its project" : "its \(projects) projects") go with it.",
+      syncedSecret: MoshHosts.withHost(card.alias)?.hasSynchronizablePassword() == true ? "Its saved password" : nil
     ) {
       _state.deleteHosts([card])
     }
@@ -307,16 +308,19 @@ fileprivate class HostsObservable: ObservableObject {
   }
   
   func deleteHosts(_ hostsToDelete: [HostCard]) {
+    // Resolved by alias NOW, not the object the card captured: an iCloud pull reloads the hosts list
+    // with new objects, and removing a stale one by identity removed nothing.
+    let targets = hostsToDelete.compactMap { MoshHosts.withHost($0.alias) }
     let allHosts = MoshHosts.all()
-    for h in hostsToDelete {
-      allHosts?.remove(h.host)
+    for h in targets {
+      allHosts?.remove(h)
     }
     // The saved password goes with its host (the delete prompt already says it is gone everywhere),
     // but only once the list without the host is on disk, and never while another host still uses it.
     if MoshHosts.forceSave() {
       let stillUsed = Set(MoshHosts.allHosts().compactMap { $0.passwordRef }.filter { !$0.isEmpty })
-      for h in hostsToDelete where !(h.host.passwordRef ?? "").isEmpty && !stillUsed.contains(h.host.passwordRef) {
-        h.host.removePasswordFromKeychain()
+      for h in targets where !(h.passwordRef ?? "").isEmpty && !stillUsed.contains(h.passwordRef) {
+        h.removePasswordFromKeychain()
       }
     }
     reloadHosts()

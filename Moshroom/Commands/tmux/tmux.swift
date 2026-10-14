@@ -91,7 +91,9 @@ import ios_system
   private var resyncing = false
   private var pendingResync: ResyncKind?
   private var renderedPane: Int?
-  private var keyQueue: [UInt8] = []
+  /// Keys typed while nothing could take them, as they were written (never cut inside one).
+  private var keyQueue: [[UInt8]] = []
+  private var keyQueueBytes = 0
   private var modeTracker = TmuxModeTracker()
   private var titleFilter = TmuxTitleFilter()
   private var parking = false
@@ -101,6 +103,8 @@ import ios_system
   private var resizeDue: Date?
   private var foreignSize = false
   private var heartbeatSentAt: Date?
+  /// Bytes received when the outstanding question was asked: anything arriving since is an answer.
+  private var heartbeatBytes = 0
   private var heartbeatTimeout: TimeInterval = 10
   private var lastHeartbeatOK = Date()
   private var lastTick = Date()
@@ -115,6 +119,8 @@ import ios_system
   private var freshCommand = false
   /// Counts connections, so callbacks from one that is gone are recognised and ignored.
   private var connection = 0
+  /// The current connection painted the pane at least once (the backoff starts over after it).
+  private var connectionWentLive = false
 
   // MARK: Cross-thread state (under `lock`)
 
@@ -223,13 +229,17 @@ import ios_system
       if _killRequested {
         return 0
       }
-      if _parkRequested || (mcpSession.moshroomSuspended && !interactive) {
+      if _parkWanted || (mcpSession.moshroomSuspended && !interactive) {
         _park()
         return 0
       }
 
       let result = _connectOnce(host: host, interactive: interactive)
       interactive = false
+      if connectionWentLive {
+        // Counted per outage, not over the tab's life: a connection that worked starts the count over.
+        failures = 0
+      }
 
       if !everAttached && !resuming {
         switch result {
@@ -270,6 +280,7 @@ import ios_system
         return 0
       case .refused(let message):
         _setReconnecting(false)
+        _dropQueuedKeys()
         _say("\u{1b}[2mCouldn't reconnect to \(host): \(message)\u{1b}[0m")
         _say("\u{1b}[2mTap the tab name to try again.\u{1b}[0m")
         if !_waitForRetry() { return 0 }
@@ -284,6 +295,7 @@ import ios_system
         failures += 1
         if failures > Self.backoff.count {
           _setReconnecting(false)
+          _dropQueuedKeys()
           MoshLog.log("tmux", "giving up after \(failures - 1) tries: \(message)")
           _say("\u{1b}[2mCouldn't reach \(host). Tap the tab name to retry.\u{1b}[0m")
           if !_waitForRetry() { return 0 }
@@ -335,6 +347,9 @@ import ios_system
     lastHeartbeatOK = Date()
     parking = false
     retryNow = false
+    connectionWentLive = false
+    // A connection that went away inside a title sequence must not swallow the next one's output.
+    titleFilter = TmuxTitleFilter()
 
     let target: (hostName: String, host: MoshSSHHost, config: SSHClientConfig)
     do {
@@ -353,7 +368,8 @@ import ios_system
     let createIn = project.map { " -c " + MoshProjectShell.folderWord($0.folder) } ?? ""
     // Attach only to the session this tab created (an exact name, never a prefix match); before it
     // exists the same name creates it.
-    let tmuxCommand = p.everAttached ? "attach-session -t =\(name)" : "new-session -A -s \(name)\(createIn)"
+    let exactName = MoshProjectShell.quote("=" + name)
+    let tmuxCommand = p.everAttached ? "attach-session -t \(exactName)" : "new-session -A -s \(MoshProjectShell.quote(name))\(createIn)"
     let checkWhenCreating = p.everAttached ? "" : folderCheck
     MoshLog.log("tmux", "\(p.everAttached ? "re-attaching to" : "attaching to or creating") session \(name) on \(host)")
     var tmuxProbe = "tmux"
@@ -377,7 +393,7 @@ import ios_system
       "v=\"$(tmux -V 2>/dev/null)\"",
       "echo \"MOSHROOM_TMUX_VERSION $v\"",
       "case \"$v\" in \"tmux 0.\"*|\"tmux 1.\"*|\"tmux 2.\"*) \(folderCheck)echo MOSHROOM_TMUX_OLD; exit 126;; esac",
-      "if tmux has-session -t =\(name) 2>/dev/null; then echo MOSHROOM_TMUX_EXISTS; else \(checkWhenCreating):; fi",
+      "if tmux has-session -t \(exactName) 2>/dev/null; then echo MOSHROOM_TMUX_EXISTS; else \(checkWhenCreating):; fi",
       "exec tmux -u -C \(tmuxCommand) 2>&1",
     ].joined(separator: "; ")
     let command = "exec sh -c " + MoshProjectShell.quote(script)
@@ -614,7 +630,7 @@ import ios_system
   // MARK: - Resync
 
   private func _resync(_ kind: ResyncKind) {
-    guard let gw = gateway, attached, outcome == nil else { return }
+    guard gateway != nil, attached, outcome == nil else { return }
     if resyncing {
       pendingResync = max(pendingResync ?? kind, kind)
       return
@@ -627,7 +643,6 @@ import ios_system
     } else {
       _sendFence(kind, tail: nil)
     }
-    _ = gw
   }
 
   private func _sendFence(_ kind: ResyncKind, tail: TmuxLocalTail?) {
@@ -643,6 +658,9 @@ import ios_system
       (command, { [weak self] reply in
         replies.append(reply)
         if replies.count == commands.count {
+          if !replies.contains(where: { $0.skipped }) {
+            self?._heardBack()
+          }
           self?._applyFence(replies, kind: kind, overlapFence: overlap, tail: tail)
         }
       })
@@ -665,6 +683,7 @@ import ios_system
       }
       MoshLog.log("tmux", "resync answer unreadable")
       live = true
+      connectionWentLive = true
       _flushKeys()
       return
     }
@@ -687,6 +706,8 @@ import ios_system
       bytes = _overlapBytes(snap, tail: overlapFence ? tail : nil, rows: rows, modes: modes)
     }
     freshCommand = false
+    // The refill starts the stream over: a title sequence cut short before it is not continued after.
+    titleFilter = TmuxTitleFilter()
     _write(bytes)
 
     if renderedPane != snap.state.paneId, let old = renderedPane, version.hasFlowControl {
@@ -713,6 +734,7 @@ import ios_system
     }
     let wasLive = live
     live = true
+    connectionWentLive = true
     _setReconnecting(false)
     _flushKeys()
     if !wasLive, let onConnect = pendingCommandOnConnect, !onConnect.isEmpty {
@@ -736,7 +758,7 @@ import ios_system
       if snap.state.alternateOn {
         return TmuxResync.alternateRepaint(snap, rows: rows, modes: modes)
       }
-      return TmuxResync.fullRefill(snap, rows: rows, modes: modes, marker: reconnected, leaveAlternate: true)
+      return TmuxResync.fullRefill(snap, rows: rows, modes: modes, marker: reconnected)
     }
     if p.lastCols > 0, p.lastCols != snap.state.width {
       // tmux reflowed its history to another width: lines no longer compare.
@@ -778,6 +800,10 @@ import ios_system
   /// page cannot say (not ready, an older page without the reader).
   private func _readLocalTail(_ done: @escaping (TmuxLocalTail?) -> Void) {
     let loop = runLoop!
+    // What this child already wrote is on its way to the page before the page is asked.
+    if let out = stream.out {
+      fflush(out)
+    }
     // Answered once: by the page, or by the timeout (a page whose renderer died never answers).
     var answered = false
     let finish: (TmuxLocalTail?) -> Void = { tail in
@@ -785,7 +811,8 @@ import ios_system
       answered = true
       done(tail)
     }
-    _after(2.0) {
+    // Longer than the page's own 2 s wait for its output to drain.
+    _after(3.0) {
       finish(nil)
     }
     let deliver: (TmuxLocalTail?) -> Void = { tail in
@@ -796,11 +823,13 @@ import ios_system
     }
     let device = self.device
     DispatchQueue.main.async {
-      guard let webView = device?.view?.webView, device?.view?.isReady == true else {
+      guard let view = device?.view, view.isReady else {
         deliver(nil)
         return
       }
-      webView.evaluateJavaScript("term_moshroomScrollbackTail(8)") { result, _ in
+      // Behind the output pipeline: a tail read while earlier output is still on its way would match
+      // too early and the overlap append would repeat lines.
+      view.moshroomEvaluate(afterPendingOutput: "term_moshroomScrollbackTail(8)") { result in
         guard let json = result as? String,
               let data = json.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -829,7 +858,11 @@ import ios_system
     }
     sentSize = (cols, rows)
     foreignSize = false
-    gw.send("refresh-client -C \(cols)x\(rows)") { _ in
+    // WIDTH,HEIGHT: accepted by every tmux this connects to (measured on 3.0a and 3.4).
+    gw.send("refresh-client -C \(cols),\(rows)") { reply in
+      if reply.isError {
+        MoshLog.log("tmux", "refresh-client -C refused: \(reply.text)")
+      }
       then?()
     }
   }
@@ -868,10 +901,7 @@ import ios_system
       return
     }
     guard live, !resyncing, gateway != nil, outcome == nil else {
-      keyQueue += bytes
-      if keyQueue.count > Self.keyQueueCap {
-        keyQueue.removeFirst(keyQueue.count - Self.keyQueueCap)
-      }
+      _queueKeys(bytes)
       return
     }
     _sendKeys(bytes)
@@ -879,16 +909,33 @@ import ios_system
 
   private var _giveUp = false
 
+  // Whole writes only, oldest dropped first: a key's escape sequence is never cut in half.
+  private func _queueKeys(_ bytes: [UInt8]) {
+    guard !bytes.isEmpty else { return }
+    keyQueue.append(bytes)
+    keyQueueBytes += bytes.count
+    while keyQueueBytes > Self.keyQueueCap, !keyQueue.isEmpty {
+      keyQueueBytes -= keyQueue.removeFirst().count
+    }
+  }
+
+  /// Keys typed before the connection was given up on belong to a moment that is gone: a retry
+  /// minutes later must not type them into whatever the pane shows by then.
+  private func _dropQueuedKeys() {
+    keyQueue = []
+    keyQueueBytes = 0
+  }
+
   private func _flushKeys() {
     guard !keyQueue.isEmpty else { return }
-    let queued = keyQueue
-    keyQueue = []
+    let queued = keyQueue.flatMap { $0 }
+    _dropQueuedKeys()
     _sendKeys(queued)
   }
 
   private func _sendKeys(_ bytes: [UInt8]) {
     guard let gw = gateway, let pane = renderedPane, !bytes.isEmpty else {
-      keyQueue += bytes
+      _queueKeys(bytes)
       return
     }
     if foreignSize {
@@ -923,13 +970,18 @@ import ios_system
     if _killRequested && !killing {
       _beginKill()
     }
-    if _parkRequested && !parking && outcome == nil {
+    if _parkWanted && !parking && outcome == nil {
       _beginPark()
     }
     // While connected the tick answers a reconnect request; between connections the waits do.
     if gateway != nil, outcome == nil, _takeReconnectRequest() {
-      _skipBackoff = true
-      _finish(.lost("reconnect"))
+      if !everAttached && freshCommand {
+        // The user's own connect is still on its way: it already is the connect that was asked for.
+        MoshLog.log("tmux", "reconnect asked during the first connect: carrying on")
+      } else {
+        _skipBackoff = true
+        _finish(.lost("reconnect"))
+      }
     }
     if _peekRepaintRequest(), live, outcome == nil, !awaitingDevice {
       _ = _takeRepaintRequest()
@@ -942,17 +994,24 @@ import ios_system
 
     guard attached, outcome == nil, let gw = gateway else { return }
     if let sent = heartbeatSentAt {
-      if now.timeIntervalSince(sent) > heartbeatTimeout {
+      if gw.bytesIn != heartbeatBytes {
+        // Bytes are arriving: the connection answers, its reply is only queued behind them (a long
+        // refill, an output backlog on a slow link). The clock starts again from here.
+        heartbeatSentAt = now
+        heartbeatBytes = gw.bytesIn
+      } else if now.timeIntervalSince(sent) > heartbeatTimeout {
         MoshLog.log("tmux", "heartbeat unanswered after \(Int(heartbeatTimeout)) s")
         _finish(.lost("The connection stopped answering."))
       }
     } else if now.timeIntervalSince(lastHeartbeatOK) > 15 {
       heartbeatSentAt = now
-      gw.send("display -p 1") { [weak self] reply in
-        guard let self, !reply.skipped else { return }
-        self.heartbeatSentAt = nil
-        self.heartbeatTimeout = 10
-        self.lastHeartbeatOK = Date()
+      heartbeatBytes = gw.bytesIn
+      // A resync on its way is already a question the connection has to answer: no second one.
+      if !resyncing {
+        gw.send("display -p 1") { [weak self] reply in
+          guard let self, !reply.skipped else { return }
+          self._heardBack()
+        }
       }
     }
     if let due = resizeDue, now >= due {
@@ -964,6 +1023,13 @@ import ios_system
   }
 
   private var _skipBackoff = false
+
+  /// The connection answered a question (a heartbeat, a resync).
+  private func _heardBack() {
+    heartbeatSentAt = nil
+    heartbeatTimeout = 10
+    lastHeartbeatOK = Date()
+  }
 
   private func _startPathMonitor() {
     let monitor = NWPathMonitor()
@@ -994,7 +1060,7 @@ import ios_system
   private func _wait(_ seconds: TimeInterval) -> Bool {
     let deadline = Date().addingTimeInterval(seconds)
     while Date() < deadline {
-      if _killRequested || _parkRequested || mcpSession.moshroomSuspended { return false }
+      if _killRequested || _parkWanted || mcpSession.moshroomSuspended { return false }
       if _skipBackoff || _takeReconnectRequest() {
         _skipBackoff = false
         return true
@@ -1013,7 +1079,7 @@ import ios_system
     defer { waitingForRetry = false }
     while !retryNow {
       if _killRequested { return false }
-      if _parkRequested || mcpSession.moshroomSuspended {
+      if _parkWanted || mcpSession.moshroomSuspended {
         _park()
         return false
       }
@@ -1093,6 +1159,12 @@ import ios_system
 
   /// The app is going to sleep: detach and step off the network. Blocks for at most two seconds.
   @objc public override func suspend() {
+    moshroomRequestPark()
+    moshroomAwaitPark(until: Date().addingTimeInterval(2))
+  }
+
+  /// Ask for the park without waiting for it (the app parks every tab first, then waits once).
+  @objc func moshroomRequestPark() {
     lock.lock()
     guard isRunning, !moshroomParked, !killRequested else {
       lock.unlock()
@@ -1101,7 +1173,15 @@ import ios_system
     parkRequested = true
     lock.unlock()
     _wake()
-    _ = parkAnswered.wait(timeout: .now() + 2)
+  }
+
+  /// Wait for a park asked for with moshroomRequestPark, until `deadline` at the latest.
+  @objc func moshroomAwaitPark(until deadline: Date) {
+    lock.lock()
+    let waiting = isRunning && parkRequested && !moshroomParked
+    lock.unlock()
+    guard waiting else { return }
+    _ = parkAnswered.wait(timeout: .now() + max(0, deadline.timeIntervalSinceNow))
   }
 
   /// The user asked to reconnect (the tab pill): drop whatever connection there is and attach again
@@ -1141,16 +1221,18 @@ import ios_system
     CFRunLoopWakeUp(loop)
   }
 
-  @objc public override func handleControl(_ control: String!) {
-  }
-
   private var _killRequested: Bool {
     lock.lock(); defer { lock.unlock() }
     return killRequested
   }
 
-  private var _parkRequested: Bool {
+  /// A park was asked for and the app is still asleep. One the app came back from before this child
+  /// could act on it (a password prompt held the thread) is dropped, never acted on in the foreground.
+  private var _parkWanted: Bool {
     lock.lock(); defer { lock.unlock() }
+    if parkRequested && !mcpSession.moshroomSuspended {
+      parkRequested = false
+    }
     return parkRequested
   }
 

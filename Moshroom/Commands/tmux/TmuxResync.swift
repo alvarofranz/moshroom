@@ -109,7 +109,6 @@ struct TmuxPaneState {
   var mouseAny: Bool? = nil
   var inMode = false
   var sessionCreated = ""
-  var windowId = ""
   var windowPanes = 1
 
   static let format = [
@@ -155,7 +154,7 @@ struct TmuxPaneState {
     }
     inMode = b(20)
     sessionCreated = f[21]
-    windowId = f[22]
+    // f[22] is #{window_id}: asked for so the fields keep their places, not used.
     windowPanes = n(23, 1)
   }
 }
@@ -233,6 +232,12 @@ enum TmuxResync {
   // In particular, joined history lines must wrap even when the disconnected TUI disabled it.
   private static let paintModes = "\u{1b}[4l\u{1b}[?7h"
 
+  // Leave the alternate screen without moving the cursor of a terminal that is not on it. Leaving
+  // restores the cursor saved on the primary screen: on the alternate screen that is where it was
+  // when the program took over, but on the primary screen it is whatever was saved last, so the
+  // current position is saved first (each screen keeps its own) and the restore lands on it.
+  private static let leaveAlternateKeepingCursor = "\u{1b}7\u{1b}[?1049l"
+
   /// A full refill. `rows` is the terminal's own height. A `marker` means the terminal still shows
   /// something: that is pushed up into its scrollback first, so nothing on it is painted over, and a
   /// non-empty marker goes above the refill as a short dim line.
@@ -240,21 +245,22 @@ enum TmuxResync {
   /// With a marker the refill simply continues below the cursor: every line it writes scrolls what
   /// was there up into the scrollback, and since it writes at least a screenful, the screen ends up
   /// holding exactly the pane's. No blank rows are pushed into the scrollback on the way.
-  static func fullRefill(_ snap: TmuxSnapshot, rows: Int, modes: TmuxTrackedModes, marker: String?, leaveAlternate: Bool = false) -> [UInt8] {
+  ///
+  /// It always starts on the primary screen: the terminal may still be on its alternate one (the
+  /// previous window ran a full-screen program), and history painted there would never reach the
+  /// local scrollback. A pane that is on its alternate screen switches to it again at the end.
+  static func fullRefill(_ snap: TmuxSnapshot, rows: Int, modes: TmuxTrackedModes, marker: String?) -> [UInt8] {
     var lines: [[UInt8]] = []
     var out: [UInt8]
     if let marker {
-      out = bytes("\u{1b}[0m" + paintModes)
-      if leaveAlternate {
-        out += bytes("\u{1b}[?1049l")
-      }
+      out = bytes("\u{1b}[0m" + paintModes + leaveAlternateKeepingCursor)
       // Reset the scroll region without losing the cursor (DECSTBM homes it), then a fresh row.
       out += bytes("\u{1b}7\u{1b}[r\u{1b}8\r\n")
       if !marker.isEmpty {
         lines.append(bytes("\u{1b}[2m\(marker)\u{1b}[0m"))
       }
     } else {
-      out = bytes("\u{1b}[0m" + paintModes + "\u{1b}[r\u{1b}[H\u{1b}[2J")
+      out = bytes("\u{1b}[0m" + paintModes + leaveAlternateKeepingCursor + "\u{1b}[r\u{1b}[H\u{1b}[2J")
     }
     lines += snap.history.map(trimTrailingSpaces)
     out += _primary(snap, lines: lines, rows: rows, eraseRows: marker != nil)
@@ -290,10 +296,13 @@ enum TmuxResync {
   private static func _primary(_ snap: TmuxSnapshot, lines: [[UInt8]], rows: Int, eraseRows: Bool = false) -> [UInt8] {
     var all = lines
     var screen = (snap.state.alternateOn ? snap.savedNormal : snap.screen).map(trimTrailingSpaces)
-    // A pane taller than this terminal: its top rows belong to the scrollback here.
+    // A pane taller than this terminal: its top rows belong to the scrollback here, but only those
+    // still needed once the blank rows under the cursor are gone (see _topShift).
     if rows > 0, screen.count > rows {
-      all += screen.prefix(screen.count - rows)
-      screen = Array(screen.suffix(rows))
+      let shift = snap.state.alternateOn ? screen.count - rows : _topShift(snap, rows: rows)
+      screen = Array(screen.prefix(shift + rows))
+      all += screen.prefix(shift)
+      screen = Array(screen.dropFirst(shift))
     }
     all += screen
     var out = [UInt8]()
@@ -324,9 +333,39 @@ enum TmuxResync {
   }
 
   // Cursor, then every mode a program may have set that the terminal would otherwise not know about.
+  /// How many of the pane's top rows go to the scrollback when the pane is taller than this terminal
+  /// (`rows`). On the primary screen the blank rows below the cursor give way first, as tmux drops them
+  /// itself when the pane shrinks to this size: a short shell screen in a tall pane stays where it is
+  /// instead of losing its top lines to the scrollback. The alternate screen keeps its bottom rows.
+  static func _topShift(_ snap: TmuxSnapshot, rows: Int) -> Int {
+    let s = snap.state
+    guard rows > 0, s.height > rows else { return 0 }
+    guard !s.alternateOn else { return s.height - rows }
+    let lastWritten = snap.screen.lastIndex { !_isBlank($0) } ?? -1
+    return max(0, min(s.height, max(lastWritten, s.cursorY) + 1) - rows)
+  }
+
+  private static func _isBlank(_ line: [UInt8]) -> Bool {
+    var i = 0
+    while i < line.count {
+      let c = line[i]
+      if c == 0x20 {
+        i += 1
+      } else if c == 0x1B, i + 1 < line.count, line[i + 1] == 0x5B {
+        // A CSI sequence (colours): skip to its final byte.
+        i += 2
+        while i < line.count, !(line[i] >= 0x40 && line[i] <= 0x7E) { i += 1 }
+        i += 1
+      } else {
+        return false
+      }
+    }
+    return true
+  }
+
   private static func _tail(_ snap: TmuxSnapshot, rows: Int, modes: TmuxTrackedModes) -> [UInt8] {
     let s = snap.state
-    let shift = max(0, s.height - rows)
+    let shift = _topShift(snap, rows: rows)
     let cup = "\u{1b}[\(max(0, s.cursorY - shift) + 1);\(s.cursorX + 1)H"
     var out = [UInt8]()
     if s.scrollUpper != 0 || s.scrollLower != s.height - 1 {
@@ -471,6 +510,12 @@ struct TmuxModeTracker {
     let n = data.count
     while i < n {
       guard data[i] == 0x1B else { i += 1; continue }
+      // ESC c (RIS, the `reset` command): every mode is back to its default.
+      if i + 1 < n, data[i + 1] == 0x63 {
+        reset(TmuxTrackedModes())
+        i += 2
+        continue
+      }
       // ESC [ ? <digits;digits> h|l
       if i + 2 >= n {
         carry = Array(data[i...])

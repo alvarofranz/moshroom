@@ -62,7 +62,7 @@ struct KBConfigView: View {
     return List {
       Section(
         header: Text("Moshroom"),
-        footer: Text("Shortcuts are app actions bound to hardware-keyboard combos (new tab, paste…). Custom Keyboards allows third-party iOS keyboards inside Moshroom — turning it off takes effect after an app restart.")) {
+        footer: Text("Shortcuts are app actions bound to hardware-keyboard combos (new tab, paste…). Custom Keyboards allows third-party iOS keyboards inside Moshroom; turning it off takes effect after an app restart.")) {
         DefaultRow(title: "Shortcuts") {
           ShortcutsConfigView(
             config: self.config,
@@ -75,7 +75,7 @@ struct KBConfigView: View {
       }
       Section(
         header: Text("Terminal"),
-        footer: Text("What each modifier on a connected hardware keyboard sends to the terminal — e.g. map Caps Lock to Ctrl or Option to Esc/Meta. Functional and Cursor Keys pick the modifier that turns number/arrow keys into F1–F10 and page navigation; Custom Presses bind any key combo to an exact escape sequence.")
+        footer: Text("What each modifier on a connected hardware keyboard sends to the terminal, e.g. map Caps Lock to Ctrl or Option to Esc/Meta. Functional and Cursor Keys pick the modifier that turns number/arrow keys into F1–F10 and page navigation; Custom Presses bind any key combo to an exact escape sequence.")
       ) {
         _row(config.capsLock)
         _pairRow(config.shift)

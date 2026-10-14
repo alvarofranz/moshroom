@@ -144,7 +144,7 @@ struct StyleCustomizationView: View {
           Toggle("Cursor Blink", isOn: $editingStyle.cursorBlink)
             .onChange(of: editingStyle.cursorBlink) { _ in applyToPreview() }
         } footer: {
-          Text("Enable Bold controls whether bold text renders with a heavier font (Auto lets the theme decide). Bold as Bright additionally draws bold text in the bright color variants — how classic terminals did it. Cursor Blink is just that: a blinking or steady block cursor.")
+          Text("Enable Bold controls whether bold text renders with a heavier font (Auto lets the theme decide). Bold as Bright additionally draws bold text in the bright color variants, the way classic terminals did it. Cursor Blink is just that: a blinking or steady block cursor.")
         }
       }
       .listStyle(.insetGrouped)

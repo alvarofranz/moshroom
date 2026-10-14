@@ -21,12 +21,12 @@
 //
 ////////////////////////////////////////////////////////////////////////////////
 //
-// Moshxplore: browse a saved host's filesystem and pull files (or whole folders) down
-// to the iPhone — no tab, no shell, no `ls`/`scp` typed by hand.
+// Moshxplore: browse a saved host's filesystem and pull files down to the device — no shell,
+// no `ls`/`scp` typed by hand. Folders are navigate-only.
 //
-// A floating card (the Quick-Connect look) that runs over any tab: pick a saved host, walk
-// its directories (name + size + date, parsed structurally over SFTP — the robust equivalent
-// of `ls -lsa`), and tap download to copy a file into `Documents/<host>/`, visible in Files.app.
+// A tab of its own (kind `.explorer`): pick a saved host, walk its directories (name + size +
+// date, parsed structurally over SFTP — the robust equivalent of `ls -lsa`), and tap download to
+// copy a file into `Documents/<host>/`, visible in Files.app on iPhone and iPad.
 // Text files that decode cleanly can also be **edited in place**: Edit turns the preview into
 // the editor, Save writes the bytes back over the same SFTP connection in the file's original
 // form (encoding, BOM, line endings). Everything reuses the proven Combine SSH/SFTP stack from
@@ -700,6 +700,7 @@ final class MoshxploreCopyButton: UIButton {
 
   init() {
     super.init(frame: .zero)
+    accessibilityLabel = "Copy path"
     #if targetEnvironment(macCatalyst)
     preferredBehavioralStyle = .pad
     #endif
@@ -872,6 +873,7 @@ private final class MoshxploreDetailView: UIView {
     back.setContentHuggingPriority(.required, for: .horizontal)
     back.widthAnchor.constraint(equalToConstant: 30).isActive = true
     back.heightAnchor.constraint(equalToConstant: 30).isActive = true
+    back.accessibilityLabel = "Back"
     back.addAction(UIAction { [weak self] _ in self?.onBack?() }, for: .touchUpInside)
 
     titleLabel.font = MoshxploreStyle.font(16, .semibold)
@@ -1259,7 +1261,7 @@ extension MoshxploreDetailView: UITextViewDelegate {
 final class MoshxploreView: UIView {
 
   var savedHosts: (() -> [String])?
-  var presentShare: ((URL) -> Void)?    // hand a saved file to the system share sheet
+  var presentShare: ((URL, UIView) -> Void)?    // hand a saved file to the system share sheet, anchored on a view
 
   private static let dark = MoshxploreStyle.dark
   private static let gray = MoshxploreStyle.gray
@@ -1285,7 +1287,8 @@ final class MoshxploreView: UIView {
 
   private let progressOverlay = UIView()
   private let progressTitle = UILabel()
-  private let progressBar = UIProgressView(progressViewStyle: .default)
+  // Hand-painted: UIProgressView draws its fill gray on Mac Catalyst whatever the tint says.
+  private let progressBar = MoshifyProgressLine()
   private let cancelButton = moshButton()
   private let openButton = UIButton(type: .system)
   private let doneButton = moshButton()
@@ -1357,8 +1360,10 @@ final class MoshxploreView: UIView {
 
     // --- Browser step ---
     Self.style(iconButton: upButton, systemName: "chevron.backward")
+    upButton.accessibilityLabel = "Up"
     upButton.addAction(UIAction { [weak self] _ in self?.goUp() }, for: .touchUpInside)
     Self.style(iconButton: hostsButton, systemName: "rectangle.stack")
+    hostsButton.accessibilityLabel = "Other hosts"
     hostsButton.addAction(UIAction { [weak self] _ in self?.backToHosts() }, for: .touchUpInside)
 
     pathLabel.font = MoshxploreStyle.font(13, .medium)
@@ -1989,9 +1994,6 @@ final class MoshxploreView: UIView {
     progressTitle.textAlignment = .center
     progressTitle.lineBreakMode = .byTruncatingMiddle
 
-    progressBar.progressTintColor = .moshroomTint
-    // Same track as the Moshdrop upload bar — the mushroom-red progress look is one thing app-wide.
-    progressBar.trackTintColor = UIColor.moshroomTint.withAlphaComponent(Moshstyle.faintTintAlpha)
 
     cancelButton.setTitle("Cancel", for: .normal)
     cancelButton.titleLabel?.font = MoshxploreStyle.font(15, .semibold)
@@ -2018,7 +2020,7 @@ final class MoshxploreView: UIView {
     openButton.isHidden = true
     openButton.addAction(UIAction { [weak self] _ in
       guard let self, let url = self.savedURL else { return }
-      self.presentShare?(url)
+      self.presentShare?(url, self.openButton)
     }, for: .touchUpInside)
 
     doneButton.setTitle("Done", for: .normal)
@@ -2054,7 +2056,7 @@ final class MoshxploreView: UIView {
   private func showProgress(title: String, fraction: Double) {
     progressTitle.text = title
     progressBar.isHidden = false
-    progressBar.setProgress(Float(fraction), animated: true)
+    progressBar.progress = Float(fraction)
     cancelButton.isHidden = false
     openButton.isHidden = true
     doneButton.isHidden = true
@@ -2065,7 +2067,12 @@ final class MoshxploreView: UIView {
   // The saved confirmation: name the host folder it landed in, and offer Open (share sheet) / Done.
   private func showSaved(host: String, url: URL) {
     savedURL = url
-    progressTitle.text = "Saved to Files → \(host)"
+    #if targetEnvironment(macCatalyst)
+    // No Files app on the Mac, and the folder sits inside the app's sandbox: Open is the way to it.
+    progressTitle.text = "Saved in Moshroom's documents, folder \(host)"
+    #else
+    progressTitle.text = "Saved to Files: Moshroom › \(host)"
+    #endif
     progressBar.isHidden = true
     cancelButton.isHidden = true
     openButton.isHidden = false
@@ -2076,7 +2083,7 @@ final class MoshxploreView: UIView {
 
   private func hideProgress() {
     progressOverlay.isHidden = true
-    progressBar.setProgress(0, animated: false)
+    progressBar.progress = 0
   }
 
   // MARK: Helpers
@@ -2180,10 +2187,12 @@ final class MoshxploreTabController: UIViewController, MoshroomTabPage {
 
     explorer.savedHosts = { [weak self] in self?.space?.moshroomSavedHostAliases ?? [] }
     // Hand a saved file to the system share sheet (Save to Files, Quick Look, open-in apps…).
-    explorer.presentShare = { [weak self] url in
+    explorer.presentShare = { [weak self] url, anchor in
       guard let self else { return }
       let share = UIActivityViewController(activityItems: [url], applicationActivities: nil)
-      share.popoverPresentationController?.sourceView = self.view
+      // iPad/Mac popover: point at the button that opened it, not the view's top-left corner.
+      share.popoverPresentationController?.sourceView = anchor
+      share.popoverPresentationController?.sourceRect = anchor.bounds
       self.present(share, animated: true)
     }
     view.addSubview(explorer)

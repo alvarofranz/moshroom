@@ -46,7 +46,7 @@
   Session *_childSession;
   NSString *_currentCmd;
   NSMutableArray *_sshClients;
-//  dispatch_queue_t _cmdQueue;
+  dispatch_queue_t _cmdQueue;
   dispatch_queue_t _sshQueue;
   TermStream *_cmdStream;
   NSString *_currentCmdLine;
@@ -54,6 +54,8 @@
   BOOL _moshroomKilled;
   // A reconnect the user asked for (see -moshroomReconnectWith:), taken once by the command queue.
   NSString *_moshroomReconnectCommand;
+  // The deadline of the park in progress, one per trip to the background (see -suspend).
+  NSDate *_moshroomParkDeadline;
 }
 
 @dynamic sessionParams;
@@ -258,13 +260,13 @@
   // A tmux tab reconnects to the SAME remote session: the running child drops its connection and
   // attaches again, or, with no child running, the session's attach loop runs.
   if ([@"tmux" isEqualToString:self.sessionParams.childSessionType]) {
-    Session *tmuxChild = _childSession;
+    Session *tmuxChild = [self _currentChild];
     if ([tmuxChild isKindOfClass:[MoshroomTmux class]]) {
       [(MoshroomTmux *)tmuxChild moshroomReconnectNow];
       return;
     }
     dispatch_async(_cmdQueue, ^{
-      if (_childSession != nil || ![@"tmux" isEqualToString:self.sessionParams.childSessionType]) {
+      if ([self _currentChild] != nil || ![@"tmux" isEqualToString:self.sessionParams.childSessionType]) {
         return;
       }
       [self setActiveSession];
@@ -281,7 +283,7 @@
     }
     _moshroomReconnectCommand = [command copy];
   }
-  Session *child = _childSession;
+  Session *child = [self _currentChild];
   if ([child isKindOfClass:[MoshroomMosh class]]) {
     [(MoshroomMosh *)child moshroomLetGo];
   }
@@ -302,10 +304,13 @@
 - (void)moshroomResume
 {
   self.moshroomSuspended = NO;
+  @synchronized (self) {
+    _moshroomParkDeadline = nil;
+  }
   dispatch_async(_cmdQueue, ^{
     if ([@"tmux" isEqualToString:self.sessionParams.childSessionType]) {
       // A child still running (it never parked: the app came back before it was asked) carries on.
-      if (_childSession != nil) {
+      if ([self _currentChild] != nil) {
         return;
       }
       [self setActiveSession];
@@ -339,7 +344,7 @@
 // Answers YES when that has it covered; NO sends the caller to its resize nudge instead.
 - (BOOL)moshroomMoshCanRepaint
 {
-  Session *child = _childSession;
+  Session *child = [self _currentChild];
   if ([child isKindOfClass:[MoshroomTmux class]]) {
     return ((MoshroomTmux *)child).moshroomCanRepaint;
   }
@@ -351,7 +356,7 @@
   // A tmux session is painted from tmux itself: a full refill by the running child, or by the next
   // attach when parked (the terminal no longer holds anything to append to).
   if ([@"tmux" isEqualToString:self.sessionParams.childSessionType]) {
-    Session *tmuxChild = _childSession;
+    Session *tmuxChild = [self _currentChild];
     if ([tmuxChild isKindOfClass:[MoshroomTmux class]]) {
       return [(MoshroomTmux *)tmuxChild moshroomRepaintRebuiltView];
     }
@@ -363,7 +368,7 @@
   if (![@"mosh" isEqualToString:self.sessionParams.childSessionType]) {
     return NO;
   }
-  Session *child = _childSession;
+  Session *child = [self _currentChild];
   if (![child isKindOfClass:[MoshroomMosh class]]) {
     return YES;
   }
@@ -549,7 +554,16 @@
 }
 
 - (bool)isRunningCmd {
-  return _childSession != nil || _currentCmd != nil || _currentCmdLine != nil;
+  return [self _currentChild] != nil || _currentCmd != nil || _currentCmdLine != nil;
+}
+
+// The child session running now. Written by the command queue and read from the main thread, so
+// both sides go through the lock: an unlocked read could retain an object being released.
+- (Session *)_currentChild
+{
+  @synchronized (self) {
+    return _childSession;
+  }
 }
 
 
@@ -599,14 +613,19 @@
 - (void)_runSSHCopyIDWithArgs:(NSString *)args
 {
   self.sessionParams.childSessionParams = nil;
-  _childSession = [[SSHCopyIDSession alloc] initWithDevice:_device andParams:self.sessionParams.childSessionParams];
+  Session *child = [[SSHCopyIDSession alloc] initWithDevice:_device andParams:self.sessionParams.childSessionParams];
+  @synchronized (self) {
+    _childSession = child;
+  }
   self.sessionParams.childSessionType = @"sshcopyid";
   
   // duplicate args
   NSString *str = [NSString stringWithFormat:@"%@", args];
-  [_childSession executeAttachedWithArgs:str];
+  [child executeAttachedWithArgs:str];
 
-  _childSession = nil;
+  @synchronized (self) {
+    _childSession = nil;
+  }
 }
 
 - (MoshroomMosh *)_runMoshWithArgs:(NSString *)args
@@ -649,10 +668,15 @@
 - (void)_runSSHWithArgs:(NSString *)args
 {
   self.sessionParams.childSessionParams = nil;
-  _childSession = [[SSHSession alloc] initWithDevice:_device andParams:self.sessionParams.childSessionParams];
+  Session *child = [[SSHSession alloc] initWithDevice:_device andParams:self.sessionParams.childSessionParams];
+  @synchronized (self) {
+    _childSession = child;
+  }
   self.sessionParams.childSessionType = @"ssh";
-  [_childSession executeAttachedWithArgs:args];
-  _childSession = nil;
+  [child executeAttachedWithArgs:args];
+  @synchronized (self) {
+    _childSession = nil;
+  }
 }
 
 - (void)sigwinch
@@ -660,7 +684,7 @@
   [self setActiveSession];
   ios_setWindowSize((int)self.device.cols, (int)self.device.rows, _sessionUUID.UTF8String);
   
-  [_childSession sigwinch];
+  [[self _currentChild] sigwinch];
   dispatch_sync(_sshQueue, ^{
     for (id client in _sshClients) {
       [client sigwinch];
@@ -700,21 +724,59 @@
   _device = NULL;
 }
 
+// The app is going to sleep: park the child, waiting at most two seconds. When the app parked every
+// tab at once (moshroomRequestPark + moshroomAwaitParkUntil:), this waits no longer than that did.
 - (void)suspend
+{
+  [self moshroomRequestPark];
+  NSDate *deadline;
+  @synchronized (self) {
+    if (_moshroomParkDeadline == nil) {
+      _moshroomParkDeadline = [NSDate dateWithTimeIntervalSinceNow:2];
+    }
+    deadline = _moshroomParkDeadline;
+  }
+  [self moshroomAwaitParkUntil:deadline];
+}
+
+- (void)moshroomRequestPark
 {
   // Raised BEFORE the child is asked to park, so the command queue keeps a client that parks now
   // parked, instead of waking it straight back up (see _moshroomRunParkedSession).
   self.moshroomSuspended = YES;
   [self setActiveSession];
-  [_childSession suspend];
+  Session *child = [self _currentChild];
+  if ([child isKindOfClass:[MoshroomMosh class]]) {
+    [(MoshroomMosh *)child moshroomRequestPark];
+  } else if ([child isKindOfClass:[MoshroomTmux class]]) {
+    [(MoshroomTmux *)child moshroomRequestPark];
+  } else {
+    [child suspend];
+  }
+}
+
+- (void)moshroomAwaitParkUntil:(NSDate *)deadline
+{
+  @synchronized (self) {
+    if (_moshroomParkDeadline == nil) {
+      _moshroomParkDeadline = deadline;
+    }
+  }
+  Session *child = [self _currentChild];
+  if ([child isKindOfClass:[MoshroomMosh class]]) {
+    [(MoshroomMosh *)child moshroomAwaitParkUntil:deadline];
+  } else if ([child isKindOfClass:[MoshroomTmux class]]) {
+    [(MoshroomTmux *)child moshroomAwaitParkUntil:deadline];
+  }
 }
 
 - (void)handleControl:(NSString *)control
 {
   NSString *ctrlC = @"\x03";
   NSString *ctrlD = @"\x04";
+  Session *child = [self _currentChild];
   
-  if (_childSession) {
+  if (child) {
     if (_sshClients.count > 0) {
       dispatch_sync(_sshQueue, ^{
         for (id client in _sshClients) {
@@ -725,7 +787,7 @@
       });
     } else {
       // Send kill signal to child session.
-      [_childSession kill];
+      [child kill];
     }
     return;
   } else if (_currentCmd) {

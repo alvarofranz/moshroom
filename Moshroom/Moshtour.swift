@@ -32,9 +32,11 @@ final class MoshtourModel: ObservableObject {
       })
     }
   }
+  // On the last page with no hosts, Return picks the main action, Add a host.
+  var lastPageAddsHost: Bool { hostCount == 0 && !simulatedEmpty }
   func next() {
     if step < 5 { step += 1; showDetails = false }
-    else { finish(.close) }
+    else { finish(lastPageAddsHost ? .addHost : .close) }
   }
   func back() { if step > 0 { step -= 1; showDetails = false } }
   func choose(_ number: Int) {
@@ -97,13 +99,13 @@ struct MoshtourView: View {
   private var subtitle: String {
     switch model.step {
     case 0: return "Connect to a machine you can reach over SSH. Bring your tools, your projects and your agents with you."
-    case 1: return "A host is a saved server. A project opens a folder on it, with its own tab and, when tmux is available, its own lasting session."
+    case 1: return "A host is a server you save once. A project is a folder on it: one tap connects straight into that folder, and with tmux it keeps its own session."
     case 2: return "SSH or Mosh carries your connection. tmux keeps your work running on the server so you can return to it."
     case 3: return "A quick command or a long idea. Choose how you type, and switch whenever you like."
-    case 4: return "Attach screenshots, PDFs and code in the composer. When you send, they upload to your server and your agent gets the path."
+    case 4: return "Attach screenshots, PDFs and code in the composer. When you send, they upload to this tab’s server and your agent gets the path."
     default: return model.hostCount == 0
       ? "You’ll need the server’s address, your username, and a password or SSH key."
-      : "\(model.hostCount) \(model.hostCount == 1 ? "host" : "hosts") ready. Pick one in Quick Connect and make yourself at home."
+      : "\(model.hostCount) \(model.hostCount == 1 ? "host" : "hosts") ready. Tap one in the host list on a new tab to connect."
     }
   }
 
@@ -208,17 +210,22 @@ struct MoshtourView: View {
         if typeSize.isAccessibilitySize { Spacer(minLength: 0) }
       }
       if !typeSize.isAccessibilitySize { Spacer(minLength: 0) }
-      Button { model.next() } label: {
+      // With no hosts the last page's main action is Add a host, so Later stays a quiet text button.
+      let later = model.step == 5 && model.hostCount == 0
+      Button {
+        if model.step == 5 { model.finish(.close) } else { model.next() }
+      } label: {
         HStack(spacing: 10) {
-          Text(model.step == 5 ? (model.hostCount == 0 ? "Later" : "Start") : "Next")
+          Text(model.step == 5 ? (later ? "Later" : "Start") : "Next")
             .fixedSize(horizontal: false, vertical: true)
-          if model.step < 5 { Image(systemName: "arrow.right") }
+          if model.step < 5 { Image(systemName: "arrow.right").accessibilityHidden(true) }
         }
         .font(.body.weight(.semibold))
         .padding(.horizontal, 22)
         .frame(maxWidth: typeSize.isAccessibilitySize ? .infinity : nil, minHeight: 46)
-        .foregroundStyle(model.step == 5 ? .white : Color(UIColor.moshroomBackground))
-        .background(model.step == 5 ? Color.moshTint : .white, in: Capsule())
+        .foregroundStyle(later ? Color.secondary : model.step == 5 ? .white : Color(UIColor.moshroomBackground))
+        .background(later ? Color.clear : model.step == 5 ? Color.moshTint : .white, in: Capsule())
+        .contentShape(Capsule())
       }
       .buttonStyle(.plain)
       .moshCatalystPlainButtons()
@@ -229,7 +236,7 @@ struct MoshtourView: View {
   @ViewBuilder private func pageControls(width: CGFloat) -> some View {
     switch model.step {
     case 1:
-      note("One tap opens the folder. Existing tmux sessions resume where you left them.", symbol: "arrow.uturn.backward")
+      note("On a new tab, tap a project under its host. If its tmux session is still running, you are back where you left off.", symbol: "arrow.uturn.backward")
     case 2: connectionChoices
     case 3:
       Picker("Typing", selection: Binding(get: { typing.mode }, set: { typing.select($0) })) {
@@ -239,7 +246,7 @@ struct MoshtourView: View {
       .accessibilityIdentifier("tour.typing")
       Text(typing.mode.detail).font(.subheadline).foregroundStyle(.secondary)
         .fixedSize(horizontal: false, vertical: true)
-      note("Open the composer with the pencil button or the Compose command in the File menu (⌘E by default).", symbol: "square.and.pencil")
+      note(Self.composerHint, symbol: "square.and.pencil")
     case 4:
       // These four rows need no lazy loading. Keep their accessibility identity while
       // switching to a single column for narrow windows and accessibility text sizes.
@@ -271,9 +278,8 @@ struct MoshtourView: View {
         }
         .buttonStyle(.plain).moshCatalystPlainButtons()
         .disabled(model.simulatedEmpty)
-      } else {
-        note("Find this tour again in Settings › Welcome Tour.", symbol: "sparkles")
       }
+      note("Find this tour again in Settings › Welcome Tour.", symbol: "sparkles")
     default:
       note("Your tools run on your server. Moshroom brings their terminal to you.", symbol: "terminal")
     }
@@ -310,12 +316,29 @@ struct MoshtourView: View {
           detail("On the server", model.usesMosh
                  ? "SSH access to start the connection, mosh-server, and an allowed UDP port or range (60000–61000 by default).\(model.usesTmux ? " Also tmux." : "")"
                  : "SSH access.\(model.usesTmux ? " Also tmux; Moshroom falls back to plain SSH if it is unavailable or too old." : " No extra session manager is required.")")
-          detail("What Moshroom opens", "Quick Connect’s SSH choice uses tmux by default. A Mosh host uses its configured startup command; Mosh projects try tmux and fall back to a shell if it is missing. Change host settings or long-press a host for a one-off connection.")
+          detail("What Moshroom opens", "On a new tab, SSH goes through tmux unless you turn that off for the host in Settings › Hosts. Mosh runs the host’s startup command; Mosh projects use tmux when it is installed. \(Self.oneOffGesture) a host to connect another way just once.")
           detail("Leaving and returning", "Changing networks, backgrounding the app and closing a tab are different. Moshroom can restore a suspended Mosh connection when its saved state and server are still available. tmux lets a new connection attach to an existing session. Neither keeps a program alive after you end it or the server restarts.")
           detail("Scrolling", "SSH + tmux integrates the session’s history with Moshroom’s scrolling. Mosh synchronizes the visible screen; use the remote program or tmux for its history.")
         }.padding(.top, 10)
       }.font(.subheadline)
     }
+  }
+
+  private static var composerHint: String {
+    #if targetEnvironment(macCatalyst)
+    return "Open the composer with File › Compose (⌘E by default): room for long prompts, snips and attachments."
+    #else
+    return UIDevice.current.userInterfaceIdiom == .pad
+      ? "Tap the pencil button, or press ⌘E with a keyboard, to open the composer: room for long prompts, snips and attachments."
+      : "Tap the pencil button to open the composer: room for long prompts, snips and attachments."
+    #endif
+  }
+  private static var oneOffGesture: String {
+    #if targetEnvironment(macCatalyst)
+    return "Right-click"
+    #else
+    return "Long-press"
+    #endif
   }
 
   private func detail(_ title: String, _ body: String) -> some View {
@@ -373,9 +396,16 @@ private struct TourConnectionArt: View {
   let phase: Double
   let usesMosh: Bool
   let usesTmux: Bool
+  static var deviceSymbol: String {
+    #if targetEnvironment(macCatalyst)
+    return "laptopcomputer"
+    #else
+    return UIDevice.current.userInterfaceIdiom == .pad ? "ipad" : "iphone"
+    #endif
+  }
   var body: some View {
     HStack(spacing: 18) {
-      Image(systemName: "iphone").font(.system(size: 66, weight: .ultraLight)).foregroundStyle(.white)
+      Image(systemName: Self.deviceSymbol).font(.system(size: 66, weight: .ultraLight)).foregroundStyle(.white)
       GeometryReader { geometry in
         ZStack {
           Path { path in path.move(to: CGPoint(x: 0, y: geometry.size.height / 2)); path.addLine(to: CGPoint(x: geometry.size.width, y: geometry.size.height / 2)) }
@@ -503,7 +533,9 @@ extension SpaceController {
     }
   }
 
-  private func moshroomOpenTourSetup(_ destination: Moshtour.Finish) {
+  /// The tour's and the onboarding card's setup step: the host editor or the key list, opened
+  /// directly. Saving the first host from here returns to the terminal, where it is now listed.
+  func moshroomOpenTourSetup(_ destination: Moshtour.Finish) {
     guard !MoshroomDevelopment.enabled("tour-no-hosts") else { return }
     moshroomPresentFullScreen(from: self) {
       let nav = UINavigationController()
@@ -511,7 +543,12 @@ extension SpaceController {
                                                               onWelcomeTour: { [weak self] in self?.openMoshtour() })
       let content: UIViewController
       if destination == .addHost {
-        content = UIHostingController(rootView: NavView(navController: nav) { HostView(host: nil, reloadList: {}) })
+        content = UIHostingController(rootView: NavView(navController: nav) {
+          HostView(host: nil, reloadList: { [weak self] in
+            // Called right after a successful Save, before the editor pops itself.
+            DispatchQueue.main.async { self?.dismiss(animated: false) }
+          })
+        })
       } else {
         content = UIHostingController(rootView: NavView(navController: nav) { KeyListView() })
       }

@@ -17,6 +17,10 @@ import Foundation
     precondition(tracker.modes.mouseAnyMotion, "Old tmux keeps tracked mouse mode")
     tracker.scan(Array("\u{1b}[?2004l\u{1b}[?1003l".utf8))
     precondition(tracker.modes == TmuxTrackedModes(), "Live output still disables both modes")
+    tracker.scan(Array("\u{1b}[?2004h\u{1b}[?1003h".utf8))
+    tracker.scan(Array("text\u{1b}".utf8))
+    tracker.scan(Array("c".utf8))
+    precondition(tracker.modes == TmuxTrackedModes(), "RIS resets the tracked modes, also split across chunks")
     var fixtures: [[String: Any]] = []
     let base = "%0|80|24|120|0|0|0|0|23|1|0|0|0|1|0|23|0|0|0|0|0|123|@0|1"
     // The server's explicit false must defeat stale archived true, while an unavailable format
@@ -63,9 +67,26 @@ import Foundation
       let bytes = path == "overlap"
         ? TmuxResync.overlapAppend(snapshot, newFrom: 0, rows: 24, modes: TmuxTrackedModes())
         : TmuxResync.fullRefill(snapshot, rows: 24, modes: TmuxTrackedModes(),
-            marker: path == "full" ? nil : "", leaveAlternate: path == "leave-alternate")
+            marker: path == "full" ? nil : "")
       fixtures.append(["name": "\(path)-long-history", "path": path, "mouse": false,
         "longHistory": longLine, "bytes": String(decoding: bytes, as: UTF8.self)])
+    }
+    // A short shell screen in a pane taller than the terminal: the blank rows under the cursor give
+    // way, the written rows keep their places (tmux drops blank rows itself when the pane shrinks).
+    for path in ["full", "overlap"] {
+      var state = TmuxPaneState(line: base + "|0")!
+      state.height = 30
+      state.scrollLower = 29
+      state.cursorY = 3
+      state.cursorX = 2
+      let screen = (0..<30).map { $0 < 4 ? Array("TOP ROW \($0)".utf8) : [UInt8]() }
+      let snapshot = TmuxSnapshot(state: state, history: [], plainHistory: nil,
+                                  screen: screen, savedNormal: [], pendingEscape: [])
+      let bytes = path == "overlap"
+        ? TmuxResync.overlapAppend(snapshot, newFrom: 0, rows: 24, modes: TmuxTrackedModes())
+        : TmuxResync.fullRefill(snapshot, rows: 24, modes: TmuxTrackedModes(), marker: nil)
+      fixtures.append(["name": "\(path)-tall-pane-short-screen", "path": path, "mouse": false,
+        "screenTop": "TOP ROW 0", "cursorRow": 3, "bytes": String(decoding: bytes, as: UTF8.self)])
     }
     let data = try JSONSerialization.data(withJSONObject: fixtures, options: [.prettyPrinted, .sortedKeys])
     FileHandle.standardOutput.write(data)

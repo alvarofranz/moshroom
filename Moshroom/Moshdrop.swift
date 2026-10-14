@@ -356,6 +356,16 @@ enum Moshdrop {
   /// md5-slug staging and agent-readable gate the picker runs — pure model work, no UI. Shared by the
   /// Photo/File/Clipboard picker and the composer's Cmd+V smart paste, so there is one code path.
   static func makeAttachment(localURL: URL, displayName: String) -> Result<MoshdropAttachment, AttachError> {
+    stageAttachment(localURL: localURL).map { staged in
+      let isImage = (UTType(filenameExtension: staged.url.pathExtension)?.conforms(to: .image)) ?? false
+      return MoshdropAttachment(localURL: staged.url, displayName: displayName, isImage: isImage,
+                                remoteName: staged.remoteName)
+    }
+  }
+
+  /// The file work behind `makeAttachment` (re-encode, hash, copy into staging), with no UIKit in it,
+  /// so the picker can run it off the main thread and build the chip on main afterwards.
+  static func stageAttachment(localURL: URL) -> Result<(url: URL, remoteName: String), AttachError> {
     guard isAgentReadable(localURL) else { return .failure(.notReadable) }
 
     // Images are downsized + re-encoded to JPEG before staging; non-images stage byte-for-byte.
@@ -375,12 +385,11 @@ enum Moshdrop {
       return .failure(.failed(error))
     }
     if source != localURL { try? FileManager.default.removeItem(at: source) }   // drop the temp JPEG
-
-    let isImage = (UTType(filenameExtension: staged.pathExtension)?.conforms(to: .image)) ?? false
-    return .success(MoshdropAttachment(localURL: staged, displayName: displayName, isImage: isImage, remoteName: remoteName))
+    return .success((staged, remoteName))
   }
 
-  /// The largest file a paste copies in (it is copied on the main thread).
+  /// The largest file Moshdrop takes in, pasted or picked: it is copied into staging and later
+  /// uploaded whole, and an agent has no use for anything bigger.
   static let pasteMaxBytes = 50 * 1024 * 1024
 
   /// If the clipboard holds an image or a real file, materialize it into a temp file *we own* and
@@ -514,17 +523,37 @@ final class MoshdropPicker: NSObject {
 
   // Every source here is a temp copy we made (the clipboard PNG, the Photos copy, the document
   // picker's asCopy file): staging copies it on, so it goes once the attempt is over, either way.
+  // The size cap comes first, and the re-encode / hash / copy run off the main thread: a large file
+  // used to freeze the UI for as long as all three took. Only the chip is built back on main.
   private func _emit(localURL: URL, displayName: String) {
-    defer { try? FileManager.default.removeItem(at: localURL) }
-    switch Moshdrop.makeAttachment(localURL: localURL, displayName: displayName) {
-    case .success(let attachment):
-      onPicked(attachment)
+    let bytes = (try? localURL.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+    guard bytes <= Moshdrop.pasteMaxBytes else {
+      try? FileManager.default.removeItem(at: localURL)
+      presenter?.moshdropAlert(title: "Too large to attach",
+                               message: "Moshdrop takes files up to \(Moshdrop.pasteMaxBytes / (1024 * 1024)) MB.")
+      finish()
+      return
+    }
+    DispatchQueue.global(qos: .userInitiated).async {
+      let staged = Moshdrop.stageAttachment(localURL: localURL)
+      try? FileManager.default.removeItem(at: localURL)
+      DispatchQueue.main.async { self._finishEmit(staged, displayName: displayName) }
+    }
+  }
+
+  private func _finishEmit(_ staged: Result<(url: URL, remoteName: String), Moshdrop.AttachError>,
+                           displayName: String) {
+    switch staged {
+    case .success(let file):
+      let isImage = (UTType(filenameExtension: file.url.pathExtension)?.conforms(to: .image)) ?? false
+      onPicked(MoshdropAttachment(localURL: file.url, displayName: displayName, isImage: isImage,
+                                  remoteName: file.remoteName))
       finish()
     case .failure(.notReadable):
       // Only the things the agent can actually read (images / PDFs / text & code). No video, audio,
       // archives, apps or other binaries.
       presenter?.moshdropAlert(title: "Can't attach that",
-                               message: "Moshdrop takes images, PDFs and text/code files — what your agent can read. Not video, audio, archives or apps.")
+                               message: "Moshdrop takes images, PDFs and text/code files: what your agent can read. Not video, audio, archives or apps.")
       finish()
     case .failure(.failed(let error)):
       _fail(error)
@@ -650,6 +679,10 @@ final class MoshdropConnection {
   let hostAlias: String
   private let worker = MoshroomSFTPWorker(name: "moshdrop.upload")
   private var idleWork: DispatchWorkItem?   // main thread
+  // Uploads in flight, by token, with the completion still owed to each. Main thread. The idle
+  // teardown waits for this to be empty: one upload's completion starts the next file of a send,
+  // and a teardown armed then used to cut that next file off a minute in, with no completion ever.
+  private var pending: [Int: (Result<Void, Error>) -> Void] = [:]
 
   // Worker thread only.
   private var dir: Translator?
@@ -681,10 +714,12 @@ final class MoshdropConnection {
     start()
     Self.nextToken += 1
     let token = Self.nextToken
+    pending[token] = completion
     let done: (Result<Void, Error>) -> Void = { [weak self] result in
       DispatchQueue.main.async {
+        guard let self, let completion = self.pending.removeValue(forKey: token) else { return }
         completion(result)
-        self?.scheduleIdleTeardown()
+        self.scheduleIdleTeardown()
       }
     }
     onWorker { [weak self] in
@@ -696,6 +731,7 @@ final class MoshdropConnection {
   }
 
   func cancel(_ token: Int) {
+    pending[token] = nil
     onWorker { [weak self] in
       guard let self else { return }
       // A running copy is cancelled outright (its staged temp is cleaned on cancel); one still
@@ -707,13 +743,22 @@ final class MoshdropConnection {
 
   private func scheduleIdleTeardown() {
     idleWork?.cancel()
-    let work = DispatchWorkItem { [weak self] in self?.teardown() }
+    idleWork = nil
+    guard pending.isEmpty else { return }
+    let work = DispatchWorkItem { [weak self] in
+      guard let self, self.pending.isEmpty else { return }
+      self.teardown()
+    }
     idleWork = work
     DispatchQueue.main.asyncAfter(deadline: .now() + Self.idleSeconds, execute: work)
   }
 
   private func teardown() {
     if Self.pool[hostAlias] === self { Self.pool[hostAlias] = nil }
+    // Nothing should be in flight here, but whatever is gets an answer instead of silence.
+    let owed = pending
+    pending = [:]
+    owed.values.forEach { $0(.failure(MoshdropError.connectionClosed)) }
     worker.stop { [weak self] in
       guard let self else { return }
       self.dialC = nil
@@ -881,9 +926,11 @@ final class MoshdropConnection {
 
 enum MoshdropError: LocalizedError {
   case badPath
+  case connectionClosed
   var errorDescription: String? {
     switch self {
     case .badPath: return "Could not resolve the remote upload directory."
+    case .connectionClosed: return "The connection to the server closed before the upload finished."
     }
   }
 }

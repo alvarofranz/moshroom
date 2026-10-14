@@ -70,17 +70,11 @@ struct NewPasskeyView: View {
     }
     .listStyle(.insetGrouped)
     .moshReadableWidth()
-    .toolbar {
-      MoshNavBarItem(placement: .navigationBarLeading) {
-        Button(action: onCancel) { MoshNavLabel(title: "Cancel") }
-      }
-      MoshNavBarItem(placement: .navigationBarTrailing) {
-        Button(action: _createKey) { MoshNavLabel(title: "Create") }
-          .disabled(!_state.isValid)
-      }
+    .moshSheetChrome(title: "New Passkey", onClose: onCancel) {
+      Button(action: _createKey) { MoshNavLabel(title: "Create") }
+        .buttonStyle(.plain)
+        .disabled(!_state.isValid)
     }
-    .navigationTitle("New Passkey")
-    .navigationBarTitleDisplayMode(.inline)
     .alert(errorMessage: $_state.errorMessage)
     .onAppear(perform: {
       FixedTextField.becomeFirstReponder(id: "keyName")

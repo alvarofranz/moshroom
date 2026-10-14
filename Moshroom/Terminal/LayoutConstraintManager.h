@@ -38,12 +38,6 @@ NS_ASSUME_NONNULL_BEGIN
 
 + (MoshLayoutMode) deviceDefaultLayoutMode;
 
-// Update layout mode
-- (void)updateLayoutMode:(MoshLayoutMode)mode;
-
-// Handle layout lock
-- (void)setLayoutLocked:(BOOL)locked withFrame:(CGRect)frame;
-
 // Note: Keyboard handling is now automatic via constraint priorities
 
 // Get current constraint constants for debugging

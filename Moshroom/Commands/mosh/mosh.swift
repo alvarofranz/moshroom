@@ -58,7 +58,6 @@ enum MoshError: Error, LocalizedError {
 }
 
 @objc public class MoshroomMosh: Session {
-  var exitCode: Int32 = 0
   var sshCancellable: AnyCancellable? = nil
   var proxyCancellable: AnyCancellable? = nil
   var proxyStream: SSH.Stream? = nil
@@ -67,13 +66,14 @@ enum MoshError: Error, LocalizedError {
   var stdout: OutputStream!
   var stderr: OutputStream!
   var isVerbose: Bool = false
-  private var initialMoshParams: MoshParams? = nil
   private let mcpSession: MCPSession
   // Signalled by onStateEncoded. One per client: a client parks at most once.
   private let parkAnswered = DispatchSemaphore(value: 0)
   private let escapeKey: String
   private var logger: MoshLogger! = nil
-  var isRunloopRunning = false
+  // The bootstrap's run loop while it runs (under clientLock): its SSH objects live on that thread,
+  // so stopping it from elsewhere is a block performed there, never a teardown from the caller.
+  private var bootstrapRunLoop: CFRunLoop? = nil
   // True while this client is inside mosh_main: the only time it can checkpoint, repaint, or be
   // signalled (before, it is still bootstrapping over SSH; after, its thread is gone).
   private var isClientRunning = false
@@ -150,6 +150,9 @@ enum MoshError: Error, LocalizedError {
       } catch MoshError.FolderMissing {
         // Already said, in the user's words.
         return -1
+      } catch MoshError.UserCancelled {
+        // The tab closed, or a reconnect took over, while the bootstrap ran: nothing to say.
+        return -1
       } catch {
         return die(message: "\(error) - \(error.localizedDescription)")
       }
@@ -204,7 +207,22 @@ enum MoshError: Error, LocalizedError {
 
       var sshError: Error? = nil
       var _moshServerParams: MoshServerParams? = nil
-      let bootstrapRunLoop = CFRunLoopGetCurrent()
+      let bootstrapRunLoop = CFRunLoopGetCurrent()!
+      // From here a kill stops this run loop; one that came before means nothing is dialed at all.
+      clientLock.lock()
+      let killedBeforeDial = killRequested
+      if !killedBeforeDial {
+        self.bootstrapRunLoop = bootstrapRunLoop
+      }
+      clientLock.unlock()
+      if killedBeforeDial {
+        throw MoshError.UserCancelled
+      }
+      defer {
+        clientLock.lock()
+        self.bootstrapRunLoop = nil
+        clientLock.unlock()
+      }
       self.sshCancellable = SSHClient.dial(hostName, with: config, withProxy: { [weak self] in
         guard let self = self
         else {
@@ -230,6 +248,8 @@ enum MoshError: Error, LocalizedError {
             if case MoshError.FolderMissing(let message) = error {
               // From the start of the line, whatever the bootstrap left on it.
               print("\r" + message, to: &self.stderr)
+            } else if case MoshError.UserCancelled = error {
+              // A tab being reconnected or closed: nothing went wrong.
             } else {
               print("Connection failed - \(error)", to: &self.stderr)
             }
@@ -245,10 +265,16 @@ enum MoshError: Error, LocalizedError {
           _moshServerParams = params
         })
 
-      self.isRunloopRunning = true
       SSHClient.run()
-      self.isRunloopRunning = false
 
+      clientLock.lock()
+      let killed = killRequested
+      clientLock.unlock()
+      if killed {
+        // Cancelled: the pipeline was dropped without a completion, so there is no answer to read.
+        stopBootstrap()
+        throw MoshError.UserCancelled
+      }
       if let error = sshError {
         throw error
       }
@@ -410,9 +436,13 @@ enum MoshError: Error, LocalizedError {
           }
           return start
         }
-        .flatMap {
-          log.info("Connecting to \($0)")
-          return client.requestExec(command: $0, withPTY: pty)
+        .flatMap { [weak self] command -> AnyPublisher<SSH.Stream, Error> in
+          // A tab closed while the connection came up starts no mosh-server it would never use.
+          if self?._isKillRequested ?? true {
+            return Fail(error: MoshError.UserCancelled).eraseToAnyPublisher()
+          }
+          log.info("Connecting to \(command)")
+          return client.requestExec(command: command, withPTY: pty)
         }
         .flatMap { s -> AnyPublisher<DispatchData, Error> in
           // The SSH PTY will multiplex, so we only try to parse stdout in all cases.
@@ -587,7 +617,7 @@ enum MoshError: Error, LocalizedError {
   }
 
   // Cancel the SSH bootstrap (the connection that starts mosh-server). Also how the bootstrap ends
-  // itself once it has its answer, so it must not mark the client as killed.
+  // itself once it has its answer, so it must not mark the client as killed. Bootstrap thread only.
   private func stopBootstrap() {
     proxyStream?.cancel()
     proxyStream = nil
@@ -603,8 +633,13 @@ enum MoshError: Error, LocalizedError {
       // starts. A bootstrap that already has its answer would otherwise start a client for a tab that
       // is closing.
       killRequested = true
-      if isRunloopRunning {
-        stopBootstrap()
+      if let loop = bootstrapRunLoop {
+        // Torn down on its own thread, where its SSH session's sockets live.
+        CFRunLoopPerformBlock(loop, CFRunLoopMode.defaultMode.rawValue) { [weak self] in
+          self?.stopBootstrap()
+          CFRunLoopStop(loop)
+        }
+        CFRunLoopWakeUp(loop)
       }
       return
     }
@@ -625,21 +660,32 @@ enum MoshError: Error, LocalizedError {
   /// an assert in its SIGINFO path and aborts the whole app, while it simply ignores keyboard input
   /// then. Blocks for at most two seconds.
   @objc public override func suspend() {
+    moshroomRequestPark()
+    moshroomAwaitPark(until: Date().addingTimeInterval(2))
+  }
+
+  /// Send the park keys without waiting for the answer (the app parks every tab first, then waits).
+  @objc func moshroomRequestPark() {
     guard let escape = controlEscape else { return }
     clientLock.lock()
+    defer { clientLock.unlock() }
     // Not up yet: moshMain parks it as it starts (the tab is asleep by then). Parked already: done.
-    guard isClientRunning, !moshroomParked else {
-      clientLock.unlock()
-      return
-    }
+    guard isClientRunning, !moshroomParked else { return }
     // The client may already have been sent the keys (by moshMain as it started, or by an earlier
-    // suspend that timed out): wait for that answer instead of queueing a second copy.
+    // suspend that timed out): its answer is still coming, a second copy would park the next client.
     if !parkRequested {
       parkRequested = true
       device.write(inDirectly: "\(escape)\u{1a}")
     }
+  }
+
+  /// Wait for the checkpoint a park asked for, until `deadline` at the latest.
+  @objc func moshroomAwaitPark(until deadline: Date) {
+    clientLock.lock()
+    let waiting = isClientRunning && parkRequested && !moshroomParked
     clientLock.unlock()
-    _ = parkAnswered.wait(timeout: .now() + 2)
+    guard waiting else { return }
+    _ = parkAnswered.wait(timeout: .now() + max(0, deadline.timeIntervalSinceNow))
   }
 
   /// Let go of the server right now, whatever the client is doing: a bootstrap in progress is
@@ -697,9 +743,18 @@ enum MoshError: Error, LocalizedError {
   }
 
   @objc public override func handleControl(_ control: String!) {
-    if isRunloopRunning {
+    clientLock.lock()
+    let bootstrapping = bootstrapRunLoop != nil
+    clientLock.unlock()
+    if bootstrapping {
       self.kill()
     }
+  }
+
+  private var _isKillRequested: Bool {
+    clientLock.lock()
+    defer { clientLock.unlock() }
+    return killRequested
   }
 
   // The client's LAST act before it leaves its thread: whatever asked for it (our suspend, or the
@@ -728,7 +783,6 @@ extension MoshParams {
     self.ip = server.remoteIP
     self.predictionMode = String(describing: client.predictionMode)
     self.predictOverwrite = client.predictOverwrite
-    self.serverPath = client.server
   }
 }
 

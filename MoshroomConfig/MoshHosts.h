@@ -118,6 +118,9 @@ enum MoshAgentForward {
 // Drops this host's saved password from the keychain (with sync on, from every device) and clears
 // the reference. Called when the host itself is deleted, so no unreachable secret is left behind.
 - (void)removePasswordFromKeychain;
+// YES when the saved password rides the iCloud Keychain: deleting it then deletes it on every device,
+// whatever the sync switch says. Attributes only.
+- (BOOL)hasSynchronizablePassword;
 + (NSMutableArray<MoshHosts *> *)all;
 + (NSArray<MoshHosts *> *)allHosts;
 + (NSInteger)count;

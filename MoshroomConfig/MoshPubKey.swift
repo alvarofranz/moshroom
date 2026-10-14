@@ -37,7 +37,7 @@ public enum MoshPubKeyError: Error, LocalizedError {
     case .keychainWriteFailed:
       return "The keychain refused to store the private key, so nothing was saved. Unlock the device and try again."
     case .publicHalfMismatch:
-      return "That private key belongs to a different identity — its public half doesn't match this one."
+      return "That private key belongs to a different identity: its public half doesn't match this one."
     case .notRepairable:
       return "This identity's private key lives in hardware and can't be replaced."
     }

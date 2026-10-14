@@ -121,10 +121,11 @@ class SpaceController: UIViewController {
 
   func moshroomSendQuickKey(_ bytes: String) {
     if MoshroomTyping.shared.isDirect {
+      // Through the same FIFO as typed text, without taking focus: a quick key never raises the
+      // software keyboard (it would cover, and fade out, the very keys being tapped).
       guard moshroomCanTypeDirect else { return }
-      moshroomDirectInput.wantsSoftKeyboard = true
-      moshroomRestoreKeyboardOwner()
-      moshroomDirectInput.sendSpecial(bytes)
+      moshroomDirectInput.bind(to: currentDevice)
+      moshroomDirectInput.sendQuickKey(bytes)
     } else {
       currentDevice?.write(bytes)
     }
@@ -244,8 +245,12 @@ class SpaceController: UIViewController {
     navigationOrientation: .horizontal
   )
   
-  private var _viewportsKeys = [UUID]()
+  private var _viewportsKeys = [UUID]() {
+    didSet { _noteHeldKeys() }
+  }
   private var _currentKey: UUID? = nil
+  // The scene session this window is (set when the scene restores it): see onDidDiscardSceneSessions.
+  private var _sceneSessionID: String? = nil
 
   // Typed tabs. `_tabKinds` answers "what is this key" (missing = .term, the historical default).
   // Non-terminal page controllers live HERE, never in the SessionRegistry: the registry's
@@ -416,6 +421,11 @@ class SpaceController: UIViewController {
       moshroomDirectInput.becomeFirstResponder()
       return
     }
+    // A press that carries a key is a hardware keyboard, whether or not GameController reported one:
+    // Automatic mode switches to Direct on it (before the routing below reads the mode).
+    if presses.contains(where: { $0.key != nil }) {
+      MoshroomTyping.shared.noteHardwareKey()
+    }
     // Moshroom: a hardware keystroke means the user is using the terminal — clear the
     // quick-connect card out of the way. Only for presses that CARRY CHARACTERS: bare modifier
     // events (the Cmd of a Cmd+Tab app switch, a stray Shift) used to hide the card "on its own"
@@ -486,6 +496,12 @@ class SpaceController: UIViewController {
     super.dismiss(animated: animated) { [weak self] in
       completion?()
       guard let self, Moshroom.scratchOnly else { return }
+      // Opening a surface lets go of the terminal's input (and a window regaining key while one was
+      // up blurs it); with nothing in front any more, it takes it back. Taps, selection and Cmd+C
+      // on the terminal all need it.
+      if self.presentedViewController == nil, self.view.window?.isKeyWindow == true, self.currentTerm() != nil {
+        self._focusOnShell()
+      }
       self.moshroomRestoreKeyboardOwner()
       self.moshroomApplyDirectKeyboardFrame()
       self.showMoshnectorIfIdle()
@@ -957,6 +973,9 @@ class SpaceController: UIViewController {
     // it is one more idempotent reveal trigger, same contract as viewDidAppear and prompt-ready.
     if Moshroom.scratchOnly { showMoshnectorIfIdle() }
     moshroomRestoreKeyboardOwner()
+    // The first-run tour may have been asked for before the scene was active (a launch with no
+    // tabs has no prompt to ask again). Idempotent.
+    moshroomCheckWelcome()
   }
   
   func _createTerminal(userActivity: NSUserActivity?, sessionPayload: TermSessionPayload) {
@@ -991,6 +1010,10 @@ class SpaceController: UIViewController {
     if moshroomTabKind(for: key) == .term {
       let term: TermController? = SessionRegistry.shared.sessionFromIndexWith(key: key)
       term?.delegate = nil
+      // A closed terminal must not keep the keyboard tracker pointing at its web view.
+      if term?.isAttached == true {
+        KBTracker.shared.attach(input: nil)
+      }
       SessionRegistry.shared.remove(forKey: key, keepArchive: keepArchive)
     } else {
       _pageControllers[key]?.moshroomTabWillClose()
@@ -1000,6 +1023,11 @@ class SpaceController: UIViewController {
     _viewportsKeys.removeAll { $0 == key }
     if _showAfterSwipe == .tab(key) {
       _showAfterSwipe = nil
+    }
+    // Until the next page is adopted there is no current tab. Left naming the closed key, it read as
+    // a terminal (no kind any more) and the next currentTerm() fabricated a phantom for it.
+    if _currentKey == key {
+      _currentKey = nil
     }
   }
 
@@ -1035,22 +1063,6 @@ class SpaceController: UIViewController {
   
   var currentDevice: TermDevice? {
     currentTerm()?.termDevice
-  }
-
-  // A live terminal device for an APP-initiated SSH connection (Moshify, the explorer): the
-  // current tab's when it is a terminal, else the first materialized terminal tab's.
-  // resolveTarget needs one for interactive auth prompts; key auth against a known host never
-  // touches it. Nil only when no terminal tab is alive — the caller shows an honest error.
-  var moshroomAnyTermDevice: TermDevice? {
-    if let device = currentDevice { return device }
-    // The subscript is safe here: the key's kind is verified .term, so materializing (the
-    // restore path — e.g. a restored music tab is current and its terminal neighbour has not
-    // been shown yet) builds a REAL terminal, never a phantom.
-    for key in _viewportsKeys where moshroomTabKind(for: key) == .term {
-      let ctrl: TermController = SessionRegistry.shared[key]
-      return ctrl.termDevice
-    }
-    return nil
   }
 
 }
@@ -1114,7 +1126,8 @@ extension SpaceController: UIStateRestorable {
   // The one entry point the scene uses to rebuild its tabs: the system's scene state when there is
   // some, our own snapshot when there is not (see moshroomPersistUIState).
   func moshroomRestore(from session: UISceneSession) {
-    defer { Self._restoredKeysBySession[session.persistentIdentifier] = Set(_viewportsKeys) }
+    _sceneSessionID = session.persistentIdentifier
+    defer { _noteHeldKeys() }
     if let activity = session.stateRestorationActivity, UIState(userActivity: activity) != nil {
       MoshLog.log("tabs", "restore via scene activity")
       restoreWith(stateRestorationActivity: activity)
@@ -1132,44 +1145,61 @@ extension SpaceController: UIStateRestorable {
     #endif
   }
   
-  // A scene session the system threw away: its tabs are gone for good, so drop their archives.
+  // A scene session the system threw away (a window the user closed): its tabs are gone for good, so
+  // they are closed and their archives dropped.
   //
   // EXCEPT the ones this run is using. On Mac Catalyst, quitting the app discards its scene session,
   // and the system reports that discard to the NEXT launch (seconds after it starts) — by which time
   // the app has restored the very same keys from the same UIState. Removing them here deleted each
   // restored tab's archive moments after it came back, which is why a relaunch always showed a single
-  // tab and the persisted index ended up empty: three tabs open, `sessions/index.json` down to one
-  // entry, and `[]` after a clean quit. Keys that this run does NOT hold are still genuinely orphaned
-  // and are still removed, so nothing leaks.
+  // tab and the persisted index ended up empty. So what any window still open holds is kept, restored
+  // or opened since, built or not (only the visible tab gets a controller at launch).
   //
-  // "Holds" means restored, not just built: only the visible tab gets a controller at launch, the rest
-  // are built when first shown, so a check on built controllers alone still deleted the archive of
-  // every restored tab not yet looked at, and each came back without its session. What a window
-  // restored stays protected only while that window is not the one being discarded: a window the
-  // user closes during the run gives its tabs up.
+  // What a discarded window held is known two ways: the tabs it held in this run, and the keys in its
+  // saved state (a session from an earlier run). Both used to be protected by the registry's own list
+  // of built tabs, which always included the closed window's, so closing a window kept every one of
+  // its sessions, web views and archives alive until the app quit.
   @objc static func onDidDiscardSceneSessions(_ sessions: Set<UISceneSession>) {
     let registry = SessionRegistry.shared
     let discarded = Set(sessions.map(\.persistentIdentifier))
-    var live = registry.liveSessionKeys
-    for (id, keys) in _restoredKeysBySession where !discarded.contains(id) {
-      live.formUnion(keys)
+    var held = Set<UUID>()
+    for (id, keys) in _keysBySession where !discarded.contains(id) {
+      held.formUnion(keys)
     }
-    discarded.forEach { _restoredKeysBySession[$0] = nil }
-    sessions.forEach { session in
-      guard
-        let uiState = UIState(userActivity: session.stateRestorationActivity)
-      else {
-        return
+    var closed = Set<UUID>()
+    for id in discarded {
+      closed.formUnion(_keysBySession[id] ?? [])
+      _keysBySession[id] = nil
+    }
+    for session in sessions {
+      if let uiState = UIState(userActivity: session.stateRestorationActivity) {
+        closed.formUnion(uiState.keys)
       }
-
-      uiState.keys
-        .filter { !live.contains($0) }
-        .forEach { registry.remove(forKey: $0) }
+    }
+    // Built in this run and in no closed window (a tab between windows): kept too.
+    let live = held.union(registry.liveSessionKeys.subtracting(closed))
+    let gone = closed.subtracting(live)
+    for key in gone {
+      let term: TermController? = registry.sessionFromIndexWith(key: key)
+      term?.terminate()
+      registry.remove(forKey: key)
+    }
+    // The closed window may have written the shared layout file last: a window still open rewrites it.
+    if !gone.isEmpty {
+      let open = UIApplication.shared.connectedScenes.compactMap {
+        (($0 as? UIWindowScene)?.delegate as? SceneDelegate)?.window?.rootViewController as? SpaceController
+      }
+      open.first?.moshroomPersistUIState()
     }
   }
 
-  // The tab keys each scene session restored in this run (see onDidDiscardSceneSessions).
-  private static var _restoredKeysBySession = [String: Set<UUID>]()
+  // The tab keys each window (scene session) holds in this run (see onDidDiscardSceneSessions).
+  private static var _keysBySession = [String: Set<UUID>]()
+
+  private func _noteHeldKeys() {
+    guard let id = _sceneSessionID else { return }
+    Self._keysBySession[id] = Set(_viewportsKeys)
+  }
 }
 
 // MARK: UIPageViewControllerDelegate
@@ -1258,7 +1288,7 @@ extension SpaceController {
   
   public override var keyCommands: [UIKeyCommand]? {
     guard
-      let input = KBTracker.shared.input,
+      let input = KBTracker.shared.input ?? currentTerm()?.termView.webView,
       foregroundActive
     else {
       return nil
@@ -1343,12 +1373,14 @@ extension SpaceController {
     // Moshxplore…) is on screen — which used to silently drive the *terminal's* copy/paste behind it.
     // Route them to what's actually in front instead: the composer, another modal's text field, or —
     // with nothing presented — the terminal transcript.
+    // The terminal is THIS window's current one: the keyboard tracker is app-wide (another window's,
+    // or nobody's right after a surface closed).
     case .clipboardCopy:
       if presentedViewController != nil { _forwardEditAction(#selector(UIResponder.copy(_:))) }
-      else { KBTracker.shared.input?.copy(self) }
+      else { currentTerm()?.termView.copy(nil) }
     case .clipboardCopyRaw:
       if presentedViewController != nil { _forwardEditAction(#selector(UIResponder.copy(_:))) }
-      else { KBTracker.shared.input?.copyRaw(self) }
+      else { currentTerm()?.termView.copyRaw(nil) }
     case .clipboardPaste:
       if let composer = _frontComposer {
         MoshLog.log("paste", "Cmd+V → composer.smartPaste (composer in front)")
@@ -1374,8 +1406,8 @@ extension SpaceController {
     case .composeShow:
       if presentedViewController == nil { openMoshkitor() }
     case .hideKeyboard:
+      // Composer mode has no terminal keyboard to hide.
       if MoshroomTyping.shared.isDirect { moshroomHideDirectKeyboard() }
-      else { _ = KBTracker.shared.input?.resignFirstResponder() }
 
     }
   }
@@ -1522,7 +1554,9 @@ extension SpaceController {
     
     // try to focus on other session before closing
     _focusOtherWindowAction()
-    
+
+    _closeAllTabs()
+
     UIApplication
       .shared
       .requestSceneSessionDestruction(session,
@@ -1530,6 +1564,24 @@ extension SpaceController {
                                       errorHandler: nil)
   }
   
+  // Closing a window closes its tabs: no other window shows them, and each would otherwise keep its
+  // session, web view and archive until the app quits.
+  private func _closeAllTabs() {
+    for key in _viewportsKeys {
+      if moshroomTabKind(for: key) == .term {
+        let term: TermController? = SessionRegistry.shared.sessionFromIndexWith(key: key)
+        term?.terminate()
+      }
+      _forgetTab(key)
+    }
+    _show(.empty)
+    // On the Mac every window writes the same layout file: the one left open writes its own again.
+    let others = UIApplication.shared.connectedScenes.compactMap {
+      (($0 as? UIWindowScene)?.delegate as? SceneDelegate)?.window?.rootViewController as? SpaceController
+    }
+    others.first { $0 !== self }?.moshroomPersistUIState()
+  }
+
   @objc func showConfigAction() {
     DispatchQueue.main.async {
       self.moshroomDirectInput.resignFirstResponder()
@@ -1636,7 +1688,8 @@ extension SpaceController {
   }
 
   // The page on screen becomes the current tab. A terminal that holds the keyboard refuses to hide,
-  // so it lets go BEFORE a non-terminal page takes over (`_currentKey` still names it here).
+  // so it lets go BEFORE a non-terminal page takes over (`_currentKey` still names it here; a closed
+  // one let go in _forgetTab).
   private func _adopt(_ page: UIViewController & MoshroomTabPage) {
     if page.moshroomTabKind != .term, page.moshroomTabKey != _currentKey {
       currentTerm()?.resignInput()
@@ -1652,11 +1705,13 @@ extension SpaceController {
   private func _didShowCurrentPage(attachInput: Bool) {
     moshroomDirectInput.resetComposition()
     moshroomPersistUIState()
-    _showOnlyCurrentTerminal()
-    _syncTerminalBackground()
+    // The input moves BEFORE the hide sweep: the terminal that holds it refuses to hide, so the tab
+    // being left would stay unhidden behind the new one (still "visible" to WebKit and to OSC 52).
     if attachInput, let key = _currentKey, moshroomTabKind(for: key) == .term {
       _attachInputToCurrentTerm()
     }
+    _showOnlyCurrentTerminal()
+    _syncTerminalBackground()
     currentDevice?.view?.directCursor = MoshroomTyping.shared.isDirect
     moshroomRestoreKeyboardOwner()
     moshroomApplyDirectKeyboardFrame()
@@ -1716,7 +1771,8 @@ extension SpaceController {
   // already handle nil gracefully because zero tabs exercises it. Indexing the registry with a
   // non-terminal key would fabricate a phantom TermController instead.
   @objc func currentTerm() -> TermController? {
-    guard let currentKey = _currentKey, moshroomTabKind(for: currentKey) == .term else {
+    guard let currentKey = _currentKey, _viewportsKeys.contains(currentKey),
+          moshroomTabKind(for: currentKey) == .term else {
       return nil
     }
     return SessionRegistry.shared[currentKey]
@@ -1861,6 +1917,8 @@ extension SpaceController {
     let title: String
     let isActive: Bool
     let kind: MoshroomTabKind
+    /// How a terminal tab is connected (tmux, mosh, ssh), shown after its title in the list.
+    var transport: String? = nil
   }
 
   /// A tab's name when it HAS one. Terminals: forced custom name, then the connected host's alias ("host · project" on a project)
@@ -1896,9 +1954,15 @@ extension SpaceController {
 
   /// The open tabs, in order, each with its display title, kind and whether it is active.
   func moshroomTabs() -> [MoshroomTabInfo] {
-    _viewportsKeys.map {
-      MoshroomTabInfo(key: $0, title: moshroomTitle(for: $0),
-                      isActive: $0 == _currentKey, kind: moshroomTabKind(for: $0))
+    _viewportsKeys.map { key in
+      let kind = moshroomTabKind(for: key)
+      var transport: String? = nil
+      if kind == .term {
+        let term: TermController = SessionRegistry.shared[key]
+        transport = term.moshroomTransportName
+      }
+      return MoshroomTabInfo(key: key, title: moshroomTitle(for: key), isActive: key == _currentKey,
+                             kind: kind, transport: transport)
     }
   }
 

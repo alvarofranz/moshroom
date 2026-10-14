@@ -87,47 +87,138 @@ static NSMutableDictionary *__kc_query(UICKeyChainStore *keychain) {
   return q;
 }
 
-// Write a keychain string so the item always takes the CURRENT sync flavor. SecItemUpdate cannot
-// change an existing item's kSecAttrSynchronizable, so delete any existing variant first (the lookup
-// matches both flavors) and add fresh.
-//
-// That delete-then-add opens a window where the only copy of a secret lives nowhere but this stack
-// frame: if the add fails (locked before first unlock, keychain busy, quota) the old value is already
-// gone. So the previous item is read first (data AND its own flavor + accessibility) and PUT BACK as
-// it was when the write fails, and the outcome is returned instead of dropped.
-BOOL MoshroomKeychainSetString(UICKeyChainStore *keychain, NSString *value, NSString *key) {
-  NSMutableDictionary *read = __kc_query(keychain);
-  read[(__bridge id)kSecAttrAccount] = key;
-  read[(__bridge id)kSecReturnData] = @YES;
-  read[(__bridge id)kSecReturnAttributes] = @YES;
-  read[(__bridge id)kSecMatchLimit] = (__bridge id)kSecMatchLimitOne;
+// Does an item of exactly this flavor exist? errSecSuccess / errSecItemNotFound, or the keychain's
+// own error when it cannot answer (locked before first unlock, busy). Attributes only: nothing is
+// decrypted to ask.
+static OSStatus __kc_flavor_status(UICKeyChainStore *keychain, NSString *key, BOOL synchronizable) {
+  NSMutableDictionary *q = __kc_query(keychain);
+  q[(__bridge id)kSecAttrSynchronizable] = synchronizable ? @YES : @NO;
+  q[(__bridge id)kSecAttrAccount] = key;
+  q[(__bridge id)kSecReturnAttributes] = @YES;
+  q[(__bridge id)kSecMatchLimit] = (__bridge id)kSecMatchLimitOne;
   CFTypeRef found = NULL;
-  NSDictionary *previous = nil;
-  if (SecItemCopyMatching((__bridge CFDictionaryRef)read, &found) == errSecSuccess && found) {
-    previous = CFBridgingRelease(found);
+  OSStatus status = SecItemCopyMatching((__bridge CFDictionaryRef)q, &found);
+  if (found) {
+    CFRelease(found);
+  }
+  return status;
+}
+
+// Replace the value of the item of exactly this flavor, in place: same item, same flavor, same
+// accessibility. SecItemUpdate is one atomic step, so there is no moment without the old value.
+static OSStatus __kc_update_value(UICKeyChainStore *keychain, NSString *key, BOOL synchronizable, NSData *data) {
+  NSMutableDictionary *q = __kc_query(keychain);
+  q[(__bridge id)kSecAttrSynchronizable] = synchronizable ? @YES : @NO;
+  q[(__bridge id)kSecAttrAccount] = key;
+  NSDictionary *change = @{ (__bridge id)kSecValueData: data };
+  return SecItemUpdate((__bridge CFDictionaryRef)q, (__bridge CFDictionaryRef)change);
+}
+
+// Add a NEW item of exactly this flavor, straight through SecItemAdd: an item that appeared in the
+// meantime (delivered by the iCloud Keychain, or the migration) answers errSecDuplicateItem and is
+// left untouched. UICKeyChainStore's own set would update it instead, flavor included.
+static OSStatus __kc_add(UICKeyChainStore *keychain, NSString *key, BOOL synchronizable, NSData *data) {
+  NSMutableDictionary *q = __kc_query(keychain);
+  q[(__bridge id)kSecAttrSynchronizable] = synchronizable ? @YES : @NO;
+  q[(__bridge id)kSecAttrAccount] = key;
+  q[(__bridge id)kSecValueData] = data;
+  q[(__bridge id)kSecAttrAccessible] = (__bridge id)kSecAttrAccessibleAfterFirstUnlock;
+  return SecItemAdd((__bridge CFDictionaryRef)q, NULL);
+}
+
+static void __kc_delete_flavor(UICKeyChainStore *keychain, NSString *key, BOOL synchronizable) {
+  NSMutableDictionary *q = __kc_query(keychain);
+  q[(__bridge id)kSecAttrSynchronizable] = synchronizable ? @YES : @NO;
+  q[(__bridge id)kSecAttrAccount] = key;
+  SecItemDelete((__bridge CFDictionaryRef)q);
+}
+
+BOOL MoshroomKeychainIsSynchronizable(UICKeyChainStore *keychain, NSString *key) {
+  return key.length && __kc_flavor_status(keychain, key, YES) == errSecSuccess;
+}
+
+// Write a keychain string WITHOUT ever deleting a synchronizable item to do it. Deleting a synced
+// item deletes it on every device, so the old delete-then-add (which made the item take the current
+// toggle) turned "edit this password with sync off" into "remove it from my other devices".
+//
+//   - an existing synced item keeps its flavor: only its value changes, in place;
+//   - both flavors present (a divergent pair the migration left alone): the synced one takes the
+//     value and the local leftover goes. Deleting a device-local item never reaches another device;
+//   - only a local item, sync ON: the value moves to a synced item exactly the way Moshsync.migrate
+//     moves it (add first, then drop the local one). Editing the local copy in place raced the
+//     migration, which could add the OLD bytes as the synced copy and delete the local one holding
+//     the new value;
+//   - only a local item, sync OFF: its value changes in place;
+//   - no item yet: it is added with `inheritFrom`'s flavor when that names an existing item (a
+//     renamed host password stays where it was), otherwise with the current toggle's.
+//
+// A keychain that cannot say what exists right now (locked, busy) writes nothing.
+BOOL MoshroomKeychainSetStringInheriting(UICKeyChainStore *keychain, NSString *value, NSString *key,
+                                         NSString *inheritFrom) {
+  NSData *data = [value dataUsingEncoding:NSUTF8StringEncoding];
+  if (!data || !key.length) {
+    return NO;
+  }
+  OSStatus synced = __kc_flavor_status(keychain, key, YES);
+  OSStatus local = __kc_flavor_status(keychain, key, NO);
+  BOOL known = (synced == errSecSuccess || synced == errSecItemNotFound) &&
+               (local == errSecSuccess || local == errSecItemNotFound);
+  if (!known) {
+    NSLog(@"[Moshroom] Keychain write skipped for %@: lookup failed (%d, %d)", key, (int)synced, (int)local);
+    return NO;
   }
 
-  [keychain removeItemForKey:key];
-
-  NSError *error = nil;
-  if ([keychain setString:value forKey:key error:&error]) {
+  if (synced == errSecSuccess) {
+    OSStatus status = __kc_update_value(keychain, key, YES, data);
+    if (status != errSecSuccess) {
+      NSLog(@"[Moshroom] Keychain update failed for %@: %d", key, (int)status);
+      return NO;
+    }
+    if (local == errSecSuccess) {
+      __kc_delete_flavor(keychain, key, NO);
+    }
     return YES;
   }
 
-  BOOL restored = NO;
-  NSData *previousData = previous[(__bridge id)kSecValueData];
-  if (previousData) {
-    NSMutableDictionary *add = __kc_query(keychain);
-    add[(__bridge id)kSecAttrAccount] = key;
-    add[(__bridge id)kSecValueData] = previousData;
-    add[(__bridge id)kSecAttrSynchronizable] = previous[(__bridge id)kSecAttrSynchronizable] ?: @NO;
-    add[(__bridge id)kSecAttrAccessible] =
-      previous[(__bridge id)kSecAttrAccessible] ?: (__bridge id)kSecAttrAccessibleAfterFirstUnlock;
-    restored = SecItemAdd((__bridge CFDictionaryRef)add, NULL) == errSecSuccess;
+  if (local == errSecSuccess) {
+    if (keychain.synchronizable) {
+      OSStatus moved = __kc_add(keychain, key, YES, data);
+      if (moved == errSecDuplicateItem) {
+        // The migration got there first, with the old bytes: the new value goes over them.
+        moved = __kc_update_value(keychain, key, YES, data);
+      }
+      if (moved == errSecSuccess) {
+        __kc_delete_flavor(keychain, key, NO);
+        return YES;
+      }
+      NSLog(@"[Moshroom] Keychain could not move %@ to iCloud (%d), updating it in place", key, (int)moved);
+    }
+    OSStatus status = __kc_update_value(keychain, key, NO, data);
+    if (status != errSecSuccess) {
+      NSLog(@"[Moshroom] Keychain update failed for %@: %d", key, (int)status);
+      return NO;
+    }
+    return YES;
   }
-  NSLog(@"[Moshroom] Keychain write failed for %@: %@%@", key, error,
-        restored ? @" (previous value restored)" : (previousData ? @" (restore failed)" : @""));
-  return NO;
+
+  BOOL flavor = keychain.synchronizable;
+  if (inheritFrom.length && ![inheritFrom isEqualToString:key]) {
+    if (__kc_flavor_status(keychain, inheritFrom, YES) == errSecSuccess) {
+      flavor = YES;
+    } else if (__kc_flavor_status(keychain, inheritFrom, NO) == errSecSuccess) {
+      flavor = NO;
+    }
+  }
+  OSStatus status = __kc_add(keychain, key, flavor, data);
+  if (status != errSecSuccess) {
+    NSLog(@"[Moshroom] Keychain write failed for %@: %d", key, (int)status);
+    return NO;
+  }
+  return YES;
+}
+
+BOOL MoshroomKeychainSetString(UICKeyChainStore *keychain, NSString *value, NSString *key) {
+  return MoshroomKeychainSetStringInheriting(keychain, value, key, nil);
 }
 
 NSSet<NSString *> *MoshroomKeychainAccounts(UICKeyChainStore *keychain) {
@@ -412,6 +503,17 @@ static BOOL __kc_set(UICKeyChainStore *keychain, NSString *value, NSString *key)
 // Enclave, passkeys) carry their material elsewhere by design and are always complete.
 - (BOOL)hasPrivateKeyMaterial {
   return [self _hasPrivateKeyMaterialIn:MoshroomKeychainAccounts(__get_keychain())];
+}
+
+- (BOOL)hasSynchronizableSecret {
+  if (_storageType != MoshPubKeyStorageTypeKeyChain) {
+    return NO;
+  }
+  // Every item removeCard deletes: the legacy ref, <tag>.pem and the certificate.
+  UICKeyChainStore *kc = __get_keychain();
+  return MoshroomKeychainIsSynchronizable(kc, [self _privateKeyRefName]) ||
+         MoshroomKeychainIsSynchronizable(kc, [self _privateKeyKeychainRef]) ||
+         MoshroomKeychainIsSynchronizable(kc, [self _certificateKeychainRef]);
 }
 
 // `accounts` is a listing taken by the caller, or nil when the keychain could not answer. Only then

@@ -117,7 +117,13 @@ struct MoshProject: Codable, Identifiable, Hashable {
   static func list(fromJSON json: String?) -> [MoshProject] {
     guard let json, !json.isEmpty, let data = json.data(using: .utf8),
           let list = try? JSONDecoder().decode([MoshProject].self, from: data) else { return [] }
-    return list.filter { !$0.session.isEmpty && !$0.folder.isEmpty }
+    // The blob can come from another build or a hand-edited file: a session name tmux would rewrite
+    // never matches again, so it is brought to the form tmux keeps as typed.
+    return list.map { project -> MoshProject in
+      var project = project
+      project.session = MoshHosts.moshroomTmuxSessionName(project.session)
+      return project
+    }.filter { !$0.session.isEmpty && !$0.folder.isEmpty }
   }
 }
 

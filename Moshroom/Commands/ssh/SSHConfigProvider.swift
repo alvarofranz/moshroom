@@ -169,8 +169,8 @@ extension SSHClientConfigProvider {
     if let answer = readAnswer?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
       if keyChanged {
         // A changed (or different-type) key is what an interception looks like: only an
-        // explicit yes accepts it. Enter alone, or anything else, refuses.
-        if answer == "yes" || answer == "y" {
+        // explicit yes accepts it. Enter alone, a bare "y", or anything else, refuses.
+        if answer == "yes" {
           response = .affirmative
         }
       } else if answer.starts(with: "y") || answer.isEmpty {

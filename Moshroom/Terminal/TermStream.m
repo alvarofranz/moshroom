@@ -49,7 +49,11 @@
 
 - (instancetype) duplicate {
   TermStream *dupe = [[TermStream alloc] init];
-  
+  // A device whose pipes could not be created has no streams: hand back an empty one.
+  if (!_in || !_out || !_err) {
+    return dupe;
+  }
+
   dupe.in = fdopen(dup(fileno(_in)), "rb");
   // If there is no underlying descriptor (writing to the WV), then duplicate the fterm.
   dupe.out = fdopen(dup(fileno(_out)), "wb");

@@ -92,10 +92,11 @@
 - (void)writeInDirectly:(NSString *)input;
 // Send text as a bracketed paste (via the terminal's paste path — framed with ESC[200~/201~ when
 // the remote program enabled bracketed-paste mode) rather than as raw keystrokes. Wraps the view's
-// `pasteString:`. Named to avoid Swift's `paste`-family import collision with UIResponder.
+// `pasteString:submit:completion:`. Named to avoid Swift's `paste`-family import collision with UIResponder.
 - (void)sendBracketedPaste:(NSString *)input;
 // The same, followed by an Enter once the paste has gone out (the composer's send). Text and Enter
-// travel together, so they reach the program in order even while the terminal page is being rebuilt.
+// travel together, so they reach the program in order even while the terminal page is being rebuilt,
+// and any -write: or paste that comes after waits until both have gone out.
 - (void)sendBracketedPaste:(NSString *)input submit:(BOOL)submit;
 // A client restored from a checkpoint is about to draw its first frame against a blank screen, which
 // replays the remote's last bell and last clipboard copy. For a couple of seconds, both pass silently.

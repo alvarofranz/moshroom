@@ -167,11 +167,13 @@ struct SettingsView: View {
         }
         .disabled(!_iCloudAvailable)
         .onChange(of: _iCloudSyncOn) { on in
+          guard on != MoshroomDefaults.isICloudSyncEnabled() else { return }
           MoshroomDefaults.setICloudSyncEnabled(on)
           MoshroomDefaults.save()
           // Turning it on is a full pass, secrets included: everything already on this device gets
-          // re-written into the iCloud Keychain, not just what gets saved from now on.
-          if on { HostsCloudMirror.syncNow() }
+          // re-written into the iCloud Keychain, not just what gets saved from now on. Either way the
+          // mirror forgets the previous sync period, so nothing removed meanwhile reads as a deletion.
+          HostsCloudMirror.syncSettingDidChange(enabled: on)
           _refreshHealth()
         }
 
@@ -250,7 +252,7 @@ struct SettingsView: View {
         Text("Sync with iCloud")
       } footer: {
         Text(_iCloudAvailable
-             ? "One switch for everything: hosts, keys, snippets, passwords and 2FA codes follow your devices — secrets end-to-end encrypted through your iCloud Keychain. Turning it on brings across what you already had, not just what you save next. Turning it off stops new secrets from syncing and leaves the ones already in your iCloud Keychain alone, so no other device loses anything. Secure Enclave keys never leave this device."
+             ? "One switch for everything: hosts, keys, snippets, passwords and 2FA codes follow your devices, secrets end-to-end encrypted through your iCloud Keychain. Turning it on brings across what you already had, not just what you save next. Turning it off stops new items from syncing. Secrets already in your iCloud Keychain stay there: editing one still updates your other devices, and deleting one removes it everywhere. Secure Enclave keys never leave this device."
              : "Sign in to iCloud to sync your hosts, keys, snippets, passwords and 2FA codes across your devices.")
       }
 

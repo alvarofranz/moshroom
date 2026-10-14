@@ -33,7 +33,6 @@
 @interface MCPSession : Session <TermDeviceReadlineListener>
 
 @property (strong) MCPParams *sessionParams;
-@property (readonly) dispatch_queue_t cmdQueue;
 // The app put this session to sleep (suspend) and has not woken it yet (moshroomResume). Its ONLY use
 // is deciding, when a mosh client parks, whether to keep it parked or wake it straight away: it never
 // decides whether something ended (only the client's own checkpoint says it parked).
@@ -54,6 +53,10 @@
 
 // Wake the session after a suspend: a parked mosh session continues from its checkpoint.
 - (void)moshroomResume;
+// The app parks every tab at once: ask each to park (no waiting), then wait for all against one
+// deadline. -suspend is both in one, for a single tab.
+- (void)moshroomRequestPark;
+- (void)moshroomAwaitParkUntil:(NSDate *)deadline;
 // A mosh checkpoint landed or was consumed; tells the delegate on the main queue.
 - (void)moshroomCheckpointDidChange;
 // The terminal view was rebuilt: a mosh session repaints it itself (answers YES when it has it covered).

@@ -12,7 +12,13 @@ hterm.Terminal.prototype.onFocusChange__ = function(focused) {
   this.restyleCursor_();
 
   if (this.reportFocus) {
-    this.io.sendString(focused === true ? '\x1b[I' : '\x1b[O');
+    // The terminal answering by itself, not user input (see sendString in term.js).
+    window._moshroomAutoReply = (window._moshroomAutoReply || 0) + 1;
+    try {
+      this.io.sendString(focused === true ? '\x1b[I' : '\x1b[O');
+    } finally {
+      window._moshroomAutoReply--;
+    }
   }
 
   if (focused === true) this.closeBellNotifications_();

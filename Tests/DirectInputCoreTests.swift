@@ -118,6 +118,15 @@ import Foundation
     check(writes.last == "replacement owner", "Reentrant ownership changes must retain the new paste")
     check(!writes.contains("old owner's queued key"), "Ownership changes must cancel the old queue")
     queue.write = { _ in } // Release the test closure's reference back to the queue.
+
+    check(MoshroomControlKey.bytes(for: "c") == "\u{3}", "Ctrl+C must send ETX")
+    check(MoshroomControlKey.bytes(for: "S") == "\u{13}", "Ctrl+S must map case-insensitively")
+    check(MoshroomControlKey.bytes(for: "[") == "\u{1b}", "Ctrl+[ must send Esc")
+    check(MoshroomControlKey.bytes(for: "6") == "\u{1e}", "Ctrl+6 must send mosh's escape")
+    check(MoshroomControlKey.bytes(for: "ß") == nil, "Ctrl+ß must never become ^S")
+    check(MoshroomControlKey.bytes(for: "ı") == nil, "Ctrl+dotless i must never become Tab")
+    check(MoshroomControlKey.bytes(for: "é") == nil, "Non-ASCII letters have no control byte")
+    check(MoshroomControlKey.bytes(for: "UIKeyInputUpArrow") == nil, "Key names have no control byte")
     print("Direct input core: \(assertions) assertions passed")
   }
 }

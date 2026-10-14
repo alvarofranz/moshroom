@@ -90,22 +90,16 @@ struct NewKeyView: View {
       
       Section(
         header: Text("INFORMATION"),
-        footer: Text("The key is kept in OpenSSH format inside the device keychain — encrypted at rest by the device, and by your iCloud Keychain end-to-end if sync is on. Use \"ssh-copy-id [name]\" to copy the public key to the server.")
+        footer: Text("The key is kept in OpenSSH format inside the device keychain, encrypted at rest by the device, and by your iCloud Keychain end-to-end if sync is on. Use \"ssh-copy-id [name]\" to copy the public key to the server.")
       ) { }
     }
     .listStyle(.insetGrouped)
     .moshReadableWidth()
-    .toolbar {
-      MoshNavBarItem(placement: .navigationBarLeading) {
-        Button(action: onCancel) { MoshNavLabel(title: "Cancel") }
-      }
-      MoshNavBarItem(placement: .navigationBarTrailing) {
-        Button(action: _createKey) { MoshNavLabel(title: "Create") }
-          .disabled(!_state.isValid)
-      }
+    .moshSheetChrome(title: "New \(_state.keyType.shortName) Key", onClose: onCancel) {
+      Button(action: _createKey) { MoshNavLabel(title: "Create") }
+        .buttonStyle(.plain)
+        .disabled(!_state.isValid)
     }
-    .navigationTitle("New \(_state.keyType.shortName) Key")
-    .navigationBarTitleDisplayMode(.inline)
     .alert(errorMessage: $_state.errorMessage)
     .onAppear(perform: {
       FixedTextField.becomeFirstReponder(id: "keyName")
@@ -179,7 +173,6 @@ fileprivate class NewKeyObservable: ObservableObject {
 fileprivate extension SSHKeyType {
   var possibleBitsValues: [UInt32] {
     switch self {
-    case .dsa:     return [1024]
     case .rsa:     return [2048, 4096]
     case .ecdsa:   return [256, 384, 521]
     case .ed25519: return []
@@ -189,10 +182,9 @@ fileprivate extension SSHKeyType {
   
   var keyHint: String {
     switch self {
-    case .dsa: return "DSA keys must be exactly 1024 bits as specified by FIPS 186-2."
     case .rsa: return "Generally, 2048 bits is considered sufficient."
     case .ecdsa: return "For ECDSA keys size determines key length by selecting from one of three elliptic curve sizes: 256, 384 or 521 bits."
-    case .ed25519: return "Fast, short, and the modern default. Fixed length — nothing to choose."
+    case .ed25519: return "Fast, short, and the modern default. Fixed length, nothing to choose."
     default: return ""
     }
   }

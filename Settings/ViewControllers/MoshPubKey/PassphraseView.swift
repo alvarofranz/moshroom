@@ -45,24 +45,36 @@ struct PassphraseView: View {
   }
   
   var body: some View {
-    VStack {
-      Image(systemName: "lock.doc").resizable().aspectRatio(contentMode: .fit).frame(maxHeight: 80).padding()
-      Text("This key is protected with passphrase").padding()
-      FixedTextField(
-        "Passphrase",
-        text: $_passphrase,
-        id: "passphrase",
-        onReturn: _unlock,
-        secureTextEntry: true,
-        autocorrectionType: .no,
-        autocapitalizationType: .none
-      )
-      .frame(maxHeight: 50)
-      .padding()
-      Button("Unlock", action: _unlock).disabled(_passphrase.isEmpty)
-      
-      Spacer()
-      
+    List {
+      Section {
+        HStack {
+          Spacer()
+          Image(systemName: "lock.doc")
+            .font(.system(size: 44))
+            .foregroundColor(.moshTint)
+          Spacer()
+        }
+        .listRowBackground(Color.clear)
+      }
+      Section(
+        header: Text("PASSPHRASE"),
+        footer: Text("This key is protected with a passphrase. Enter it to import the key.")
+      ) {
+        FixedTextField(
+          "Passphrase",
+          text: $_passphrase,
+          id: "passphrase",
+          onReturn: _unlock,
+          secureTextEntry: true,
+          autocorrectionType: .no,
+          autocapitalizationType: .none
+        )
+      }
+    }
+    .listStyle(.insetGrouped)
+    .moshReadableWidth()
+    // The hidden push to the import step stays OUTSIDE the list: inside it, it drew an empty row.
+    .background(
       Group {
         if let importObservable = _importKeyObservable {
           ImportKeyView(state: importObservable, onCancel: onCancel, onSuccess: onSuccess)
@@ -70,11 +82,11 @@ struct PassphraseView: View {
       }
       .navigationBarBackButtonHidden(true)
       .navigatePush(whenPresent: $_importKeyObservable)
-    }
-    .toolbar {
-      MoshNavBarItem(placement: .navigationBarLeading) {
-        Button(action: onCancel) { MoshNavLabel(title: "Cancel") }
-      }
+    )
+    .moshSheetChrome(title: "Encrypted Key", onClose: onCancel) {
+      Button(action: _unlock) { MoshNavLabel(title: "Unlock") }
+        .buttonStyle(.plain)
+        .disabled(_passphrase.isEmpty)
     }
     .onAppear() {
       FixedTextField.becomeFirstReponder(id: "passphrase")

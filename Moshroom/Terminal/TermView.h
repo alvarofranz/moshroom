@@ -52,6 +52,13 @@ extern NSString * TermViewTitleDidChangeNotificationKey;
 - (void)viewSelectionChanged;
 - (void)viewDidReceiveBellRing;
 
+@optional
+// Bytes the terminal answered by itself (device attributes, cursor position, colour queries, focus
+// reports). Not the user's input: they never move the viewport.
+- (void)viewSendReply:(NSString *)data;
+// The bytes of a paste, and the Enter that submits it.
+- (void)viewSendPastedString:(NSString *)data;
+
 @end
 
 
@@ -68,9 +75,6 @@ extern NSString * TermViewTitleDidChangeNotificationKey;
 @property (nonatomic, readonly) BOOL hasSelection;
 @property (nonatomic, readonly, nullable) TerminalSelectionController *selectionController;
 @property (nonatomic) id<TermViewDeviceProtocol> device;
-@property (nonatomic) UIEdgeInsets additionalInsets;
-@property (nonatomic) BOOL layoutLocked;
-@property (nonatomic) CGRect layoutLockedFrame;
 @property (nonatomic, strong, nonnull) TermUIState *termUIState;
 
 @property (nonatomic, strong) LayoutConstraintManager *constraintManager;
@@ -83,20 +87,17 @@ extern NSString * TermViewTitleDidChangeNotificationKey;
 @property (nonatomic, readonly) CGRect selectionRect;
 @property (nonatomic, readonly) SmarterTermInput *webView;
 @property (nonatomic, weak) id termController;
-@property (nonatomic, readonly) NSInteger rows;
-@property (nonatomic, readonly) NSInteger cols;
 
 
-- (CGRect)webViewFrame;
 - (void)load;
 // Reload term.html now if this terminal's web content process was jettisoned while hidden —
 // called at the moments a tab becomes the one being looked at (tab switch, app foreground).
 - (void)moshroomReloadIfNeeded;
 - (void)applyTermUIState:(nonnull TermUIState *)termUIState;
 - (void)setWidth:(NSInteger)count;
-- (void)setFontSize:(NSNumber *)newSize;
 - (void)write:(NSString *)data;
 - (void)moshroomSanitizeModes;
+- (void)moshroomEvaluateAfterPendingOutput:(NSString *)js completion:(void (^)(id _Nullable result))completion NS_SWIFT_NAME(moshroomEvaluate(afterPendingOutput:completion:));
 - (void)moshroomScrollToBottom;
 - (void)processKB:(NSString *)str;
 - (void)setCursorBlink:(BOOL)state;
@@ -117,14 +118,11 @@ extern NSString * TermViewTitleDidChangeNotificationKey;
 - (void)displayInput:(NSString *)input;
 - (void)apiResponse:(NSString *)name response:(NSString *)response;
 
-- (void)pasteString:(NSString *)str;
 // The loader over this terminal (see TermController): kept above the web view.
 @property (nonatomic, weak) UIView *moshroomOverlay;
 // Whether the terminal shows any text right now (NO while the page is not ready).
 - (void)moshroomScreenHasContent:(void (^)(BOOL hasContent))completion;
 // A paste followed by an Enter once it has gone out; held with its Enter while the page is not ready.
-- (void)pasteString:(NSString *)str submit:(BOOL)submit;
-
-// Layout state
-- (MoshLayoutMode)currentLayoutMode;
+// `completion` runs on the main thread once both have gone out (or there was nothing to send).
+- (void)pasteString:(NSString *)str submit:(BOOL)submit completion:(void (^ _Nullable)(void))completion;
 @end

@@ -30,8 +30,6 @@
 @property (nonatomic, weak) UIView *managedView;
 @property (nonatomic, weak) UIKeyboardLayoutGuide *keyboardGuide;
 @property (nonatomic, assign) MoshLayoutMode currentLayoutMode;
-@property (nonatomic, assign) BOOL isLayoutLocked;
-@property (nonatomic, assign) CGRect lockedFrame;
 
 // Constraint properties
 @property (nonatomic, strong) NSLayoutConstraint *topConstraint;
@@ -53,7 +51,6 @@
     manager.managedView = view;
     manager.keyboardGuide = keyboardGuide;
     manager.currentLayoutMode = mode;
-    manager.isLayoutLocked = NO;
     
     [manager setupConstraints];
     [manager updateConstraintsForCurrentState];
@@ -108,56 +105,13 @@
     [NSLayoutConstraint activateConstraints:constraintsToActivate];
 }
 
-- (void)updateLayoutMode:(MoshLayoutMode)mode {
-    if (self.isLayoutLocked) return; // Don't update if locked
-    
-    self.currentLayoutMode = mode;
-    [self updateConstraintsForCurrentState];
-}
-
-- (void)setLayoutLocked:(BOOL)locked withFrame:(CGRect)frame {
-    self.isLayoutLocked = locked;
-    self.lockedFrame = frame;
-    
-    if (locked) {
-        // Store current constraint values as locked frame
-        [self updateConstraintsForLockedFrame];
-    } else {
-        // Restore to normal layout mode behavior
-        [self updateConstraintsForCurrentState];
-    }
-}
-
 - (void)updateConstraintsForCurrentState {
-    if (self.isLayoutLocked) {
-        [self updateConstraintsForLockedFrame];
-        return;
-    }
-    
     UIEdgeInsets insets = [self calculateInsetsForLayoutMode:self.currentLayoutMode];
     
     self.topConstraint.constant = insets.top;
     self.leadingConstraint.constant = insets.left;
     self.trailingConstraint.constant = -insets.right;
     self.bottomConstraint.constant = -insets.bottom;
-}
-
-- (void)updateConstraintsForLockedFrame {
-    if (CGRectIsEmpty(self.lockedFrame)) return;
-    
-    UIView *superview = self.managedView.superview;
-    if (!superview) return;
-    
-    // Calculate insets based on locked frame
-    CGFloat top = self.lockedFrame.origin.y;
-    CGFloat left = self.lockedFrame.origin.x;
-    CGFloat right = superview.bounds.size.width - CGRectGetMaxX(self.lockedFrame);
-    CGFloat bottom = superview.bounds.size.height - CGRectGetMaxY(self.lockedFrame);
-    
-    self.topConstraint.constant = top;
-    self.leadingConstraint.constant = left;
-    self.trailingConstraint.constant = -right;
-    self.bottomConstraint.constant = -bottom;
 }
 
 - (UIEdgeInsets)calculateInsetsForLayoutMode:(MoshLayoutMode)mode {

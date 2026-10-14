@@ -34,9 +34,6 @@ public typealias MoshSessionParams = (any NSSecureCoding & MoshSessionParamsSnap
   @objc var key: String? = nil
   @objc var predictionMode: String? = nil
   @objc var predictOverwrite: String? = nil
-  @objc var startupCmd: String? = nil
-  @objc var serverPath: String? = nil
-  @objc var experimentalRemoteIp: String? = nil
 
   // The mosh client's state checkpoint: written by the client's own thread, consumed by the next
   // client that starts from it, and copied into the tab's archive from the main thread. Three
@@ -48,8 +45,10 @@ public typealias MoshSessionParams = (any NSSecureCoding & MoshSessionParamsSnap
 
   override init() { super.init() }
 
+  // Archives written by older builds also carry startupCmd, serverPath and experimentalRemoteIp.
+  // Nothing used them; decoding simply leaves them unread.
   private enum Key: String, CodingKey {
-    case ip, port, key, predictionMode, predictOverwrite, startupCmd, serverPath, experimentalRemoteIp
+    case ip, port, key, predictionMode, predictOverwrite
   }
 
   @objc func hasEncodedState() -> Bool {
@@ -80,9 +79,6 @@ public typealias MoshSessionParams = (any NSSecureCoding & MoshSessionParamsSnap
     coder.bk_encode(key, for: Key.key)
     coder.bk_encode(predictionMode, for: Key.predictionMode)
     coder.bk_encode(predictOverwrite, for: Key.predictOverwrite)
-    coder.bk_encode(startupCmd, for: Key.startupCmd)
-    coder.bk_encode(serverPath, for: Key.serverPath)
-    coder.bk_encode(experimentalRemoteIp, for: Key.experimentalRemoteIp)
   }
   
   required init?(coder: NSCoder) {
@@ -93,9 +89,6 @@ public typealias MoshSessionParams = (any NSSecureCoding & MoshSessionParamsSnap
     self.key = coder.bk_decode(for: Key.key)
     self.predictionMode = coder.bk_decode(for: Key.predictionMode)
     self.predictOverwrite = coder.bk_decode(for: Key.predictOverwrite)
-    self.startupCmd = coder.bk_decode(for: Key.startupCmd)
-    self.serverPath = coder.bk_decode(for: Key.serverPath)
-    self.experimentalRemoteIp = coder.bk_decode(for: Key.experimentalRemoteIp)
   }
   
   static var supportsSecureCoding: Bool { true }
@@ -106,9 +99,6 @@ public typealias MoshSessionParams = (any NSSecureCoding & MoshSessionParamsSnap
     self.key = params.key
     self.predictionMode = params.predictionMode
     self.predictOverwrite = params.predictOverwrite
-    self.startupCmd = params.startupCmd
-    self.serverPath = params.serverPath
-    self.experimentalRemoteIp = params.experimentalRemoteIp
   }
 }
 

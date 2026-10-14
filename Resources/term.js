@@ -1092,8 +1092,19 @@ window.addEventListener('resize', function() {
   }
 });
 
+// Bytes the terminal answers by itself while it interprets output (device attributes, cursor
+// position, colour queries) or on a focus change are tagged `auto`: they are not the user's input and
+// must not bring a reader in the scrollback back to the live end. A paste's own bytes are tagged
+// `paste` (see term_paste).
+var _moshroomAutoReply = 0;
 hterm.Terminal.IO.prototype.sendString = function(string) {
-  _postMessage('sendString', {string});
+  var message = {string};
+  if (_moshroomAutoReply > 0) {
+    message.auto = true;
+  } else if (_moshroomPasting > 0) {
+    message.paste = true;
+  }
+  _postMessage('sendString', message);
 };
 
 hterm.msg = function() {}; // TODO: show messages
@@ -1326,7 +1337,12 @@ function term_write(data) {
   if (_mshSel) {
     _mshBeforeOutput();
   }
-  t.interpret(data);
+  _moshroomAutoReply++;
+  try {
+    t.interpret(data);
+  } finally {
+    _moshroomAutoReply--;
+  }
   if (_mshSel) {
     _mshAfterOutput();
   }
@@ -1347,8 +1363,14 @@ function term_screenHasContent() {
 }
 
 function term_paste(str) {
-  t.onPaste_({text: str || ''});
+  _moshroomPasting++;
+  try {
+    t.onPaste_({text: str || ''});
+  } finally {
+    _moshroomPasting--;
+  }
 }
+var _moshroomPasting = 0;
 
 // Use hterm's own newline/encoding/bracketed-paste path, but return its bytes to the native
 // input FIFO. Nothing is sent here: a cancelled tab or a late evaluation cannot type anywhere.
@@ -1383,9 +1405,21 @@ function term_setDirectCursor(on) {
 }
 
 function term_cursorRect() {
-  if (!t || !t.cursorNode_ || !t.options_.cursorVisible) return null;
-  var r = t.cursorNode_.getBoundingClientRect();
-  return {x: r.x, y: r.y, width: r.width, height: r.height};
+  if (!t || !t.cursorNode_ || !t.screen_ || !t.scrollPort_) return null;
+  if (t.options_.cursorVisible) {
+    var r = t.cursorNode_.getBoundingClientRect();
+    if (r.height > 0) return {x: r.x, y: r.y, width: r.width, height: r.height};
+  }
+  // A hidden cursor (agent TUIs hide it and draw their own): the cell it sits on, so an input
+  // method's candidates still open next to the text being typed.
+  try {
+    var g = _mshGeom();
+    var pos = t.screen_.cursorPosition;
+    var row = t.scrollbackRows_.length + pos.row;
+    return {x: g.left + pos.column * g.cw, y: g.originTop + row * g.ch, width: g.cw, height: g.ch};
+  } catch (e) {
+    return null;
+  }
 }
 
 var _utf8TextDecoder = new TextDecoder('utf8');
@@ -1418,6 +1452,17 @@ function term_sanitizeModes() {
   // arrows the normal (CSI) way.
   if (t.keyboard) {
     t.keyboard.applicationCursor = false;
+    t.keyboard.applicationKeypad = false;
+  }
+  // And the rest a dead program can leave latched: bracketed paste would frame every later send
+  // for a program that never asked for it, focus reports would type escapes into the prompt.
+  t.setBracketedPaste(false);
+  t.reportFocus = false;
+  t.setInsertMode(false);
+  // Directly: setOriginMode also homes the cursor.
+  t.options_.originMode = false;
+  if (t.options_.reverseVideo) {
+    t.setReverseVideo(false);
   }
   _moshroomPostScrollMode();
 }

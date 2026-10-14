@@ -46,7 +46,7 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
 }
 
 
-@interface TermView () <WKScriptMessageHandler, WKUIDelegate, WKNavigationDelegate, UIGestureRecognizerDelegate>
+@interface TermView () <WKScriptMessageHandler, WKUIDelegate, WKNavigationDelegate>
 @end
 
 @implementation TermView {
@@ -57,12 +57,8 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
   BOOL _jsIsBusy;
   dispatch_queue_t _jsQueue;
   NSMutableString *_jsBuffer;
-  CGRect _currentBounds;
-  UIEdgeInsets _currentAdditionalInsets;
-  NSTimer *_layoutDebounceTimer;
   
   UIView *_coverView;
-  UIView *_parentScrollView;
 
   // The program's own terminal title (OSC 0/2), captured live from JS on every change and stored
   // here so the tab name survives even if WKWebView.title lags behind document.title. See -title.
@@ -77,6 +73,10 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
   // Composer sends that arrived while the page was not ready: each is [text, submit], delivered in
   // order once it is (see -pasteString:submit:).
   NSMutableArray<NSArray *> *_pendingPastes;
+  // Local prompt input that arrived before the page was ready (see -processKB:).
+  NSMutableString *_pendingKB;
+  // When this terminal last opened a link (see -_openLink:).
+  NSTimeInterval _lastLinkOpen;
 
 #if DEBUG
   // Dev-only JS console poller (see _startDebugJSProbe).
@@ -93,8 +93,6 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
     return self;
   }
 
-  _layoutDebounceTimer = nil;
-  _currentBounds = CGRectZero;
   _jsQueue = dispatch_queue_create(@"TermView.js".UTF8String, DISPATCH_QUEUE_SERIAL);
   _jsBuffer = [[NSMutableString alloc] init];
 
@@ -139,15 +137,6 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
 // a second time.
 - (UIEdgeInsets)safeAreaInsets {
   return UIEdgeInsetsZero;
-}
-
-- (CGRect)webViewFrame {
-  if (_layoutLocked) {
-    return _layoutLockedFrame;
-  }
-  
-  // With constraints, return the actual frame of the WebView
-  return _webView.frame;
 }
 
 - (BOOL)canBecomeFirstResponder {
@@ -277,9 +266,6 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
   MoshLayoutMode layoutMode = MoshLayoutModeDefault;
   if (self.termUIState) {
     layoutMode = self.termUIState.layoutMode;
-    // Reset lock modes
-    self.termUIState.layoutLocked = NO;
-    self.termUIState.layoutLockedFrame = CGRectZero;
   }
   
   self.constraintManager = [LayoutConstraintManager managerForView:_webView
@@ -377,6 +363,12 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
 
 - (void)applyTermUIState:(TermUIState *)termUIState
 {
+  // The grid size belongs to the page that is up: an archived state (a restored tab) carries the
+  // size of the run it was saved in.
+  if (_isReady && termUIState != _termUIState) {
+    termUIState.rows = _termUIState.rows;
+    termUIState.cols = _termUIState.cols;
+  }
   self.termUIState = termUIState;
 
   NSArray<NSString *> *commands = [self _jsCommandsForTermUIState:termUIState];
@@ -384,19 +376,6 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
   [_webView evaluateJavaScript:js completionHandler:^(id result, NSError *error) {
     [self _syncTerminalState];
   }];
-
-  if (termUIState.layoutMode != [self currentLayoutMode]) {
-    [self _setLayoutMode:termUIState.layoutMode];
-  }
-  if (termUIState.layoutLocked && !self.layoutLocked) {
-    self.layoutLockedFrame = termUIState.layoutLockedFrame;
-    if (self.constraintManager) {
-      [self.constraintManager setLayoutLocked:YES withFrame:termUIState.layoutLockedFrame];
-    }
-    self.layoutLocked = YES;
-  } else if (!termUIState.layoutLocked && self.layoutLocked) {
-    [self _unlockLayout];
-  }
 }
 
 // Reads back terminal-side state after JS changes. Currently just bgColor,
@@ -417,11 +396,6 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
 - (void)setWidth:(NSInteger)count
 {
   [_webView evaluateJavaScript:term_setWidth(count) completionHandler:nil];
-}
-
-- (void)setFontSize:(NSNumber *)newSize
-{
-  [_webView evaluateJavaScript:term_setFontSize(newSize) completionHandler:nil];
 }
 
 - (void)cleanSelection
@@ -451,26 +425,16 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
 
 - (void)increaseFontSize
 {
-  if (_layoutLocked) {
-    return;
-  }
   [_webView evaluateJavaScript:term_increaseFontSize() completionHandler:nil];
 }
 
 - (void)decreaseFontSize
 {
-  if (_layoutLocked) {
-    return;
-  }
   [_webView evaluateJavaScript:term_decreaseFontSize() completionHandler:nil];
 }
 
 - (void)resetFontSize
 {
-  if (_layoutLocked) {
-    return;
-  }
-
   [_webView evaluateJavaScript:term_setFontSize([MoshroomDefaults selectedFontSize]) completionHandler:nil];
 }
 
@@ -487,6 +451,17 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
 }
 
 - (void)processKB:(NSString *)str {
+  // The local prompt's line editor lives in the page: input that arrives before the page is ready
+  // (a Quick Connect tap while a fresh launch is still loading WebKit) waits for it instead of vanishing.
+  if (!_isReady) {
+    if (!_pendingKB) {
+      _pendingKB = [NSMutableString string];
+    }
+    if (_pendingKB.length < 4096) {
+      [_pendingKB appendString:str ?: @""];
+    }
+    return;
+  }
   [self _evalJSScript: term_processKB(str)];
 }
 
@@ -600,6 +575,57 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
   });
 }
 
+// Runs `js` only once every byte already handed to the page has been interpreted (same patience
+// window as -moshroomSanitizeModes). The completion runs on main with the result, or nil when the
+// page never became idle.
+- (void)moshroomEvaluateAfterPendingOutput:(NSString *)js completion:(void (^)(id _Nullable result))completion
+{
+  [self _moshroomEvaluate:js afterPendingOutput:40 completion:completion];
+}
+
+- (void)_moshroomEvaluate:(NSString *)js afterPendingOutput:(int)attemptsLeft completion:(void (^)(id _Nullable result))completion
+{
+  __weak typeof(self) weakSelf = self;
+  dispatch_async(_jsQueue, ^{
+    typeof(self) sself = weakSelf;
+    if (!sself) {
+      dispatch_async(dispatch_get_main_queue(), ^{ completion(nil); });
+      return;
+    }
+    if (sself->_jsIsBusy || sself->_jsBuffer.length > 0 || !sself->_isReady) {
+      if (attemptsLeft <= 0) {
+        dispatch_async(dispatch_get_main_queue(), ^{ completion(nil); });
+        return;
+      }
+      dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(50 * NSEC_PER_MSEC)), sself->_jsQueue, ^{
+        [weakSelf _moshroomEvaluate:js afterPendingOutput:attemptsLeft - 1 completion:completion];
+      });
+      return;
+    }
+    sself->_jsIsBusy = YES;
+    dispatch_async(dispatch_get_main_queue(), ^{
+      typeof(self) mself = weakSelf;
+      if (!mself) {
+        completion(nil);
+        return;
+      }
+      [mself->_webView evaluateJavaScript:js completionHandler:^(id result, NSError *error) {
+        completion(error ? nil : result);
+        typeof(self) cself = weakSelf;
+        if (!cself) {
+          return;
+        }
+        dispatch_async(cself->_jsQueue, ^{
+          cself->_jsIsBusy = NO;
+          if (cself->_jsBuffer.length > 0) {
+            [cself write:@""];
+          }
+        });
+      }];
+    });
+  });
+}
+
 - (void)writeB64:(NSData *)data
 {
   dispatch_async(_jsQueue, ^{
@@ -660,7 +686,16 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
   } else if ([operation isEqualToString:@"alert"]) {
     [_device viewShowAlert:data[@"title"] andMessage:data[@"message"]];
   } else if ([operation isEqualToString:@"sendString"]) {
-    [_device viewSendString:data[@"string"]];
+    // The page tags what is not plain user input (see sendString in term.js).
+    NSString *string = data[@"string"];
+    id device = _device;
+    if ([data[@"auto"] boolValue] && [device respondsToSelector:@selector(viewSendReply:)]) {
+      [device viewSendReply:string];
+    } else if ([data[@"paste"] boolValue] && [device respondsToSelector:@selector(viewSendPastedString:)]) {
+      [device viewSendPastedString:string];
+    } else {
+      [_device viewSendString:string];
+    }
   } else if ([operation isEqualToString:@"line"]) {
     [_device viewSubmitLine:data[@"text"]];
   } else if ([operation isEqualToString:@"api"]) {
@@ -689,14 +724,14 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
 // A tapped/clicked terminal hyperlink (OSC 8 anchor or a URL in the rendered text) opens on the
 // DEVICE. One tap can reach here more than once — on the Mac a real DOM click on an OSC 8 anchor
 // fires alongside the native tap dispatch, and a double-click doubles both — so anything inside
-// a short window collapses into a single open. Links only ever open from a user tap (hterm calls
+// a short window collapses into a single open (per terminal: a link tapped in another tab or window
+// right after is a different tap). Links only ever open from a user tap (hterm calls
 // openUrl exclusively from click handlers), and only web/mail schemes qualify: a remote program
 // must not be able to poke tel:, facetime:, or app-custom schemes at the user.
 - (void)_openLink:(NSString *)urlString
 {
-  static NSTimeInterval lastOpen = 0;
   NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
-  if (now - lastOpen < 0.6) {
+  if (now - _lastLinkOpen < 0.6) {
     return;
   }
 
@@ -706,7 +741,7 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
     return;
   }
 
-  lastOpen = now;
+  _lastLinkOpen = now;
   [[UIApplication sharedApplication] openURL:url options:@{} completionHandler:nil];
 }
 
@@ -727,12 +762,39 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
     _gestureInteraction.indicatorStyle = UIScrollViewIndicatorStyleDefault;
   }
   
-  [_device viewWinSizeChanged:__winSizeFromJSON(data[@"size"])];
+  struct winsize size = __winSizeFromJSON(data[@"size"]);
+  _termUIState.rows = size.ws_row;
+  _termUIState.cols = size.ws_col;
+  [_device viewWinSizeChanged:size];
 
   BOOL recovered = _recoveringFromJettison;
   _recoveringFromJettison = NO;
 
+  // What the session wrote while the renderer was dead is still held. A session that is about to
+  // redraw the whole screen itself (a running mosh client) only wrote differences against the screen
+  // that was lost, plus replays of its last bell and clipboard copy: drop it, the redraw brings
+  // everything back. Decided BEFORE the page counts as ready, or the next write from that session
+  // would flush the stale output into the rebuilt page first.
+  id tc = self.termController;
+  BOOL repaintsItself = recovered
+    && [tc respondsToSelector:@selector(moshroomRecoveryRepaintsWholeScreen)]
+    && [tc moshroomRecoveryRepaintsWholeScreen];
+  if (repaintsItself) {
+    id device = _device;
+    if ([device respondsToSelector:@selector(moshroomQuietReplay)]) {
+      [device moshroomQuietReplay];
+    }
+    dispatch_sync(_jsQueue, ^{
+      [_jsBuffer setString:@""];
+    });
+  }
+
   _isReady = YES;
+  if (_pendingKB.length > 0) {
+    NSString *pending = [_pendingKB copy];
+    [_pendingKB setString:@""];
+    [self processKB:pending];
+  }
   [self setDirectCursor:_directCursor];
   [_device viewIsReady];
   [[NSNotificationCenter defaultCenter] postNotificationName:TermViewReadyNotificationKey object:self];
@@ -754,19 +816,8 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
     // one (font size / theme may have changed since), then let the controller nudge the session
     // into repainting the fresh, blank hterm.
     [self applyTermUIState:self.termUIState];
-    id tc = self.termController;
-    // What the session wrote while the renderer was dead is still held. A session that is about to
-    // redraw the whole screen itself (a running mosh client) only wrote differences against the
-    // screen that was lost, plus replays of its last bell and clipboard copy: drop it, the redraw
-    // brings everything back. Anything else gets its output flushed into the rebuilt hterm.
-    // (Dropped on the output queue BEFORE the redraw below is asked for, which queues behind it.)
-    BOOL repaintsItself = [tc respondsToSelector:@selector(moshroomRecoveryRepaintsWholeScreen)]
-      && [tc moshroomRecoveryRepaintsWholeScreen];
-    if (repaintsItself) {
-      dispatch_async(_jsQueue, ^{
-        [_jsBuffer setString:@""];
-      });
-    } else {
+    // Anything that does not redraw itself gets its held output flushed into the rebuilt hterm.
+    if (!repaintsItself) {
       [self write:@""];
     }
     if ([tc respondsToSelector:@selector(moshroomTermViewDidRecover)]) {
@@ -823,10 +874,6 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
   [self cleanSelection];
 }
 
-- (void)pasteString:(NSString *)str {
-  [self pasteString:str submit:NO];
-}
-
 // The paste goes through the page (hterm frames it as a bracketed paste when the program asked for
 // that), the Enter natively a beat later so it lands outside the paste's end marker and the program
 // does not read it as part of the same burst. The beat starts only once the text is OUT: the
@@ -836,12 +883,12 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
 // drawing output could outlast. An evaluation that fails (the page died under it) sends no Enter:
 // submitting text that never arrived is worse than not submitting. A page being rebuilt holds both.
 // Main thread (the composer).
-- (void)pasteString:(NSString *)str submit:(BOOL)submit {
-  [self _pasteString:str submit:submit then:nil];
+- (void)pasteString:(NSString *)str submit:(BOOL)submit completion:(void (^)(void))completion {
+  [self _pasteString:str submit:submit then:completion];
 }
 
 // `then` runs once this paste (and its Enter) has gone out, or straight away when there was nothing
-// to send. Not called for a paste that had to be held.
+// to send. A paste that has to be held keeps it until it is delivered.
 - (void)_pasteString:(NSString *)str submit:(BOOL)submit then:(void (^)(void))then {
   if (!str) {
     if (then) {
@@ -853,7 +900,7 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
     if (!_pendingPastes) {
       _pendingPastes = [[NSMutableArray alloc] init];
     }
-    [_pendingPastes addObject:@[str, @(submit)]];
+    [_pendingPastes addObject:@[str, @(submit), then ? [then copy] : [NSNull null]]];
     return;
   }
   __weak typeof(self) weakSelf = self;
@@ -867,7 +914,13 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
       return;
     }
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-      [weakSelf.device viewSendString:@"\r"];
+      // Part of the paste, so it is never held behind it (see TermDevice).
+      id device = weakSelf.device;
+      if ([device respondsToSelector:@selector(viewSendPastedString:)]) {
+        [device viewSendPastedString:@"\r"];
+      } else {
+        [device viewSendString:@"\r"];
+      }
       if (then) {
         then();
       }
@@ -904,8 +957,12 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
     return;
   }
   NSArray *paste = pastes[index];
+  void (^done)(void) = paste[2] == [NSNull null] ? nil : paste[2];
   __weak typeof(self) weakSelf = self;
   [self _pasteString:paste[0] submit:[paste[1] boolValue] then:^{
+    if (done) {
+      done();
+    }
     [weakSelf _deliverPastes:pastes from:index + 1];
   }];
 }
@@ -1001,70 +1058,10 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
   [self terminate];
   [_webView removeInteraction:_gestureInteraction];
   _gestureInteraction = nil;
-  [_layoutDebounceTimer invalidate];
-  _layoutDebounceTimer = nil;
 #if DEBUG
   [_debugProbeTimer invalidate];
   _debugProbeTimer = nil;
 #endif
-}
-
-- (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gestureRecognizer {
-  return YES;
-}
-
-- (NSInteger)rows {
-  return self.termUIState ? self.termUIState.rows : 0;
-}
-
-- (NSInteger)cols {
-  return self.termUIState ? self.termUIState.cols : 0;
-}
-
-// Public methods for layout state
--(MoshLayoutMode)currentLayoutMode {
-  if (self.termUIState) {
-    return self.termUIState.layoutMode;
-  }
-  return MoshLayoutModeDefault;
-}
-
-// Private methods
--(void)_setLayoutMode:(MoshLayoutMode)layoutMode {
-  if (self.termUIState) {
-    self.termUIState.layoutMode = layoutMode;
-  }
-  
-  // If layout is locked, unlock it when changing layout mode
-  if (self.termUIState.layoutLocked) {
-    [self _unlockLayout];
-  }
-  
-  // Trigger layout update
-  [self setNeedsLayout];
-  
-  // Update constraints with new layout mode
-  if (self.constraintManager) {
-    [self.constraintManager updateLayoutMode:layoutMode];
-  }
-}
-
--(void)_unlockLayout {
-  if (self.termUIState) {
-    self.termUIState.layoutLocked = false;
-    self.termUIState.layoutLockedFrame = CGRectZero;
-  }
-  
-  // Update local state
-  self.layoutLocked = false;
-  
-  // Update constraint manager
-  if (self.constraintManager) {
-    [self.constraintManager setLayoutLocked:NO withFrame:CGRectZero];
-  }
-  
-  // Trigger layout update
-  [self setNeedsLayout];
 }
 
 @end

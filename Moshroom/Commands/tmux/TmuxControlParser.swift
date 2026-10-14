@@ -86,9 +86,6 @@ final class TmuxControlParser {
   private var blockGuard: [UInt8]? = nil
   private var blockLines: [[UInt8]] = []
 
-  /// Bytes that are not a whole line yet.
-  var hasPartialLine: Bool { !pending.isEmpty }
-
   func feed<C: Collection>(_ bytes: C, emit: (TmuxEvent) -> Void) where C.Element == UInt8 {
     pending.append(contentsOf: bytes)
     var start = 0

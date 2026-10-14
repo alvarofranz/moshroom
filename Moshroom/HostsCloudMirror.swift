@@ -185,6 +185,29 @@ import MoshroomConfig
     reconcile()
   }
 
+  /// The switch itself flipped (Settings). Everything the mirror remembers about the last pass goes:
+  /// the markers and the known-ids lists describe the PREVIOUS sync period, and with them the first
+  /// pass after turning sync back on read every host or key removed in between as a fresh deletion
+  /// and tombstoned it on every device. Cleared, that pass is a pure union: nothing is inferred as
+  /// deleted here, and deletions other devices published still apply. The live watcher follows the
+  /// switch too (it used to start only on the next activation).
+  @objc static func syncSettingDidChange(enabled: Bool) {
+    queue.async {
+      // Behind any pass still running, which would otherwise write them back.
+      let d = UserDefaults.standard
+      for key in [hostsMarkerLocalKey, hostsMarkerCloudKey, keysMarkerLocalKey, keysMarkerCloudKey,
+                  hostsKnownIdsKey, keysKnownIdsKey] {
+        d.removeObject(forKey: key)
+      }
+    }
+    if enabled {
+      _startWatcher()
+      syncNow()
+    } else {
+      _stopWatcher()
+    }
+  }
+
   private static var isActive: Bool {
     MoshroomDefaults.isICloudSyncEnabled() && FileManager.default.ubiquityIdentityToken != nil
   }
@@ -237,7 +260,9 @@ import MoshroomConfig
     guard isActive else { return }
     guard let hostsCloudURL = MoshroomPaths.iCloudHostsLocationURL(),
           let keysCloudURL = MoshroomPaths.iCloudKeysLocationURL() else {
-      _setSummary("iCloud unavailable — check iCloud Drive is on for Moshroom")
+      // The structured status would keep showing the last good pass ("up to date") over this.
+      UserDefaults.standard.removeObject(forKey: lastStatusKey)
+      _setSummary("iCloud unavailable: check that iCloud Drive is on for Moshroom")
       return
     }
     _setSyncing(true)
@@ -634,7 +659,7 @@ import MoshroomConfig
     items.append(.init(label: "Snips", count: snips))
     _setStatus(SyncStatus(counts: items, state: state))
 
-    _setSummary(parts.joined(separator: " · ") + " — " + state)
+    _setSummary(parts.joined(separator: " · ") + " · " + state)
   }
 
   // MARK: - Encode / decode

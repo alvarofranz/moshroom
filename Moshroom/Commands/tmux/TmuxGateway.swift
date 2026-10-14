@@ -57,7 +57,7 @@ final class TmuxGateway {
   private var lineCounter = 0
   private(set) var isClosed = false
 
-  /// Bytes of tmux output parsed so far (diagnostics only).
+  /// Bytes received so far: any progress means the connection is answering (the heartbeat).
   private(set) var bytesIn = 0
 
   /// Dial `hostName` and exec `command`, which ends up running `tmux -C` with its stderr folded into
@@ -165,8 +165,6 @@ final class TmuxGateway {
     send([(command, completion)])
   }
 
-  var isAttachedChannel: Bool { stream != nil && !isClosed }
-
   /// Tear down. Safe to call from inside any callback: the SSH objects are released on the next turn of
   /// the run loop, never under the call that is running.
   func close(_ error: Error? = nil) {
@@ -197,12 +195,10 @@ final class TmuxGateway {
 
 enum TmuxError: Error, LocalizedError {
   case cancelled
-  case message(String)
 
   var errorDescription: String? {
     switch self {
     case .cancelled: return "Cancelled"
-    case .message(let text): return text
     }
   }
 }

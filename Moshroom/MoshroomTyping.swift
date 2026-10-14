@@ -16,9 +16,19 @@ enum MoshroomTypingMode: String, CaseIterable, Identifiable {
   }
   var detail: String {
     switch self {
-    case .composer: return "Write in a roomy editor, then send. Ideal for long prompts and attachments."
-    case .direct: return "Type straight into the terminal. Open the composer whenever you need more room."
-    case .automatic: return "Direct with a hardware keyboard; Composer with the on-screen keyboard."
+    case .composer: return "Write in a full-screen editor, then send with the paper plane or Ctrl+Return. Arrows, Esc and Ctrl keys still go straight to the terminal."
+    case .direct:
+      #if targetEnvironment(macCatalyst)
+      return "Type straight into the terminal, like any desktop terminal. Open the composer whenever you need more room."
+      #else
+      return "Type straight into the terminal. Without a keyboard attached, tap the terminal to bring up the on-screen keyboard."
+      #endif
+    case .automatic:
+      #if targetEnvironment(macCatalyst)
+      return "Direct with a keyboard, Composer with the on-screen keyboard. On a Mac this is always Direct."
+      #else
+      return "Direct when a keyboard is connected, Composer when you type on screen."
+      #endif
     }
   }
 }
@@ -43,6 +53,21 @@ final class MoshroomTyping: ObservableObject {
         self?.updateHardware(Self.connectedKeyboard)
       })
     }
+    #if !targetEnvironment(macCatalyst)
+    // A keystroke can mark a keyboard GameController never reported, and no disconnect will ever
+    // clear that. A docked, full-size software keyboard is proof that no keyboard is attached.
+    observers.append(nc.addObserver(forName: UIResponder.keyboardWillChangeFrameNotification, object: nil, queue: .main) { [weak self] n in
+      guard let self, self.hardwareKeyboard, GCKeyboard.coalesced == nil,
+            let frame = (n.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?.cgRectValue,
+            let screen = (n.object as? UIScreen)
+              ?? UIApplication.shared.connectedScenes.compactMap({ ($0 as? UIWindowScene)?.screen }).first else { return }
+      let bounds = screen.bounds
+      // The shortcuts bar shown with a hardware keyboard is full width too, but short.
+      if frame.height >= 150, frame.width >= bounds.width * 0.8, frame.maxY >= bounds.maxY - 1 {
+        self.updateHardware(false)
+      }
+    })
+    #endif
     observers.append(nc.addObserver(forName: UserDefaults.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
       guard let self, self.mode != Self.savedMode else { return }
       self.mode = Self.savedMode
