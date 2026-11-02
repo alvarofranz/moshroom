@@ -268,7 +268,11 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
                                            name: UIWindow.didBecomeKeyNotification, object: nil)
   }
 
-  @objc private func _appDidBecomeActive() { restoreFocusIfNeeded("app active") }
+  @objc private func _appDidBecomeActive() {
+    // Only the composer in the key window: on the Mac each window may hold one.
+    guard view.window?.isKeyWindow == true else { return }
+    restoreFocusIfNeeded("app active")
+  }
 
   @objc private func _windowDidBecomeKey(_ n: Notification) {
     guard let window = n.object as? UIWindow, window === view.window else { return }
@@ -506,12 +510,10 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
   // the message carrying it is sent (a shared screenshot is a one-shot). Works on any tab.
   @objc private func openTray() {
     MoshLog.log("tray", "open: \(MoshroomShareTray.count()) item(s)")
+    // Focus comes back through MoshkitorNavigationController.dismiss, like every other sheet.
     let tray = MoshtrayController(
       onPick: { [weak self] url in self?._insertFromTray(url) },
-      onFinished: { [weak self] in
-        self?._refreshTrayButton()
-        self?.restoreFocusIfNeeded("tray closed")
-      })
+      onFinished: { [weak self] in self?._refreshTrayButton() })
     // Full-screen + instant, matching every other Moshroom surface (Moshxplore/Moshtabs/launcher):
     // .overFullScreen keeps the terminal in the window, and a stable full width sidesteps the sheet's
     // animate-to-final-width cell-sizing race.

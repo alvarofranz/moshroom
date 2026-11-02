@@ -528,6 +528,7 @@ extension WKWebViewGesturesInteraction: UIScrollViewDelegate {
   func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
     selection?.scrollActivity(false)
     if scrollView == _termScrollView {
+      _wkWebView?.evaluateJavaScript("term_settleScrollGesture();", completionHandler: nil)
       _termScrollView.recenterIfNeeded(force: true)
     }
     if _pendingScrollModeApply {
@@ -542,7 +543,8 @@ extension WKWebViewGesturesInteraction: UIScrollViewDelegate {
     if scrollView == _termScrollView {
       // The finger (or the trackpad gesture) is off: what follows is momentum, which the page-key
       // rung paces differently from the drag itself (see _moshroomPageAlternateScreen in term.js).
-      _wkWebView?.evaluateJavaScript("term_endScrollGesture();", completionHandler: nil)
+      _wkWebView?.evaluateJavaScript(decelerate ? "term_endScrollGesture();" : "term_settleScrollGesture();",
+                                     completionHandler: nil)
       if !decelerate {
         _termScrollView.recenterIfNeeded(force: true)
       }

@@ -282,6 +282,13 @@ final class MoshifyEngine: NSObject, AVAudioPlayerDelegate {
 
   func play(at index: Int) {
     guard ownerKey != nil, tracks.indices.contains(index) else { return }
+    // Tapping the row of the track that is paused (a resumed one included) continues it where it
+    // is, like the Play key: the same gesture must not restart a cached track at 0:00 while an
+    // uncached one picks up at its remembered second.
+    if case .paused = state, tracks[index] == currentTrack {
+      togglePlayPause()
+      return
+    }
     intendsToPlay = true
     interrupted = false   // the user pressed play: their intent outranks a stale interruption
     consecutiveFailures = 0
@@ -308,7 +315,16 @@ final class MoshifyEngine: NSObject, AVAudioPlayerDelegate {
         return
       }
       activateAudioSession()
-      if player?.play() == true { state = .playing(t) }
+      if player?.play() == true {
+        state = .playing(t)
+        // A resumed track plays from its remembered second without ever going through
+        // startPlayback: the window must be fetched from here, or the next track would only be
+        // downloaded in the gap after this one ends.
+        if !hasPlayed {
+          hasPlayed = true
+          rebuildUpcoming()
+        }
+      }
       updateNowPlaying()
     case .ready, .idle, .error:
       if tracks.isEmpty {
@@ -405,7 +421,11 @@ final class MoshifyEngine: NSObject, AVAudioPlayerDelegate {
     guard let host = Moshify.configuredHost else { return }
     state = .downloading(track, 0)
     // The track on its way is where the music is now; a tab closed during the fetch resumes on it.
-    if pendingSeek?.track != track { noteResume(track: track, position: 0) }
+    // A remembered position for another track is void from here (elapsed/duration must not show it).
+    if pendingSeek?.track != track {
+      pendingSeek = nil
+      noteResume(track: track, position: 0)
+    }
     beginGapTaskIfNeeded()
     session.cancelForFetch(of: track.remotePath)
     let destination = cache.destinationURL(for: track, host: host)
@@ -702,13 +722,26 @@ final class MoshifyEngine: NSObject, AVAudioPlayerDelegate {
   /// background, so the next tab opened on the library (after this one closed, or after a relaunch)
   /// comes back to the same place.
   private func noteResume(track explicit: MoshifyTrack? = nil, position explicitPosition: TimeInterval? = nil) {
+    // While a track is being fetched to play, IT is where the music is, not the one that just
+    // ended: a tab closed mid-fetch must come back on the new one.
+    var fetching: MoshifyTrack?
+    if case .downloading(let t, _) = state { fetching = t }
     guard let host = Moshify.configuredHost, let folder = Moshify.configuredFolder,
-          let track = explicit ?? currentTrack else { return }
+          let track = explicit ?? fetching ?? currentTrack else { return }
     let position: TimeInterval
     let duration: TimeInterval
     if let explicitPosition {
       position = explicitPosition
       duration = cache.duration(of: track) ?? 0
+    } else if fetching != nil, explicit == nil {
+      // Mid-fetch: the remembered seek if this is the resumed track, else its start.
+      if let seek = pendingSeek, seek.track == track {
+        position = seek.position
+        duration = seek.duration
+      } else {
+        position = 0
+        duration = cache.duration(of: track) ?? 0
+      }
     } else if let p = player {
       position = p.currentTime
       duration = p.duration

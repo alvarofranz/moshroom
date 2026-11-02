@@ -1763,9 +1763,7 @@ function term_reportWheelEvent(name, x, y, deltaX, deltaY, rows, policy) {
     return;
   }
   // 'page' | 'none' (see TermController.moshroomAlternateScreenScrollPolicy).
-  if (policy === true) {
-    policy = 'page';
-  } else if (policy !== 'page') {
+  if (policy !== 'page') {
     policy = 'none';
   }
   var count = parseInt(rows, 10);
@@ -1861,15 +1859,27 @@ var _moshroomPagingFirstRows = 3;
 // false on the Mac.
 var _moshroomGestureDirect = false;
 var _moshroomArrowsPerIndirectRow = 2;
+// The finger (or trackpad gesture) has lifted and what arrives now is momentum. Kept outside the
+// paging record: a flick may spend its drag on local history (rung 2) and only reach the page rung
+// during momentum, which must still be capped to one page.
+var _moshroomGestureMomentum = false;
 function term_beginScrollGesture(direct) {
   _moshroomPaging = null;
   _moshroomGestureDirect = direct === true;
+  _moshroomGestureMomentum = false;
 }
 function term_endScrollGesture() {
+  _moshroomGestureMomentum = true;
   if (_moshroomPaging) {
     _moshroomPaging.momentum = true;
     _moshroomPaging.momentumPages = 0;
   }
+}
+// The gesture is over, momentum included: a wheel tick arriving with no drag of its own is
+// indirect again, whatever the last gesture was.
+function term_settleScrollGesture() {
+  _moshroomGestureDirect = false;
+  _moshroomGestureMomentum = false;
 }
 
 function _moshroomPageAlternateScreen(up, count, allowed) {
@@ -1881,7 +1891,7 @@ function _moshroomPageAlternateScreen(up, count, allowed) {
   var fresh = !_moshroomPaging || _moshroomPaging.up !== up ||
       now - _moshroomPaging.at > _moshroomPagingIdleMs;
   if (fresh) {
-    _moshroomPaging = {up: up, rows: 0, at: now, momentum: false, momentumPages: 0};
+    _moshroomPaging = {up: up, rows: 0, at: now, momentum: _moshroomGestureMomentum, momentumPages: 0};
   }
   _moshroomPaging.rows += count;
   _moshroomPaging.at = now;

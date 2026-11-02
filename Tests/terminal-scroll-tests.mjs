@@ -85,8 +85,8 @@ try {
   check(await page.evaluate(() => t.scrollPort_.getTopRowIndex()) === after, 'Output preserves reading position');
   // A full-screen program can own a transcript without requesting mouse reporting. This is the
   // reported failure: no local history, no mouse listener, and the old implementation discarded Up.
-  // Pages are sent by DISTANCE (half a viewport for the first, a whole viewport for each further
-  // one): the first row used to page at once, and a phone flick skipped whole screens.
+  // Pages are sent by DISTANCE (three rows for the first, a whole viewport for each further one):
+  // the first row used to page at once, and a phone flick skipped whole screens.
   await start();
   const paging = await page.evaluate(() => {
     term_write('\x1b[?1049h');
@@ -114,6 +114,12 @@ try {
     // The finger lifts: momentum may add ONE page, however far it carries.
     sent = []; term_beginScrollGesture(); rows(first, -24, true); term_endScrollGesture(); rows(page * 3, -24, true);
     const momentum = sent.slice();
+    // A flick whose drag never reached the page rung (local history took it) is still capped once
+    // momentum gets there; and after the gesture settles a bare wheel tick is indirect again.
+    sent = []; term_beginScrollGesture(true); term_endScrollGesture(); rows(page * 3, -24, true);
+    const momentumOnly = sent.slice();
+    term_settleScrollGesture();
+    const settledDirect = _moshroomGestureDirect;
     sent = []; term_beginScrollGesture(); rows(page, -24, false); rows(page, 24, false);
     const mosh = sent.slice();
     term_write('\x1b[?1049l');
@@ -144,7 +150,7 @@ try {
     term_write('\x1b[?1049h');
     sent = []; term_beginScrollGesture(); rows(_moshroomPagingFirstRows, -24, true);
     const afterSanitize = sent.slice();
-    return {shortSwipe, up, oneViewport, twoViewports, reversedShort, reversed, nextGesture, momentum, mosh, shell, mouse,
+    return {shortSwipe, up, oneViewport, twoViewports, reversedShort, reversed, nextGesture, momentum, momentumOnly, settledDirect, mosh, shell, mouse,
             altScroll, altScrollIndirect, altScrollSS3, altScrollMosh, altScrollShell, afterSanitize};
   });
   check(paging.shortSwipe.length === 0, 'A wobble of a row or two sends no page');
@@ -155,6 +161,8 @@ try {
   check(paging.reversed.length === 1 && paging.reversed[0] === '\x1b[6~', 'Three rows the other way page down');
   check(paging.nextGesture.length === 0, 'A new drag starts over');
   check(paging.momentum.length === 2, 'Momentum after the finger lifts adds at most one page');
+  check(paging.momentumOnly.length === 1, 'Paging first reached during momentum is capped to one page');
+  check(paging.settledDirect === false, 'A settled gesture leaves the wheel indirect');
   check(paging.mosh.length === 0, 'Bare mosh alternate screen receives no synthetic keys in either direction');
   check(paging.shell.length === 0, 'Normal shell receives no synthetic keys in either direction');
   check(paging.mouse.length === 3 && paging.mouse.every(s => s.startsWith('\x1b[<64;')), 'Mouse-capable TUI keeps wheel reports, not page keys');
@@ -175,7 +183,7 @@ try {
       sent = []; term_beginScrollGesture();
       const page = Math.max(6, t.scrollPort_.visibleRowCount);
       const first = _moshroomPagingFirstRows;
-      const step = () => { clock += 16; term_reportWheelEvent('wheel', 100, 100, 0, -24, 1, true); };
+      const step = () => { clock += 16; term_reportWheelEvent('wheel', 100, 100, 0, -24, 1, 'page'); };
       for (let i = 0; i < first - 1; i++) step();
       const beforeThreshold = sent.slice(); step();
       const atThreshold = sent.slice();

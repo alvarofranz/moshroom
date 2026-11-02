@@ -1162,6 +1162,20 @@ extension SpaceController: UIStateRestorable {
   @objc static func onDidDiscardSceneSessions(_ sessions: Set<UISceneSession>) {
     let registry = SessionRegistry.shared
     let discarded = Set(sessions.map(\.persistentIdentifier))
+    // The last window going: the app is quitting (Catalyst reports the discard of its only scene
+    // BEFORE it terminates, in the same process) or the user closed the only window and will reopen
+    // one from the Dock. Either way the sessions must stay parked for the next window. Treating it as
+    // "a window closed, drop its tabs" deleted every tab's session and archive on every Cmd+Q
+    // (measured 2026-11-02: nine archives removed, then the park found nothing to park), so a tmux
+    // or mosh tab came back as a fresh shell after each relaunch.
+    let anotherWindowRemains = UIApplication.shared.connectedScenes.contains { scene in
+      scene is UIWindowScene && !discarded.contains(scene.session.persistentIdentifier)
+    }
+    guard anotherWindowRemains else {
+      for id in discarded { _keysBySession[id] = nil }
+      MoshLog.log("tabs", "scene discard with no other window: sessions kept")
+      return
+    }
     var held = Set<UUID>()
     for (id, keys) in _keysBySession where !discarded.contains(id) {
       held.formUnion(keys)
