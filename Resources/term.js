@@ -1503,18 +1503,20 @@ function _setTermCoordinates(event, x, y) {
 //      screen, and a full-screen program that SCROLLS (a pager walking down a file) banks its lines
 //      into whichever one it is on, so that history is real; it was simply unreachable, because the
 //      gesture was hard-wired to wheel reports nothing was listening for.
-//   3. a remote alternate screen -> one Up/Down arrow per row, both directions, what Terminal.app,
-//      iTerm2 and kitty send for the wheel there. Native decides where this is safe (its
-//      moshroomAlternateScreenScrollPolicy): always in a tmux control-mode tab, whose pane IS the
-//      program, and over plain SSH only once the program asked for alternate scroll (DECSET 1007,
-//      what Codex sets at start-up): the alternate screen over plain SSH is often a `tmux attach`
-//      holding a shell prompt, and arrows there recall history on every swipe.
-//   4. a remote alternate screen over plain SSH without 1007 -> Page Up / Page Down: a page after
-//      three rows of travel, then one more per VIEWPORT of travel (momentum adds at most one).
-//   Mosh, a local shell and anything unknown receive NO synthetic keys: mosh itself uses the
-//   alternate screen even at a shell prompt.
+//   3. a remote alternate screen whose program asked for ALTERNATE SCROLL (DECSET 1007, what Codex
+//      sets at start-up) -> one Up/Down arrow per row, both directions, what Terminal.app, iTerm2
+//      and kitty send for the wheel then. The program asked for it, so the arrows mean what it
+//      wants them to mean (Codex: browse earlier prompts in its composer).
+//   4. a remote alternate screen without 1007 -> Page Up / Page Down: a page after three rows of
+//      travel, then one more per VIEWPORT of travel (momentum adds at most one).
+//   Rungs 3 and 4 run only where native permits them (its moshroomAlternateScreenScrollPolicy):
+//   SSH and tmux control mode. Mosh, a local shell and anything unknown receive NO synthetic keys:
+//   mosh itself uses the alternate screen even at a shell prompt.
 //
-// Mouse-capable programs keep ordinary wheel events and local history keeps pixel-smooth scrolling.
+// Never synthesize Up/Down arrows on our own: a program that did not ask reads them as ITS keys
+// (a shell recalls history, Codex browses prompts into its input box). Page keys let full-screen
+// pagers and transcript views navigate their own content. Mouse-capable programs keep ordinary wheel
+// events and local history keeps pixel-smooth scrolling.
 // How far above the viewport to look for text before offering a local scroll. A window, not the row
 // about to be revealed: blank lines inside real history must not stall the scroll, while the run of
 // blank rows that entering the alternate screen leaves behind must not be walked into. Bounded
@@ -1760,10 +1762,10 @@ function term_reportWheelEvent(name, x, y, deltaX, deltaY, rows, policy) {
   if (!t || !t.prompt || !t.scrollPort_ || !t.vt) {
     return;
   }
-  // 'arrows' | 'page' | 'none' (see TermController.moshroomAlternateScreenScrollPolicy).
+  // 'page' | 'none' (see TermController.moshroomAlternateScreenScrollPolicy).
   if (policy === true) {
     policy = 'page';
-  } else if (policy !== 'arrows' && policy !== 'page') {
+  } else if (policy !== 'page') {
     policy = 'none';
   }
   var count = parseInt(rows, 10);
@@ -1795,16 +1797,12 @@ function term_reportWheelEvent(name, x, y, deltaX, deltaY, rows, policy) {
   _moshroomPageAlternateScreen(up, count, policy === 'page');
 }
 
-// Rung 3: arrows. Always under the 'arrows' policy; under 'page' once the program asked for
-// alternate scroll (DECSET 1007; hterm's VT keeps it in scrollWheelArrowKeys_, which our wheel path
-// never consulted). One arrow per row, encoded the way the program reads arrows (SS3 under
-// application cursor keys, CSI otherwise), in ONE write. This is how a slow trackpad scroll moves a
-// Codex transcript a line at a time; page keys cannot.
+// Rung 3: arrows, only once the program asked for alternate scroll (DECSET 1007; hterm's VT keeps it
+// in scrollWheelArrowKeys_, which our wheel path never consulted). One arrow per row of finger travel
+// (two per row from a trackpad or wheel, see below), encoded the way the program reads arrows (SS3
+// under application cursor keys, CSI otherwise), in ONE write.
 function _moshroomAlternateScrollKeys(up, count, policy) {
-  if (t.isPrimaryScreen()) {
-    return false;
-  }
-  if (policy !== 'arrows' && !(policy === 'page' && t.scrollWheelArrowKeys_)) {
+  if (policy !== 'page' || t.isPrimaryScreen() || !t.scrollWheelArrowKeys_) {
     return false;
   }
   var key = (t.keyboard && t.keyboard.applicationCursor ? '\x1bO' : '\x1b[') + (up ? 'A' : 'B');

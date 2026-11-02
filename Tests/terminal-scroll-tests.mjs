@@ -92,9 +92,9 @@ try {
     term_write('\x1b[?1049h');
     const page = Math.max(6, t.scrollPort_.visibleRowCount);
     const half = Math.max(3, Math.floor(page / 2));
-    // true = the plain-SSH 'page' policy, false = mosh ('none'); 'arrows' = a tmux control-mode tab.
+    // true = the SSH / tmux 'page' policy, false = mosh ('none').
     const run = (dy, allowed, count = 1) => term_reportWheelEvent('wheel', 100, 100, 0, dy, count,
-      allowed === true ? 'page' : allowed === false ? 'none' : allowed);
+      allowed === true ? 'page' : 'none');
     const rows = (n, dy, allowed) => { for (let i = 0; i < n; i++) run(dy, allowed); };
     const first = _moshroomPagingFirstRows;
     sent = []; term_beginScrollGesture(); rows(first - 1, -24, true);
@@ -144,18 +144,8 @@ try {
     term_write('\x1b[?1049h');
     sent = []; term_beginScrollGesture(); rows(_moshroomPagingFirstRows, -24, true);
     const afterSanitize = sent.slice();
-    // A tmux control-mode tab: arrows in any alternate screen, 1007 or not (tmux cannot replay the
-    // mode a running program set before the tab attached); the primary screen still gets nothing.
-    sent = []; term_beginScrollGesture(true); run(-48, 'arrows', 2); run(24, 'arrows', 1);
-    const tmuxArrows = sent.slice();
-    term_write('\x1b[?1003h\x1b[?1006h');
-    sent = []; term_beginScrollGesture(); run(-24, 'arrows', 1);
-    const tmuxMouse = sent.slice();
-    term_write('\x1b[?1003l\x1b[?1006l\x1b[?1049l');
-    sent = []; term_beginScrollGesture(); rows(page, -24, 'arrows'); rows(page, 24, 'arrows');
-    const tmuxShell = sent.slice();
     return {shortSwipe, up, oneViewport, twoViewports, reversedShort, reversed, nextGesture, momentum, mosh, shell, mouse,
-            altScroll, altScrollIndirect, altScrollSS3, altScrollMosh, altScrollShell, afterSanitize, tmuxArrows, tmuxMouse, tmuxShell};
+            altScroll, altScrollIndirect, altScrollSS3, altScrollMosh, altScrollShell, afterSanitize};
   });
   check(paging.shortSwipe.length === 0, 'A wobble of a row or two sends no page');
   check(JSON.stringify(paging.up) === JSON.stringify(['\x1b[5~']), 'Three rows of upward travel send one Page Up');
@@ -174,9 +164,6 @@ try {
   check(paging.altScrollMosh.length === 0, 'Alternate scroll never sends arrows on an unpermitted transport');
   check(paging.altScrollShell.length === 0, 'Alternate scroll never sends arrows on the primary screen');
   check(JSON.stringify(paging.afterSanitize) === JSON.stringify(['\x1b[5~']), 'Sanitize clears alternate scroll, paging returns');
-  check(JSON.stringify(paging.tmuxArrows) === JSON.stringify(['\x1b[A\x1b[A', '\x1b[B']), 'A tmux control-mode tab sends arrows in any alternate screen');
-  check(paging.tmuxMouse.length === 1 && paging.tmuxMouse[0].startsWith('\x1b[<64;'), 'Mouse reporting still outranks arrows in a tmux tab');
-  check(paging.tmuxShell.length === 0, 'A tmux tab sends no synthetic keys on the primary screen');
   // Continuous motion and momentum share the same distance budget, including application-cursor mode.
   await start();
   const sustained = await page.evaluate(() => {

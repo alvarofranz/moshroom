@@ -618,20 +618,17 @@ extension TermController: SuspendableSession {
 
   /// What a swipe may become in a remote alternate screen that neither reports the mouse nor has
   /// local history (the last rungs of the ladder in term.js):
-  /// - "arrows" (tmux control mode): one Up/Down arrow per row, what Terminal.app and iTerm2 send by
-  ///   default there. The pane IS the program (a prompt in an alternate screen would need a nested
-  ///   multiplexer), and tmux cannot tell a re-attaching tab that the program asked for alternate
-  ///   scroll (DECSET 1007) when it started, so waiting for the mode would leave a running Codex
-  ///   pageable only.
-  /// - "page" (plain SSH): Page Up / Page Down, or arrows once the program asks for 1007 live. The
-  ///   alternate screen there is often a `tmux attach` holding a shell prompt, where arrows recall
-  ///   history on every swipe.
+  /// - "page" (SSH and tmux control mode): one Up/Down arrow per row while the program asks for
+  ///   alternate scroll (DECSET 1007), Page Up / Page Down otherwise. Never arrows on our own: a
+  ///   full-screen program that did not ask reads them as ITS keys. Measured live in Codex with
+  ///   tmux's mouse off: Up/Down in its composer browse earlier prompts into the input box, while
+  ///   PageUp/PageDown page the transcript; line-wise transcript scrolling there exists only through
+  ///   mouse reports, which Codex requests only when tmux reports `mouse on`.
   /// - "none" (mosh, a local shell, anything unknown): no synthetic keys at all. Mosh uses an
   ///   alternate screen even for a shell.
   var moshroomAlternateScreenScrollPolicy: String {
     switch (_session as? MCPSession)?.sessionParams?.childSessionType {
-    case "tmux": return "arrows"
-    case "ssh": return "page"
+    case "ssh", "tmux": return "page"
     default: return "none"
     }
   }
