@@ -125,10 +125,13 @@ try {
     // Alternate scroll (DECSET 1007, what Codex sets): the wheel becomes arrow keys, one per row,
     // both directions, encoded per DECCKM. Only on a permitted transport, only off the primary screen.
     term_write('\x1b[?1003l\x1b[?1006l\x1b[?1007h');
-    sent = []; term_beginScrollGesture(); run(-72, true, 3); run(48, true, 2);
+    sent = []; term_beginScrollGesture(true); run(-72, true, 3); run(48, true, 2);
     const altScroll = sent.slice();
+    // A trackpad or wheel (indirect) moves two lines per row of travel, a finger one.
+    sent = []; term_beginScrollGesture(false); run(-72, true, 3);
+    const altScrollIndirect = sent.slice();
     term_write('\x1b[?1h');
-    sent = []; term_beginScrollGesture(); run(-24, true, 1);
+    sent = []; term_beginScrollGesture(true); run(-24, true, 1);
     const altScrollSS3 = sent.slice();
     term_write('\x1b[?1l');
     sent = []; term_beginScrollGesture(); rows(page, -24, false);
@@ -143,7 +146,7 @@ try {
     const afterSanitize = sent.slice();
     // A tmux control-mode tab: arrows in any alternate screen, 1007 or not (tmux cannot replay the
     // mode a running program set before the tab attached); the primary screen still gets nothing.
-    sent = []; term_beginScrollGesture(); run(-48, 'arrows', 2); run(24, 'arrows', 1);
+    sent = []; term_beginScrollGesture(true); run(-48, 'arrows', 2); run(24, 'arrows', 1);
     const tmuxArrows = sent.slice();
     term_write('\x1b[?1003h\x1b[?1006h');
     sent = []; term_beginScrollGesture(); run(-24, 'arrows', 1);
@@ -152,7 +155,7 @@ try {
     sent = []; term_beginScrollGesture(); rows(page, -24, 'arrows'); rows(page, 24, 'arrows');
     const tmuxShell = sent.slice();
     return {shortSwipe, up, oneViewport, twoViewports, reversedShort, reversed, nextGesture, momentum, mosh, shell, mouse,
-            altScroll, altScrollSS3, altScrollMosh, altScrollShell, afterSanitize, tmuxArrows, tmuxMouse, tmuxShell};
+            altScroll, altScrollIndirect, altScrollSS3, altScrollMosh, altScrollShell, afterSanitize, tmuxArrows, tmuxMouse, tmuxShell};
   });
   check(paging.shortSwipe.length === 0, 'A wobble of a row or two sends no page');
   check(JSON.stringify(paging.up) === JSON.stringify(['\x1b[5~']), 'Three rows of upward travel send one Page Up');
@@ -165,7 +168,8 @@ try {
   check(paging.mosh.length === 0, 'Bare mosh alternate screen receives no synthetic keys in either direction');
   check(paging.shell.length === 0, 'Normal shell receives no synthetic keys in either direction');
   check(paging.mouse.length === 3 && paging.mouse.every(s => s.startsWith('\x1b[<64;')), 'Mouse-capable TUI keeps wheel reports, not page keys');
-  check(JSON.stringify(paging.altScroll) === JSON.stringify(['\x1b[A\x1b[A\x1b[A', '\x1b[B\x1b[B']), 'Alternate scroll sends one arrow per row, both directions');
+  check(JSON.stringify(paging.altScroll) === JSON.stringify(['\x1b[A\x1b[A\x1b[A', '\x1b[B\x1b[B']), 'Alternate scroll sends one arrow per row of finger travel, both directions');
+  check(JSON.stringify(paging.altScrollIndirect) === JSON.stringify(['\x1b[A'.repeat(6)]), 'A trackpad or wheel sends two arrows per row of travel');
   check(JSON.stringify(paging.altScrollSS3) === JSON.stringify(['\x1bOA']), 'Alternate scroll arrows follow application cursor mode');
   check(paging.altScrollMosh.length === 0, 'Alternate scroll never sends arrows on an unpermitted transport');
   check(paging.altScrollShell.length === 0, 'Alternate scroll never sends arrows on the primary screen');

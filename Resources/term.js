@@ -1808,8 +1808,9 @@ function _moshroomAlternateScrollKeys(up, count, policy) {
     return false;
   }
   var key = (t.keyboard && t.keyboard.applicationCursor ? '\x1bO' : '\x1b[') + (up ? 'A' : 'B');
+  var n = count * (_moshroomGestureDirect ? 1 : _moshroomArrowsPerIndirectRow);
   var out = '';
-  for (var i = 0; i < count; i++) {
+  for (var i = 0; i < n; i++) {
     out += key;
   }
   t.io.sendString(out);
@@ -1855,8 +1856,16 @@ function _moshroomScrollAltLocally(up, count) {
 var _moshroomPaging = null;
 var _moshroomPagingIdleMs = 1000;
 var _moshroomPagingFirstRows = 3;
-function term_beginScrollGesture() {
+// Whether the current gesture is a finger on the glass (direct manipulation: the arrow rung moves one
+// line per row of travel, the content follows the finger) or a trackpad / wheel (indirect: twice that,
+// which is what Terminal.app and iTerm2 send, since macOS counts a scroll "line" as 10 px while a text
+// row is about twice that). Native says which at drag start; a wheel with no drag keeps the last value,
+// false on the Mac.
+var _moshroomGestureDirect = false;
+var _moshroomArrowsPerIndirectRow = 2;
+function term_beginScrollGesture(direct) {
   _moshroomPaging = null;
+  _moshroomGestureDirect = direct === true;
 }
 function term_endScrollGesture() {
   if (_moshroomPaging) {

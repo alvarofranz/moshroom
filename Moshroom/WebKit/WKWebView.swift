@@ -512,7 +512,10 @@ extension WKWebViewGesturesInteraction: UIScrollViewDelegate {
   func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
     selection?.scrollActivity(true)
     if scrollView == _termScrollView {
-      _wkWebView?.evaluateJavaScript("term_beginScrollGesture();", completionHandler: nil)
+      // A finger on the glass is DIRECT manipulation (the content follows it 1:1 in the arrow rung);
+      // a trackpad or wheel is indirect and gets the desktop terminals' speed (see term.js).
+      let direct = _termScrollView.panGestureRecognizer.numberOfTouches > 0
+      _wkWebView?.evaluateJavaScript("term_beginScrollGesture(\(direct));", completionHandler: nil)
       if _termScrollView.panGestureRecognizer.numberOfTouches > 0 {
         _scrollPoint = _termScrollView.panGestureRecognizer.location(in: view)
       } else {
