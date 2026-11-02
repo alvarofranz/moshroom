@@ -616,11 +616,24 @@ extension TermController: SuspendableSession {
     (_session as? MCPSession)?.sessionParams?.childSessionType == "tmux"
   }
 
-  /// In SSH and tmux control mode, an alternate screen belongs to the remote program. Mosh uses
-  /// an alternate screen even for a shell, so it must never opt into wheel-to-page-key translation.
-  var moshroomCanPageAlternateScreen: Bool {
-    let type = (_session as? MCPSession)?.sessionParams?.childSessionType
-    return type == "ssh" || type == "tmux"
+  /// What a swipe may become in a remote alternate screen that neither reports the mouse nor has
+  /// local history (the last rungs of the ladder in term.js):
+  /// - "arrows" (tmux control mode): one Up/Down arrow per row, what Terminal.app and iTerm2 send by
+  ///   default there. The pane IS the program (a prompt in an alternate screen would need a nested
+  ///   multiplexer), and tmux cannot tell a re-attaching tab that the program asked for alternate
+  ///   scroll (DECSET 1007) when it started, so waiting for the mode would leave a running Codex
+  ///   pageable only.
+  /// - "page" (plain SSH): Page Up / Page Down, or arrows once the program asks for 1007 live. The
+  ///   alternate screen there is often a `tmux attach` holding a shell prompt, where arrows recall
+  ///   history on every swipe.
+  /// - "none" (mosh, a local shell, anything unknown): no synthetic keys at all. Mosh uses an
+  ///   alternate screen even for a shell.
+  var moshroomAlternateScreenScrollPolicy: String {
+    switch (_session as? MCPSession)?.sessionParams?.childSessionType {
+    case "tmux": return "arrows"
+    case "ssh": return "page"
+    default: return "none"
+    }
   }
 
   /// Reconnect this tab's mosh session in place: what closing the tab and connecting again from Quick

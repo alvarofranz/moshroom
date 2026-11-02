@@ -118,6 +118,7 @@ public typealias MoshSessionParams = (any NSSecureCoding & MoshSessionParamsSnap
     var lastHistorySize: Int = 0
     var bracketedPaste = false
     var mouseAnyMotion = false
+    var alternateScroll = false
     var everAttached = false
     var viewHoldsSession = false
   }
@@ -150,6 +151,8 @@ public typealias MoshSessionParams = (any NSSecureCoding & MoshSessionParamsSnap
   /// Modes tmux has no format for, followed in the pane's output (replayed by a full refill).
   @objc var bracketedPaste: Bool { get { _get(\.bracketedPaste) } set { _set(\.bracketedPaste, newValue) } }
   @objc var mouseAnyMotion: Bool { get { _get(\.mouseAnyMotion) } set { _set(\.mouseAnyMotion, newValue) } }
+  /// Alternate scroll (DECSET 1007): the full-screen program wants the wheel as arrow keys.
+  @objc var alternateScroll: Bool { get { _get(\.alternateScroll) } set { _set(\.alternateScroll, newValue) } }
   /// The session was created (or attached) once: from then on only an exact attach is used, so a
   /// session that ended is never silently replaced by a new one.
   @objc var everAttached: Bool { get { _get(\.everAttached) } set { _set(\.everAttached, newValue) } }
@@ -161,7 +164,7 @@ public typealias MoshSessionParams = (any NSSecureCoding & MoshSessionParamsSnap
 
   private enum Key: CodingKey {
     case hostAlias, sessionName, projectId, sessionCreated, paneId, version, lastCols, lastHistorySize
-    case bracketedPaste, mouseAnyMotion, everAttached
+    case bracketedPaste, mouseAnyMotion, alternateScroll, everAttached
   }
 
   static var supportsSecureCoding: Bool { true }
@@ -178,6 +181,7 @@ public typealias MoshSessionParams = (any NSSecureCoding & MoshSessionParamsSnap
     coder.bk_encode(f.lastHistorySize, for: Key.lastHistorySize)
     coder.bk_encode(f.bracketedPaste, for: Key.bracketedPaste)
     coder.bk_encode(f.mouseAnyMotion, for: Key.mouseAnyMotion)
+    coder.bk_encode(f.alternateScroll, for: Key.alternateScroll)
     coder.bk_encode(f.everAttached, for: Key.everAttached)
   }
 
@@ -194,6 +198,7 @@ public typealias MoshSessionParams = (any NSSecureCoding & MoshSessionParamsSnap
     f.lastHistorySize = coder.bk_decode(for: Key.lastHistorySize)
     f.bracketedPaste = coder.bk_decode(for: Key.bracketedPaste)
     f.mouseAnyMotion = coder.bk_decode(for: Key.mouseAnyMotion)
+    f.alternateScroll = coder.bk_decode(for: Key.alternateScroll)
     f.everAttached = coder.bk_decode(for: Key.everAttached)
     _f = f
   }

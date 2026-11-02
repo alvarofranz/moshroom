@@ -10,7 +10,7 @@ enum MoshroomDefaults {
   static func doInvertVerticalScroll() -> Bool { false }
 }
 enum MoshLog { static func log(_ area: String, _ message: String) {} }
-class TermController: NSObject { var moshroomCanPageAlternateScreen = false }
+class TermController: NSObject { var moshroomAlternateScreenScrollPolicy = "none" }
 class TermDevice { var view: TermView? }
 class TermView: UIView { var termController: NSObject?; var webView: WKWebView? }
 

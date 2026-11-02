@@ -21,8 +21,25 @@ import Foundation
     tracker.scan(Array("text\u{1b}".utf8))
     tracker.scan(Array("c".utf8))
     precondition(tracker.modes == TmuxTrackedModes(), "RIS resets the tracked modes, also split across chunks")
+    tracker.scan(Array("\u{1b}[?1007h".utf8))
+    precondition(tracker.modes.alternateScroll, "Alternate scroll (DECSET 1007) is followed in live output")
+    tracker.scan(Array("\u{1b}[?1007l".utf8))
+    precondition(tracker.modes == TmuxTrackedModes(), "Alternate scroll off is followed too")
     var fixtures: [[String: Any]] = []
     let base = "%0|80|24|120|0|0|0|0|23|1|0|0|0|1|0|23|0|0|0|0|0|123|@0|1"
+    // A tracked alternate-scroll mode survives a reconnect: the refill replays it so a swipe in the
+    // re-attached program sends the arrows it asked for.
+    for altScroll in [false, true] {
+      var state = TmuxPaneState(line: base + "|0")!
+      state.alternateOn = true
+      let snapshot = TmuxSnapshot(state: state,
+        history: [], plainHistory: nil,
+        screen: (0..<24).map { Array("TRANSCRIPT ROW \($0)".utf8) }, savedNormal: [], pendingEscape: [])
+      let modes = TmuxTrackedModes(bracketedPaste: false, mouseAnyMotion: false, alternateScroll: altScroll)
+      let bytes = TmuxResync.alternateRepaint(snapshot, rows: 24, modes: modes)
+      fixtures.append(["name": "alternate-scroll-\(altScroll)", "path": "alternate", "mouse": false,
+                       "altScroll": altScroll, "bytes": String(decoding: bytes, as: UTF8.self)])
+    }
     // The server's explicit false must defeat stale archived true, while an unavailable format
     // must retain the compatibility fallback. Exercise both supported and old tmux replies.
     for (flag, cached, expected) in [("0", true, false), ("1", false, true), ("", true, true), ("", false, false)] {

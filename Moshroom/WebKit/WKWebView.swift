@@ -502,9 +502,9 @@ extension WKWebViewGesturesInteraction: UIScrollViewDelegate {
       // row instead, and walks its ladder from there (see the Scrolling section in term.js).
       let rows = min(abs(steps), 12)
       let controller = (_wkWebView?.superview as? TermView)?.termController as? TermController
-      let canPage = controller?.moshroomCanPageAlternateScreen ?? false
+      let policy = controller?.moshroomAlternateScreenScrollPolicy ?? "none"
       _wkWebView?.evaluateJavaScript(
-        "term_reportWheelEvent(\"wheel\", \(point.x), \(point.y), \(0), \(dY), \(rows), \(canPage));",
+        "term_reportWheelEvent(\"wheel\", \(point.x), \(point.y), \(0), \(dY), \(rows), \"\(policy)\");",
         completionHandler: nil)
     }
   }
@@ -537,6 +537,9 @@ extension WKWebViewGesturesInteraction: UIScrollViewDelegate {
       selection?.scrollActivity(false)
     }
     if scrollView == _termScrollView {
+      // The finger (or the trackpad gesture) is off: what follows is momentum, which the page-key
+      // rung paces differently from the drag itself (see _moshroomPageAlternateScreen in term.js).
+      _wkWebView?.evaluateJavaScript("term_endScrollGesture();", completionHandler: nil)
       if !decelerate {
         _termScrollView.recenterIfNeeded(force: true)
       }

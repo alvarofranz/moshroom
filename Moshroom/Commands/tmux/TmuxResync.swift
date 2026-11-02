@@ -77,10 +77,13 @@ struct TmuxVersion: Comparable {
 }
 
 /// Modes followed in the pane's own output as it streams by: bracketed paste (tmux has no format for
-/// it at all) and any-motion mouse (a fallback for a tmux whose `mouse_any_flag` comes back empty).
+/// it at all), any-motion mouse (a fallback for a tmux whose `mouse_any_flag` comes back empty) and
+/// alternate scroll (DECSET 1007, no format either: it decides whether a swipe becomes arrow keys
+/// in a full-screen program, see the Scrolling section in term.js).
 struct TmuxTrackedModes: Equatable {
   var bracketedPaste = false
   var mouseAnyMotion = false
+  var alternateScroll = false
 }
 
 /// One pane, as `display -p` reports it.
@@ -387,6 +390,7 @@ enum TmuxResync {
     if s.mouseUTF8 { out += bytes("\u{1b}[?1005h") }
     if s.mouseSGR { out += bytes("\u{1b}[?1006h") }
     out += bytes(modes.bracketedPaste ? "\u{1b}[?2004h" : "\u{1b}[?2004l")
+    out += bytes(modes.alternateScroll ? "\u{1b}[?1007h" : "\u{1b}[?1007l")
     out += snap.pendingEscape
     return out
   }
@@ -548,6 +552,7 @@ struct TmuxModeTracker {
           switch p {
           case 2004: modes.bracketedPaste = on
           case 1003: modes.mouseAnyMotion = on
+          case 1007: modes.alternateScroll = on
           default: break
           }
         }

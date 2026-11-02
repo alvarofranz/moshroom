@@ -190,7 +190,8 @@ import ios_system
       mcpSession.moshroomCheckpointDidChange()
     }
     guard let host = p.hostAlias, !host.isEmpty else { return -1 }
-    modeTracker = TmuxModeTracker(TmuxTrackedModes(bracketedPaste: p.bracketedPaste, mouseAnyMotion: p.mouseAnyMotion))
+    modeTracker = TmuxModeTracker(TmuxTrackedModes(bracketedPaste: p.bracketedPaste, mouseAnyMotion: p.mouseAnyMotion,
+                                                   alternateScroll: p.alternateScroll))
 
     // Keeps the run loop alive between events and drives the heartbeat and the resize debounce.
     let timer = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in
@@ -550,6 +551,7 @@ import ios_system
       if modeTracker.modes != before {
         params.bracketedPaste = modeTracker.modes.bracketedPaste
         params.mouseAnyMotion = modeTracker.modes.mouseAnyMotion
+        params.alternateScroll = modeTracker.modes.alternateScroll
       }
       _write(bytes)
     case .pause(let pane):
@@ -1114,6 +1116,7 @@ import ios_system
     let p = params
     p.bracketedPaste = modeTracker.modes.bracketedPaste
     p.mouseAnyMotion = modeTracker.modes.mouseAnyMotion
+    p.alternateScroll = modeTracker.modes.alternateScroll
     lock.lock()
     moshroomParked = true
     lock.unlock()

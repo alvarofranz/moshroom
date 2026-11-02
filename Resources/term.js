@@ -1459,6 +1459,9 @@ function term_sanitizeModes() {
   t.setBracketedPaste(false);
   t.reportFocus = false;
   t.setInsertMode(false);
+  // Alternate scroll (DECSET 1007) too: left on by a program that died, a swipe at the next
+  // full-screen program would type arrows it never asked for.
+  t.scrollWheelArrowKeys_ = false;
   // Directly: setOriginMode also homes the cursor.
   t.options_.originMode = false;
   if (t.options_.reverseVideo) {
@@ -1500,12 +1503,17 @@ function _setTermCoordinates(event, x, y) {
 //      screen, and a full-screen program that SCROLLS (a pager walking down a file) banks its lines
 //      into whichever one it is on, so that history is real; it was simply unreachable, because the
 //      gesture was hard-wired to wheel reports nothing was listening for.
-//   3. a remote alternate screen with no mouse support -> Page Up / Page Down. The native side
-//      explicitly permits this for SSH and tmux control mode only: mosh itself uses the alternate
-//      screen even at a shell prompt. A plain shell or an unknown transport receives NO input.
+//   3. a remote alternate screen -> one Up/Down arrow per row, both directions, what Terminal.app,
+//      iTerm2 and kitty send for the wheel there. Native decides where this is safe (its
+//      moshroomAlternateScreenScrollPolicy): always in a tmux control-mode tab, whose pane IS the
+//      program, and over plain SSH only once the program asked for alternate scroll (DECSET 1007,
+//      what Codex sets at start-up): the alternate screen over plain SSH is often a `tmux attach`
+//      holding a shell prompt, and arrows there recall history on every swipe.
+//   4. a remote alternate screen over plain SSH without 1007 -> Page Up / Page Down: a page after
+//      three rows of travel, then one more per VIEWPORT of travel (momentum adds at most one).
+//   Mosh, a local shell and anything unknown receive NO synthetic keys: mosh itself uses the
+//   alternate screen even at a shell prompt.
 //
-// Never synthesize Up/Down arrows: they can edit a prompt or recall shell history. Page keys let
-// full-screen pagers and transcript views without mouse reporting navigate their own content.
 // Mouse-capable programs keep ordinary wheel events and local history keeps pixel-smooth scrolling.
 // How far above the viewport to look for text before offering a local scroll. A window, not the row
 // about to be revealed: blank lines inside real history must not stall the scroll, while the run of
@@ -1572,6 +1580,10 @@ hterm.Terminal.prototype.setAlternateMode = function(state) {
 var _moshroomBaseVTReset = hterm.VT.prototype.reset;
 hterm.VT.prototype.reset = function() {
   _moshroomBaseVTReset.call(this);
+  // hterm's reset leaves alternate scroll (DECSET 1007) as it was; a RIS ends it like every mode.
+  if (this.terminal) {
+    this.terminal.scrollWheelArrowKeys_ = false;
+  }
   _mshClear('reset');
   _moshroomPostScrollMode();
 };
@@ -1744,9 +1756,15 @@ hterm.ScrollPort.prototype.syncRowNodesDimensions_ = function() {
 // The native side quantises the finger into whole rows and passes the COUNT, because hterm's VT
 // encodes exactly ONE wheel report per event: a single report for a 3-row flick made every TUI
 // scroll a third of the way the finger went, which is what read as sluggish and imprecise.
-function term_reportWheelEvent(name, x, y, deltaX, deltaY, rows, canPageAlternateScreen) {
+function term_reportWheelEvent(name, x, y, deltaX, deltaY, rows, policy) {
   if (!t || !t.prompt || !t.scrollPort_ || !t.vt) {
     return;
+  }
+  // 'arrows' | 'page' | 'none' (see TermController.moshroomAlternateScreenScrollPolicy).
+  if (policy === true) {
+    policy = 'page';
+  } else if (policy !== 'arrows' && policy !== 'page') {
+    policy = 'none';
   }
   var count = parseInt(rows, 10);
   count = Math.max(1, Math.min(count > 0 ? count : 1, 12));
@@ -1766,12 +1784,36 @@ function term_reportWheelEvent(name, x, y, deltaX, deltaY, rows, canPageAlternat
   }
 
   // Read any locally banked history first. Only a known remote alternate screen may then turn the
-  // gesture into page keys; an inline prompt and a bare mosh shell must remain untouched.
+  // gesture into keys; an inline prompt and a bare mosh shell must remain untouched.
   var up = deltaY < 0;
   if (_moshroomScrollAltLocally(up, count)) {
     return;
   }
-  _moshroomPageAlternateScreen(up, count, canPageAlternateScreen);
+  if (_moshroomAlternateScrollKeys(up, count, policy)) {
+    return;
+  }
+  _moshroomPageAlternateScreen(up, count, policy === 'page');
+}
+
+// Rung 3: arrows. Always under the 'arrows' policy; under 'page' once the program asked for
+// alternate scroll (DECSET 1007; hterm's VT keeps it in scrollWheelArrowKeys_, which our wheel path
+// never consulted). One arrow per row, encoded the way the program reads arrows (SS3 under
+// application cursor keys, CSI otherwise), in ONE write. This is how a slow trackpad scroll moves a
+// Codex transcript a line at a time; page keys cannot.
+function _moshroomAlternateScrollKeys(up, count, policy) {
+  if (t.isPrimaryScreen()) {
+    return false;
+  }
+  if (policy !== 'arrows' && !(policy === 'page' && t.scrollWheelArrowKeys_)) {
+    return false;
+  }
+  var key = (t.keyboard && t.keyboard.applicationCursor ? '\x1bO' : '\x1b[') + (up ? 'A' : 'B');
+  var out = '';
+  for (var i = 0; i < count; i++) {
+    out += key;
+  }
+  t.io.sendString(out);
+  return true;
 }
 
 // Rung 2: the alternate screen's own scrollback. Up is offered while there is text within reach
@@ -1799,12 +1841,28 @@ function _moshroomScrollAltLocally(up, count) {
   return true;
 }
 
-// Page navigation is necessarily coarser than a wheel report. Respond to the first row of a new
-// gesture, then accumulate half a viewport before another page so a small trackpad swipe cannot
-// race through dozens of pages. Native resets this at drag start; the timeout covers wheel ticks.
+// Page navigation is necessarily coarser than a wheel report, so the gesture is mapped to pages by
+// DISTANCE: the first page goes out after three rows of travel (a slow trackpad scroll must still
+// move something, and a resting finger that wobbles a row must not), and every further page needs a
+// WHOLE viewport more, so the content moves about as far as the gesture did. It used to be a page on
+// the first row and another every half viewport: one flick with momentum on a phone (40 rows of
+// travel in a 40-row terminal) sent THREE pages and skipped two screens of a pager, which read as
+// the scroll jumping around. Requiring half a viewport before the first page was tried instead and
+// killed slow trackpad scrolling (measured live: slow no, fast swipe yes). Once the finger lifts,
+// momentum adds at most ONE more page: a hard flick lands a screen or two on, never five. A
+// direction change starts over, as does a new drag (native marks drag start and end); the idle
+// timeout only separates wheel-tick streams, which have no drag boundaries of their own.
 var _moshroomPaging = null;
+var _moshroomPagingIdleMs = 1000;
+var _moshroomPagingFirstRows = 3;
 function term_beginScrollGesture() {
   _moshroomPaging = null;
+}
+function term_endScrollGesture() {
+  if (_moshroomPaging) {
+    _moshroomPaging.momentum = true;
+    _moshroomPaging.momentumPages = 0;
+  }
 }
 
 function _moshroomPageAlternateScreen(up, count, allowed) {
@@ -1813,20 +1871,28 @@ function _moshroomPageAlternateScreen(up, count, allowed) {
     return;
   }
   var now = Date.now();
-  var fresh = !_moshroomPaging || _moshroomPaging.up !== up || now - _moshroomPaging.at > 300;
-  var threshold = Math.max(3, Math.floor(t.scrollPort_.visibleRowCount / 2));
+  var fresh = !_moshroomPaging || _moshroomPaging.up !== up ||
+      now - _moshroomPaging.at > _moshroomPagingIdleMs;
   if (fresh) {
-    _moshroomPaging = {up: up, rows: 0, at: now};
-  } else {
-    _moshroomPaging.rows += count;
-    _moshroomPaging.at = now;
-    if (_moshroomPaging.rows < threshold) {
+    _moshroomPaging = {up: up, rows: 0, at: now, momentum: false, momentumPages: 0};
+  }
+  _moshroomPaging.rows += count;
+  _moshroomPaging.at = now;
+  var page = Math.max(6, t.scrollPort_.visibleRowCount);
+  // Thresholds at 3, 3 + P, 3 + 2P… rows: the remainder carries over so continued movement keeps
+  // counting towards the next page.
+  while (_moshroomPaging.rows >= _moshroomPagingFirstRows) {
+    if (_moshroomPaging.momentum && _moshroomPaging.momentumPages >= 1) {
+      _moshroomPaging.rows = 0;
       return;
     }
-    _moshroomPaging.rows %= threshold;
+    _moshroomPaging.rows -= page;
+    if (_moshroomPaging.momentum) {
+      _moshroomPaging.momentumPages += 1;
+    }
+    // Standard VT page keys do not depend on application-cursor mode (DECCKM).
+    t.io.sendString(up ? '\x1b[5~' : '\x1b[6~');
   }
-  // Standard VT page keys do not depend on application-cursor mode (DECCKM).
-  t.io.sendString(up ? '\x1b[5~' : '\x1b[6~');
 }
 
 // ---- Universal tap interactivity ------------------------------------------------------------

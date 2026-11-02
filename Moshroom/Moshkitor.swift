@@ -259,6 +259,34 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
     // tray button must appear on return, when viewDidAppear won't fire for an already-presented VC.
     NotificationCenter.default.addObserver(self, selector: #selector(_refreshTrayButton),
                                            name: UIApplication.didBecomeActiveNotification, object: nil)
+    // Coming back to the app, or to this window (Cmd+Tab, a window switch on the Mac): the editor
+    // must be the one reading the keyboard again. Nothing else re-asserts it for a presented
+    // controller, whose viewDidAppear never re-fires.
+    NotificationCenter.default.addObserver(self, selector: #selector(_appDidBecomeActive),
+                                           name: UIApplication.didBecomeActiveNotification, object: nil)
+    NotificationCenter.default.addObserver(self, selector: #selector(_windowDidBecomeKey(_:)),
+                                           name: UIWindow.didBecomeKeyNotification, object: nil)
+  }
+
+  @objc private func _appDidBecomeActive() { restoreFocusIfNeeded("app active") }
+
+  @objc private func _windowDidBecomeKey(_ n: Notification) {
+    guard let window = n.object as? UIWindow, window === view.window else { return }
+    restoreFocusIfNeeded("window key")
+  }
+
+  /// The editor must hold the keyboard whenever it is the frontmost thing. UIKit does not hand it
+  /// back by itself in every case once a sheet of ours (Snips, the file picker, the tray, an alert)
+  /// goes away, nor when the window loses and regains key, and a composer on screen that is not
+  /// reading the keys looks dead (on the Mac every keystroke then beeps). Idempotent, and it never
+  /// takes the keyboard from a sheet of its own or from a closing editor. A refusal is logged (never
+  /// the text), so a report can say which it was.
+  func restoreFocusIfNeeded(_ reason: String) {
+    guard isViewLoaded, view.window != nil, !isClosing, presentedViewController == nil,
+          !textView.isFirstResponder else { return }
+    if !textView.becomeFirstResponder() {
+      MoshLog.log("composer", "focus (\(reason)) REFUSED: editable=\(textView.isEditable) key window=\(view.window?.isKeyWindow ?? false)")
+    }
   }
 
   override func viewWillAppear(_ animated: Bool) {
@@ -267,7 +295,10 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
     // Grab focus as early as possible (before viewDidAppear, which for an animated present only
     // fires after the slide). For the hardware-keyboard hand-off — presented un-animated — this
     // makes the text view first responder synchronously, so the next keystroke lands in the editor
-    // instead of falling through to an empty responder chain (the Mac Catalyst beep).
+    // instead of falling through to an empty responder chain (the Mac Catalyst beep). (Measured on
+    // Catalyst: an unanimated present still appears 100 to 400 ms after the call, and this runs
+    // before the view is in the window, so it mostly fails here and succeeds in viewDidAppear; the
+    // hand-off in between is acceptHardwareKeyInTransition.)
     textView.becomeFirstResponder()
   }
 
@@ -280,10 +311,17 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
     // Only act while WE are the frontmost VC and don't yet hold focus. If a snips/Moshdrop picker
     // is presented over us (presentedViewController != nil) it owns the keyboard — never steal it.
     if presentedViewController != nil { return false }
-    if textView.isFirstResponder { return false }
+    if textView.isFirstResponder {
+      // The editor holds the keyboard and a key still reached the space behind it: the key went to
+      // another window's responder. Logged, never the key itself, so a report can say so.
+      MoshLog.log("composer", "key reached the space while the editor holds focus (key window=\(view.window?.isKeyWindow ?? false))")
+      return false
+    }
     guard let key = presses.first(where: { $0.key != nil })?.key,
           !key.modifierFlags.contains(.command) else { return false }
-    textView.becomeFirstResponder()
+    if !textView.becomeFirstResponder(), view.window != nil {
+      MoshLog.log("composer", "focus on key in transition REFUSED (editable=\(textView.isEditable))")
+    }
     // Only real characters: an arrow pressed mid-transition must not insert "UIKeyInputUpArrow".
     let text = key.characters
     if MoshroomKeyboard.isTypable(text) {
@@ -298,7 +336,7 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
     // after viewWillDisappear already set isClosing — clear it so sends/uploads aren't stuck blocked.
     isClosing = false
     _refreshTrayButton()   // a share may have landed (or the tray emptied) while we were away
-    textView.becomeFirstResponder()
+    restoreFocusIfNeeded("appeared")
     // Cmd+V opened us on a closed editor — drop the clipboard in now that we're on screen and first
     // responder. One-shot: a return from a sub-picker must not paste again.
     if _pastesOnAppear {
@@ -470,7 +508,10 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
     MoshLog.log("tray", "open: \(MoshroomShareTray.count()) item(s)")
     let tray = MoshtrayController(
       onPick: { [weak self] url in self?._insertFromTray(url) },
-      onFinished: { [weak self] in self?._refreshTrayButton() })
+      onFinished: { [weak self] in
+        self?._refreshTrayButton()
+        self?.restoreFocusIfNeeded("tray closed")
+      })
     // Full-screen + instant, matching every other Moshroom surface (Moshxplore/Moshtabs/launcher):
     // .overFullScreen keeps the terminal in the window, and a stable full width sidesteps the sheet's
     // animate-to-final-width cell-sizing race.
@@ -1265,6 +1306,24 @@ final class MoshkitorSnipEditor: UIViewController {
   }
 }
 
+/// The composer's container: a sheet it presents (Snips, the file picker, an alert) is dismissed
+/// THROUGH this controller, which is the one place that sees every such dismissal end, cancelled or
+/// not, and the moment the editor has to take the keyboard back.
+final class MoshkitorNavigationController: UINavigationController {
+  override func dismiss(animated flag: Bool, completion: (() -> Void)? = nil) {
+    // With nothing presented of its own this call closes the composer itself (UIKit forwards it to
+    // the presenting controller): nothing to restore then.
+    guard presentedViewController != nil else {
+      super.dismiss(animated: flag, completion: completion)
+      return
+    }
+    super.dismiss(animated: flag) { [weak self] in
+      completion?()
+      (self?.viewControllers.first as? MoshkitorComposer)?.restoreFocusIfNeeded("sheet closed")
+    }
+  }
+}
+
 // MARK: - Opening Moshkitor
 
 extension SpaceController {
@@ -1290,7 +1349,7 @@ extension SpaceController {
         // Catch an `ssh`/`mosh` typed here so the next attachment uploads to that host.
         self?.noteConnectionCommand(command)
       }
-      return UINavigationController(rootViewController: composer)
+      return MoshkitorNavigationController(rootViewController: composer)
     }
   }
 

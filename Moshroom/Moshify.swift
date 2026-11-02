@@ -147,6 +147,49 @@ enum Moshify {
     UserDefaults.standard.set(data, forKey: recentsKey)
   }
 
+  // MARK: resume
+
+  static let resumeKey = "MoshroomMoshifyResume"
+
+  /// Where the music was in a library when it last stopped: the track and the second it was at, so
+  /// a tab opened on that library again picks up there instead of at the top. One per library,
+  /// newest first, as many as the recents list (a library nobody reopens has nothing to resume).
+  struct Resume: Codable, Equatable {
+    let host: String
+    let folder: String
+    let remotePath: String
+    let position: TimeInterval
+    let duration: TimeInterval
+
+    var library: Recent { Recent(host: host, folder: folder) }
+  }
+
+  static var resumes: [Resume] {
+    guard let data = UserDefaults.standard.data(forKey: resumeKey),
+          let decoded = try? JSONDecoder().decode([Resume].self, from: data) else { return [] }
+    return decoded
+  }
+
+  static func resume(host: String, folder: String) -> Resume? {
+    resumes.first { $0.host == host && $0.folder == folder }
+  }
+
+  /// Replaces whatever this library remembered before.
+  static func noteResume(_ entry: Resume) {
+    var list = resumes.filter { $0.library != entry.library }
+    list.insert(entry, at: 0)
+    list = Array(list.prefix(recentsLimit))
+    guard let data = try? JSONEncoder().encode(list) else { return }
+    UserDefaults.standard.set(data, forKey: resumeKey)
+  }
+
+  static func clearResume(host: String, folder: String) {
+    let library = Recent(host: host, folder: folder)
+    let list = resumes.filter { $0.library != library }
+    guard list.count != resumes.count, let data = try? JSONEncoder().encode(list) else { return }
+    UserDefaults.standard.set(data, forKey: resumeKey)
+  }
+
   static var configuredHost: String? {
     UserDefaults.standard.string(forKey: hostKey).flatMap { $0.isEmpty ? nil : $0 }
   }
