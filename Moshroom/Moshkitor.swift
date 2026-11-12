@@ -1016,14 +1016,27 @@ enum MoshkitorSnips {
   /// they can never disagree about which folder they mean.
   static var root: URL? {
     let fm = FileManager.default
-    if MoshroomICloudSyncEnabled(), fm.ubiquityIdentityToken != nil,
-       let cloud = MoshroomPaths.iCloudSnippetsLocationURL() {
-      if !fm.fileExists(atPath: cloud.path) {
-        try? fm.createDirectory(at: cloud, withIntermediateDirectories: true)
-      }
+    if MoshroomICloudSyncEnabled(), fm.ubiquityIdentityToken != nil, let cloud = _cloudRoot() {
       return cloud
     }
     return MoshroomPaths.localSnippetsLocationURL()
+  }
+
+  // The completion strip asks on every keystroke, and looking the container up can be slow while
+  // iCloud is unreachable: a miss is remembered for a while instead of asked again each time.
+  private static var _cloudRootChecked: (at: Date, url: URL?)?
+  private static func _cloudRoot() -> URL? {
+    if let checked = _cloudRootChecked, checked.url != nil || Date().timeIntervalSince(checked.at) < 30 {
+      return checked.url
+    }
+    let fm = FileManager.default
+    var url = MoshroomPaths.iCloudSnippetsLocationURL()
+    if let found = url, !fm.fileExists(atPath: found.path) {
+      try? fm.createDirectory(at: found, withIntermediateDirectories: true)
+      if !fm.fileExists(atPath: found.path) { url = nil }
+    }
+    _cloudRootChecked = (Date(), url)
+    return url
   }
 
   /// A folder's visible entries under their REAL names. A file iCloud has not downloaded yet can be
@@ -1073,35 +1086,32 @@ enum MoshkitorSnips {
     return (root, folders)
   }
 
-  /// Snips written before they lived in iCloud (or while sync was off) sit in the local folder,
-  /// which no other device can see: that is why they never synced. Once per sync period every
-  /// local snip is COPIED into the iCloud folder. Nothing is deleted and nothing is overwritten: a
-  /// name that already holds different text there is kept beside it as "name-local". Returns
-  /// false when the pass has to run again (a cloud file not downloaded yet, a failed copy).
-  private static let adoptedKey = "MoshroomSnipsAdoptedIntoCloud"
-  static func resetCloudAdoption() { UserDefaults.standard.removeObject(forKey: adoptedKey) }
+  // MARK: SNIPSYNC-BEGIN
+  /// Snips written before they lived in iCloud (or while sync was off, or while iCloud could not be
+  /// reached) sit in the local folder, which no other device can see: that is why they never synced.
+  /// Every sync pass COPIES into the iCloud folder each local snip that is new or was changed since
+  /// it was last taken along. Nothing is deleted and nothing is overwritten: a name that already
+  /// holds different text there is kept beside it as "name-local". A snip already taken along is
+  /// remembered by its local modification time, so one deleted on another device is not brought
+  /// back by its old local copy. Returns false when a file has to wait for the next pass.
   @discardableResult
-  static func adoptLocalIntoCloud() -> Bool {
+  static func adopt(from local: URL, into cloud: URL, record: inout [String: Double]) -> Bool {
     let fm = FileManager.default
-    guard MoshroomICloudSyncEnabled(), fm.ubiquityIdentityToken != nil,
-          let cloud = MoshroomPaths.iCloudSnippetsLocationURL(),
-          let local = MoshroomPaths.localSnippetsLocationURL() else { return false }
-    if UserDefaults.standard.bool(forKey: adoptedKey) { return true }
-    guard fm.fileExists(atPath: local.path) else {
-      UserDefaults.standard.set(true, forKey: adoptedKey); return true
-    }
+    guard fm.fileExists(atPath: local.path) else { return true }
     try? fm.createDirectory(at: cloud, withIntermediateDirectories: true)
-    guard fm.fileExists(atPath: cloud.path),
-          let walker = fm.enumerator(at: local, includingPropertiesForKeys: [.isRegularFileKey],
-                                     options: [.skipsHiddenFiles]) else { return false }
+    // RELATIVE paths, from the folder itself: URL-based walks can answer under another spelling of
+    // the same folder (/var and /private/var on iOS), and a prefix cut then matches nothing.
+    guard fm.fileExists(atPath: cloud.path), let walker = fm.enumerator(atPath: local.path) else { return false }
     var complete = true
     var copied = 0
-    let base = local.standardizedFileURL.path
-    for case let file as URL in walker {
-      guard (try? file.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true else { continue }
-      let path = file.standardizedFileURL.path
-      guard path.hasPrefix(base + "/") else { continue }
-      let relative = String(path.dropFirst(base.count + 1))
+    while let relative = walker.nextObject() as? String {
+      if relative.split(separator: "/").contains(where: { $0.hasPrefix(".") }) { continue }
+      let file = local.appendingPathComponent(relative)
+      var isDir: ObjCBool = false
+      guard fm.fileExists(atPath: file.path, isDirectory: &isDir), !isDir.boolValue else { continue }
+      let modified = ((try? fm.attributesOfItem(atPath: file.path)[.modificationDate]) as? Date)?
+        .timeIntervalSince1970 ?? 0
+      if let taken = record[relative], modified <= taken { continue }
       let target = cloud.appendingPathComponent(relative)
       let folder = target.deletingLastPathComponent()
       let placeholder = folder.appendingPathComponent("." + target.lastPathComponent + ".icloud")
@@ -1113,29 +1123,80 @@ enum MoshkitorSnips {
       }
       do {
         try fm.createDirectory(at: folder, withIntermediateDirectories: true)
+        let mine = try Data(contentsOf: file)
         if !fm.fileExists(atPath: target.path) {
-          try fm.copyItem(at: file, to: target)
+          try mine.write(to: target, options: .atomic)
           copied += 1
-        } else if let mine = try? Data(contentsOf: file) {
+        } else {
           guard let theirs = try? Data(contentsOf: target) else { complete = false; continue }
           if mine != theirs {
             let ext = target.pathExtension
             let stem = target.deletingPathExtension().lastPathComponent + "-local"
             let beside = folder.appendingPathComponent(ext.isEmpty ? stem : stem + "." + ext)
-            if !fm.fileExists(atPath: beside.path) {
-              try fm.copyItem(at: file, to: beside)
+            if (try? Data(contentsOf: beside)) != mine {
+              try mine.write(to: beside, options: .atomic)
               copied += 1
             }
           }
         }
+        record[relative] = modified
       } catch {
         MoshLog.log("sync", "snips: a local snip could not be copied into iCloud (\(error.localizedDescription))")
         complete = false
       }
     }
-    MoshLog.log("sync", "snips: \(copied) local snips copied into iCloud, complete=\(complete)")
-    if complete { UserDefaults.standard.set(true, forKey: adoptedKey) }
+    if copied > 0 || !complete {
+      MoshLog.log("sync", "snips: \(copied) local snips copied into iCloud, complete=\(complete)")
+    }
     return complete
+  }
+
+  /// The other direction, for the moment sync is switched OFF: the snips shown from then on are the
+  /// local ones, so what iCloud holds is copied down first (it is the newer truth: every local snip
+  /// was already taken up). Local snips that iCloud does not have are left alone.
+  static func mirror(from cloud: URL, into local: URL, record: inout [String: Double]) {
+    let fm = FileManager.default
+    guard fm.fileExists(atPath: cloud.path), let walker = fm.enumerator(atPath: cloud.path) else { return }
+    try? fm.createDirectory(at: local, withIntermediateDirectories: true)
+    while let relative = walker.nextObject() as? String {
+      if relative.split(separator: "/").contains(where: { $0.hasPrefix(".") }) { continue }
+      let file = cloud.appendingPathComponent(relative)
+      var isDir: ObjCBool = false
+      guard fm.fileExists(atPath: file.path, isDirectory: &isDir), !isDir.boolValue,
+            let theirs = try? Data(contentsOf: file) else { continue }
+      let target = local.appendingPathComponent(relative)
+      if (try? Data(contentsOf: target)) == theirs { continue }
+      try? fm.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+      guard (try? theirs.write(to: target, options: .atomic)) != nil else { continue }
+      // Not a local edit: the next time sync is on, this copy must not go up as a "-local" twin.
+      record[relative] = ((try? fm.attributesOfItem(atPath: target.path)[.modificationDate]) as? Date)?
+        .timeIntervalSince1970 ?? Date().timeIntervalSince1970
+    }
+  }
+  // MARK: SNIPSYNC-END
+
+  private static let adoptedKey = "MoshroomSnipsTakenIntoCloud"
+
+  /// One sync pass's worth of `adopt`, for the app's own two folders.
+  @discardableResult
+  static func adoptLocalIntoCloud() -> Bool {
+    guard MoshroomICloudSyncEnabled(), FileManager.default.ubiquityIdentityToken != nil,
+          let cloud = MoshroomPaths.iCloudSnippetsLocationURL(),
+          let local = MoshroomPaths.localSnippetsLocationURL() else { return false }
+    var record = (UserDefaults.standard.dictionary(forKey: adoptedKey) as? [String: Double]) ?? [:]
+    let complete = adopt(from: local, into: cloud, record: &record)
+    UserDefaults.standard.set(record, forKey: adoptedKey)
+    return complete
+  }
+
+  /// Sync was just switched off (Settings).
+  static func keepCloudSnipsLocally() {
+    guard FileManager.default.ubiquityIdentityToken != nil,
+          let cloud = MoshroomPaths.iCloudSnippetsLocationURL(),
+          let local = MoshroomPaths.localSnippetsLocationURL() else { return }
+    var record = (UserDefaults.standard.dictionary(forKey: adoptedKey) as? [String: Double]) ?? [:]
+    mirror(from: cloud, into: local, record: &record)
+    UserDefaults.standard.set(record, forKey: adoptedKey)
   }
 
   // Every snip flattened to (label, url): "name" for root snips, "folder/name" for nested.

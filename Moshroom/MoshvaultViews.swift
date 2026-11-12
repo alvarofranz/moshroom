@@ -189,8 +189,15 @@ struct MoshDockedSearch: View {
     .background(MoshFocusProbe(probe: probe))
     .onAppear { _claimFocus() }
     // The window comes back (Touch ID's dialog, Cmd+Tab, another window): the search reads again.
-    .onReceive(NotificationCenter.default.publisher(for: UIWindow.didBecomeKeyNotification)) { _ in _claimFocus() }
-    .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in _claimFocus() }
+    // Mac only: on a phone that would raise the keyboard over the list on every return to the app.
+    .onReceive(NotificationCenter.default.publisher(for: UIWindow.didBecomeKeyNotification)) { _ in _reclaimFocusOnReturn() }
+    .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in _reclaimFocusOnReturn() }
+  }
+
+  private func _reclaimFocusOnReturn() {
+    #if targetEnvironment(macCatalyst)
+    _claimFocus()
+    #endif
   }
 
   @State private var probe = MoshFocusProbe.Box()
@@ -203,7 +210,8 @@ struct MoshDockedSearch: View {
     guard autofocus else { return }
     for delay in [0.0, 0.15, 0.45, 1.0] {
       DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-        guard !focused, probe.mayTakeKeyboard else { return }
+        // No probe yet (the field is not in a window this early): ask anyway, as it always did.
+        guard !focused, probe.view == nil || probe.mayTakeKeyboard else { return }
         focused = true
       }
     }

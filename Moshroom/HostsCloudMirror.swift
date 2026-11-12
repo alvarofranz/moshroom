@@ -199,8 +199,8 @@ import MoshroomConfig
                   hostsKnownIdsKey, keysKnownIdsKey] {
         d.removeObject(forKey: key)
       }
-      // Snips written while sync was off are local: the next pass takes them along again.
-      MoshkitorSnips.resetCloudAdoption()
+      // From now on the snips shown are the local ones: bring down what iCloud holds first.
+      if !enabled { MoshkitorSnips.keepCloudSnipsLocally() }
     }
     if enabled {
       _startWatcher()
