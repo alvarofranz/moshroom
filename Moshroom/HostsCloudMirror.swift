@@ -199,6 +199,8 @@ import MoshroomConfig
                   hostsKnownIdsKey, keysKnownIdsKey] {
         d.removeObject(forKey: key)
       }
+      // Snips written while sync was off are local: the next pass takes them along again.
+      MoshkitorSnips.resetCloudAdoption()
     }
     if enabled {
       _startWatcher()
@@ -271,6 +273,7 @@ import MoshroomConfig
       let hostsFlavor = _reconcileHosts(cloudURL: hostsCloudURL)
       let keysFlavor = _reconcileKeys(cloudURL: keysCloudURL)
       _markGlobalSynced()
+      MoshkitorSnips.adoptLocalIntoCloud()
       let snips = _downloadAndCountSnips()
       DispatchQueue.main.async { _publishSummary(overall: _combine(hostsFlavor, keysFlavor), snips: snips) }
     }

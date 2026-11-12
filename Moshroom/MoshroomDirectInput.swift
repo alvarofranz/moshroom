@@ -127,6 +127,12 @@ final class MoshroomDirectInput: UITextView, UITextViewDelegate {
     resetting = false
     owner?.moshroomShowComposition(nil)
   }
+  // Never while a surface is in front of the terminal (see SpaceController.moshroomSurfaceOwnsKeyboard):
+  // keys typed into a composer or a vault field would go to the remote program instead.
+  override var canBecomeFirstResponder: Bool {
+    if owner?.moshroomSurfaceOwnsKeyboard == true { return false }
+    return super.canBecomeFirstResponder
+  }
   @discardableResult override func resignFirstResponder() -> Bool {
     // unmarkText during resignation may confirm a candidate. Invalidate BEFORE UIKit does it.
     resetComposition()

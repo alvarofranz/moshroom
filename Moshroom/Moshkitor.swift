@@ -288,6 +288,12 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
   func restoreFocusIfNeeded(_ reason: String) {
     guard isViewLoaded, view.window != nil, !isClosing, presentedViewController == nil,
           !textView.isFirstResponder else { return }
+    if reason == "settled" {
+      // The editor had the keyboard when it appeared and something took it since. Named (a class,
+      // never text), so the next report says who.
+      let holder = UIResponder.moshroomCurrentFirst.map { String(describing: type(of: $0)) } ?? "nobody"
+      MoshLog.log("composer", "focus was taken after appearing by \(holder); taking it back")
+    }
     if !textView.becomeFirstResponder() {
       MoshLog.log("composer", "focus (\(reason)) REFUSED: editable=\(textView.isEditable) key window=\(view.window?.isKeyWindow ?? false)")
     }
@@ -341,6 +347,13 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
     isClosing = false
     _refreshTrayButton()   // a share may have landed (or the tray emptied) while we were away
     restoreFocusIfNeeded("appeared")
+    // Whatever settles after a present (a window regaining key, a web view finishing a reload, a
+    // late responder hand-back) lands in the first second: check again once it has.
+    for delay in [0.25, 0.7, 1.5] {
+      DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+        self?.restoreFocusIfNeeded("settled")
+      }
+    }
     // Cmd+V opened us on a closed editor — drop the clipboard in now that we're on screen and first
     // responder. One-shot: a return from a sub-picker must not paste again.
     if _pastesOnAppear {
@@ -975,7 +988,7 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
     case .command(let c):
       replacement = c + " "
     case .snip(_, let url):
-      replacement = (try? String(contentsOf: url, encoding: .utf8)) ?? suggestion.label
+      replacement = MoshkitorSnips.content(of: url) ?? suggestion.label
     }
     // Mutate textStorage (not textView.text) so any inline attachments elsewhere survive.
     textView.textStorage.beginEditing()
@@ -997,19 +1010,60 @@ enum MoshkitorSnips {
   typealias Snip = (name: String, url: URL)
   typealias Folder = (name: String, snips: [Snip])
 
+  /// Where the snips live. With "Sync with iCloud" on (and an iCloud account present) it is the
+  /// app's iCloud Drive folder, the one every device of the user shares; otherwise the local
+  /// Documents folder. The gallery, the editor and the completion strip all resolve it here, so
+  /// they can never disagree about which folder they mean.
+  static var root: URL? {
+    let fm = FileManager.default
+    if MoshroomICloudSyncEnabled(), fm.ubiquityIdentityToken != nil,
+       let cloud = MoshroomPaths.iCloudSnippetsLocationURL() {
+      if !fm.fileExists(atPath: cloud.path) {
+        try? fm.createDirectory(at: cloud, withIntermediateDirectories: true)
+      }
+      return cloud
+    }
+    return MoshroomPaths.localSnippetsLocationURL()
+  }
+
+  /// A folder's visible entries under their REAL names. A file iCloud has not downloaded yet can be
+  /// listed as a hidden ".name.icloud" placeholder: it is shown as "name" and asked for, so a snip
+  /// made on another device appears at once and is readable a moment later.
+  private static func _entries(of dir: URL) -> [URL] {
+    let fm = FileManager.default
+    guard let names = try? fm.contentsOfDirectory(atPath: dir.path) else { return [] }
+    var seen = Set<String>()
+    var out: [URL] = []
+    for raw in names {
+      var name = raw
+      if raw.hasPrefix("."), raw.hasSuffix(".icloud"), raw.count > 8 {
+        name = String(raw.dropFirst().dropLast(7))
+        try? fm.startDownloadingUbiquitousItem(at: dir.appendingPathComponent(name))
+      } else if raw.hasPrefix(".") {
+        continue
+      }
+      if seen.insert(name).inserted { out.append(dir.appendingPathComponent(name)) }
+    }
+    return out.sorted { $0.lastPathComponent < $1.lastPathComponent }
+  }
+
+  /// A snip's text, or nil while iCloud is still bringing the file down (the download is asked for).
+  static func content(of url: URL) -> String? {
+    if let text = try? String(contentsOf: url, encoding: .utf8) { return text }
+    try? FileManager.default.startDownloadingUbiquitousItem(at: url)
+    return nil
+  }
+
   static func grouped() -> (root: [Snip], folders: [Folder]) {
     var root: [Snip] = []
     var folders: [Folder] = []
-    let fm = FileManager.default
-    guard let dir = MoshroomPaths.localSnippetsLocationURL(),
-          let entries = try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])
-    else { return (root, folders) }
-    for entry in entries.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
-      let isDir = (try? entry.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
-      if isDir {
-        let snips = ((try? fm.contentsOfDirectory(at: entry, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])) ?? [])
+    guard let dir = self.root else { return (root, folders) }
+    for entry in _entries(of: dir) {
+      var isDir: ObjCBool = false
+      FileManager.default.fileExists(atPath: entry.path, isDirectory: &isDir)
+      if isDir.boolValue {
+        let snips = _entries(of: entry)
           .filter { $0.pathExtension == "sh" }
-          .sorted { $0.lastPathComponent < $1.lastPathComponent }
           .map { (name: $0.deletingPathExtension().lastPathComponent, url: $0) }
         if !snips.isEmpty { folders.append((name: entry.lastPathComponent, snips: snips)) }
       } else if entry.pathExtension == "sh" {
@@ -1017,6 +1071,71 @@ enum MoshkitorSnips {
       }
     }
     return (root, folders)
+  }
+
+  /// Snips written before they lived in iCloud (or while sync was off) sit in the local folder,
+  /// which no other device can see: that is why they never synced. Once per sync period every
+  /// local snip is COPIED into the iCloud folder. Nothing is deleted and nothing is overwritten: a
+  /// name that already holds different text there is kept beside it as "name-local". Returns
+  /// false when the pass has to run again (a cloud file not downloaded yet, a failed copy).
+  private static let adoptedKey = "MoshroomSnipsAdoptedIntoCloud"
+  static func resetCloudAdoption() { UserDefaults.standard.removeObject(forKey: adoptedKey) }
+  @discardableResult
+  static func adoptLocalIntoCloud() -> Bool {
+    let fm = FileManager.default
+    guard MoshroomICloudSyncEnabled(), fm.ubiquityIdentityToken != nil,
+          let cloud = MoshroomPaths.iCloudSnippetsLocationURL(),
+          let local = MoshroomPaths.localSnippetsLocationURL() else { return false }
+    if UserDefaults.standard.bool(forKey: adoptedKey) { return true }
+    guard fm.fileExists(atPath: local.path) else {
+      UserDefaults.standard.set(true, forKey: adoptedKey); return true
+    }
+    try? fm.createDirectory(at: cloud, withIntermediateDirectories: true)
+    guard fm.fileExists(atPath: cloud.path),
+          let walker = fm.enumerator(at: local, includingPropertiesForKeys: [.isRegularFileKey],
+                                     options: [.skipsHiddenFiles]) else { return false }
+    var complete = true
+    var copied = 0
+    let base = local.standardizedFileURL.path
+    for case let file as URL in walker {
+      guard (try? file.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true else { continue }
+      let path = file.standardizedFileURL.path
+      guard path.hasPrefix(base + "/") else { continue }
+      let relative = String(path.dropFirst(base.count + 1))
+      let target = cloud.appendingPathComponent(relative)
+      let folder = target.deletingLastPathComponent()
+      let placeholder = folder.appendingPathComponent("." + target.lastPathComponent + ".icloud")
+      if fm.fileExists(atPath: placeholder.path) {
+        // Another device already has this name, and its text is not here yet to compare with.
+        try? fm.startDownloadingUbiquitousItem(at: target)
+        complete = false
+        continue
+      }
+      do {
+        try fm.createDirectory(at: folder, withIntermediateDirectories: true)
+        if !fm.fileExists(atPath: target.path) {
+          try fm.copyItem(at: file, to: target)
+          copied += 1
+        } else if let mine = try? Data(contentsOf: file) {
+          guard let theirs = try? Data(contentsOf: target) else { complete = false; continue }
+          if mine != theirs {
+            let ext = target.pathExtension
+            let stem = target.deletingPathExtension().lastPathComponent + "-local"
+            let beside = folder.appendingPathComponent(ext.isEmpty ? stem : stem + "." + ext)
+            if !fm.fileExists(atPath: beside.path) {
+              try fm.copyItem(at: file, to: beside)
+              copied += 1
+            }
+          }
+        }
+      } catch {
+        MoshLog.log("sync", "snips: a local snip could not be copied into iCloud (\(error.localizedDescription))")
+        complete = false
+      }
+    }
+    MoshLog.log("sync", "snips: \(copied) local snips copied into iCloud, complete=\(complete)")
+    if complete { UserDefaults.standard.set(true, forKey: adoptedKey) }
+    return complete
   }
 
   // Every snip flattened to (label, url): "name" for root snips, "folder/name" for nested.
@@ -1093,7 +1212,14 @@ final class MoshkitorSnipsPicker: UITableViewController {
   }
 
   private func _editSnip(_ url: URL) {
-    let content = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+    // Never open the editor on text that could not be read (a snip iCloud is still downloading):
+    // saving it would replace the real snip with an empty one.
+    guard let content = MoshkitorSnips.content(of: url) else {
+      let alert = UIAlertController(title: "Still downloading", message: "This snip is coming from iCloud. Try again in a moment.", preferredStyle: .alert)
+      alert.addAction(UIAlertAction(title: "OK", style: .default))
+      present(alert, animated: true)
+      return
+    }
     let editor = MoshkitorSnipEditor(existingURL: url, name: MoshkitorSnipEditor.displayName(for: url), content: content) { [weak self] in
       self?._reloadFromDisk()
     }
@@ -1131,7 +1257,7 @@ final class MoshkitorSnipsPicker: UITableViewController {
       expandedFolder = (expandedFolder == name) ? nil : name   // accordion: only one open
       _rebuildRows()
     case .snip(_, let url):
-      if let content = try? String(contentsOf: url, encoding: .utf8) {
+      if let content = MoshkitorSnips.content(of: url) {
         onPick(content)
         dismiss(animated: true)
       }
@@ -1183,7 +1309,7 @@ final class MoshkitorSnipEditor: UIViewController {
   // "folder/name" for a snip in a folder, or just "name" at the root (one level).
   static func displayName(for url: URL) -> String {
     let name = url.deletingPathExtension().lastPathComponent
-    guard let root = MoshroomPaths.localSnippetsLocationURL() else { return name }
+    guard let root = MoshkitorSnips.root else { return name }
     let parent = url.deletingLastPathComponent().standardizedFileURL
     if parent == root.standardizedFileURL { return name }
     return "\(parent.lastPathComponent)/\(name)"
@@ -1233,7 +1359,7 @@ final class MoshkitorSnipEditor: UIViewController {
 
   @objc private func save() {
     guard let raw = nameField.text?.trimmingCharacters(in: .whitespaces), !raw.isEmpty,
-          let root = MoshroomPaths.localSnippetsLocationURL() else {
+          let root = MoshkitorSnips.root else {
       _alert(title: "Name required"); return
     }
     // One level only: "folder/name" or "name".
@@ -1534,4 +1660,19 @@ enum MoshroomKeyboard {
     // letter would otherwise be folded into a control byte.
     MoshroomControlKey.bytes(for: key.charactersIgnoringModifiers)
   }
+}
+
+// MARK: - Who holds the keyboard
+
+extension UIResponder {
+  private static weak var _moshroomFound: UIResponder?
+
+  /// The responder that currently reads the keyboard, or nil when nothing does.
+  static var moshroomCurrentFirst: UIResponder? {
+    _moshroomFound = nil
+    UIApplication.shared.sendAction(#selector(_moshroomReportFirst(_:)), to: nil, from: nil, for: nil)
+    return _moshroomFound
+  }
+
+  @objc private func _moshroomReportFirst(_ sender: Any?) { UIResponder._moshroomFound = self }
 }

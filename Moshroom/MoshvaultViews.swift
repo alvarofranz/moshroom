@@ -186,8 +186,62 @@ struct MoshDockedSearch: View {
     }
     .padding(.horizontal, 14)
     .padding(.vertical, 12)
-    .onAppear { if autofocus { DispatchQueue.main.async { focused = true } } }
+    .background(MoshFocusProbe(probe: probe))
+    .onAppear { _claimFocus() }
+    // The window comes back (Touch ID's dialog, Cmd+Tab, another window): the search reads again.
+    .onReceive(NotificationCenter.default.publisher(for: UIWindow.didBecomeKeyNotification)) { _ in _claimFocus() }
+    .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in _claimFocus() }
   }
+
+  @State private var probe = MoshFocusProbe.Box()
+
+  /// Asking once, as the view appears, is not enough: the surface is presented in the same runloop,
+  /// the window may not be key yet, and a focus set then is silently dropped (a caret nowhere, keys
+  /// going nowhere). So the ask is repeated while things settle, and each time only if this field is
+  /// really the frontmost thing and no other text field has been chosen in the meantime.
+  private func _claimFocus() {
+    guard autofocus else { return }
+    for delay in [0.0, 0.15, 0.45, 1.0] {
+      DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+        guard !focused, probe.mayTakeKeyboard else { return }
+        focused = true
+      }
+    }
+  }
+}
+
+/// A zero-size UIKit view inside a SwiftUI field, used to answer one question SwiftUI cannot: is this
+/// field on screen in the key window with nothing presented over it, and is the keyboard free?
+struct MoshFocusProbe: UIViewRepresentable {
+  final class Box { weak var view: UIView?
+    var mayTakeKeyboard: Bool {
+      guard let view, let window = view.window, window.isKeyWindow else { return false }
+      var responder: UIResponder? = view
+      while let next = responder?.next {
+        if let controller = next as? UIViewController {
+          if controller.presentedViewController != nil || controller.isBeingDismissed { return false }
+          break
+        }
+        responder = next
+      }
+      // Another text field the user is already in keeps the keyboard (the terminal's hidden input
+      // does not count: it has no business holding it under a surface).
+      if let holder = UIResponder.moshroomCurrentFirst as? UIView, holder is UITextInput,
+         !(holder is MoshroomDirectInput), holder.window === window {
+        return false
+      }
+      return true
+    }
+  }
+  let probe: Box
+  func makeUIView(context: Context) -> UIView {
+    let view = UIView(frame: .zero)
+    view.isUserInteractionEnabled = false
+    view.isHidden = true
+    probe.view = view
+    return view
+  }
+  func updateUIView(_ uiView: UIView, context: Context) { probe.view = uiView }
 }
 
 /// The one list shell for a Settings hub screen (Keys, Hosts): inset-grouped rows in a single

@@ -415,6 +415,25 @@ class SpaceController: UIViewController {
   // Always: SpaceController is the keyboard's owner of last resort (see moshroomClaimKeyboardIfPageHasNoInput).
   override var canBecomeFirstResponder: Bool { true }
 
+  /// A surface in front (the composer, Moshvault, Settings, an alert) owns the keyboard. Whoever asks
+  /// on the terminal's behalf while it is up is refused HERE, the one door, instead of every caller
+  /// having to remember the check: UIKit itself is one of the callers (it hands the keyboard back to
+  /// the responder a window had when it regains key), and a stolen keyboard is a field that shows a
+  /// caret and takes no keys.
+  var moshroomSurfaceOwnsKeyboard: Bool {
+    guard let presented = presentedViewController else { return false }
+    return !presented.isBeingDismissed
+  }
+
+  @discardableResult
+  override func becomeFirstResponder() -> Bool {
+    if moshroomSurfaceOwnsKeyboard {
+      MoshLog.log("focus", "space refused the keyboard: a surface is in front")
+      return false
+    }
+    return super.becomeFirstResponder()
+  }
+
   override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
     if MoshroomDevelopment.enabled("direct-probe"), presentedViewController == nil {
       MoshroomDevelopment.inputProbe("space presses=\(presses.count)")
