@@ -25,8 +25,10 @@
 // The one "pick a folder on a server" browser: Moshify's library setup and a project's folder both use
 // it. It browses like `ls`: it starts in the login home, folders are tappable, files are shown dimmed
 // so the user recognises the place, dotfiles are hidden, and a directory symlink is a folder (the
-// listing already follows links, see MoshxploreSession.list). It connects HEADLESS over the host's
-// saved settings, like every connect the app makes on the user's behalf, and nothing is ever typed.
+// listing already follows links, see MoshxploreSession.list). It connects HEADLESS, like every connect
+// the app makes on the user's behalf, and nothing is ever typed. What a terminal would have asked (a
+// server seen for the first time, a password nobody saved) it asks right here, then dials again with
+// the answer: the user is never sent off to a terminal tab to make the browser work.
 
 import SwiftUI
 import UIKit
@@ -39,8 +41,13 @@ final class MoshFolderBrowserView: UIView, UITableViewDataSource, UITableViewDel
   var onChangeHost: (() -> Void)? {
     didSet { hostButton.isHidden = onChangeHost == nil }
   }
+  /// A password the user typed here was accepted by the server. The caller decides whether to keep it
+  /// (the host editor puts it in its password field); nothing here stores it.
+  var onPasswordAccepted: ((String) -> Void)?
 
-  private(set) var hostAlias: String?
+  var hostAlias: String? { target?.alias }
+  private var target: MoshroomConnectTarget?
+  private var startAt: String?
   private(set) var path = "/"
   private var home: String?
   private var folders: [MoshxploreEntry] = []
@@ -66,6 +73,10 @@ final class MoshFolderBrowserView: UIView, UITableViewDataSource, UITableViewDel
   private let statusLabel = UILabel()
   private let statusAction = moshButton()
   private var statusActionHandler: (() -> Void)?
+  // The question the server raised (trust its key, a password): the field, and the answer button.
+  private let answerField = UITextField()
+  private let answerButton = moshButton()
+  private var answerHandler: (() -> Void)?
 
   init(title: String, useTitle: String = "Use this folder") {
     super.init(frame: .zero)
@@ -143,11 +154,39 @@ final class MoshFolderBrowserView: UIView, UITableViewDataSource, UITableViewDel
     statusAction.preferredBehavioralStyle = .pad
     #endif
     statusAction.addAction(UIAction { [weak self] _ in self?.statusActionHandler?() }, for: .touchUpInside)
+    answerField.isSecureTextEntry = true
+    answerField.placeholder = "Password"
+    answerField.borderStyle = .none
+    answerField.backgroundColor = .secondarySystemGroupedBackground
+    answerField.layer.cornerRadius = Moshstyle.rowRadius
+    answerField.layer.cornerCurve = .continuous
+    answerField.autocorrectionType = .no
+    answerField.autocapitalizationType = .none
+    answerField.textContentType = .password
+    answerField.returnKeyType = .go
+    answerField.leftView = UIView(frame: CGRect(x: 0, y: 0, width: 14, height: 1))
+    answerField.leftViewMode = .always
+    answerField.translatesAutoresizingMaskIntoConstraints = false
+    answerField.heightAnchor.constraint(equalToConstant: 44).isActive = true
+    answerField.widthAnchor.constraint(equalToConstant: 280).isActive = true
+    answerField.addAction(UIAction { [weak self] _ in self?.answerHandler?() }, for: .editingDidEndOnExit)
+    var answerCfg = UIButton.Configuration.filled()
+    answerCfg.baseBackgroundColor = .moshroomTint
+    answerCfg.baseForegroundColor = .white
+    answerCfg.cornerStyle = .capsule
+    answerCfg.contentInsets = NSDirectionalEdgeInsets(top: 10, leading: 20, bottom: 10, trailing: 20)
+    answerButton.configuration = answerCfg
+    #if targetEnvironment(macCatalyst)
+    answerButton.preferredBehavioralStyle = .pad
+    #endif
+    answerButton.addAction(UIAction { [weak self] _ in self?.answerHandler?() }, for: .touchUpInside)
     statusView.axis = .vertical
     statusView.alignment = .center
     statusView.spacing = 12
     statusView.translatesAutoresizingMaskIntoConstraints = false
-    [statusSpinner, statusLabel, statusAction].forEach(statusView.addArrangedSubview)
+    [statusSpinner, statusLabel, answerField, answerButton, statusAction].forEach(statusView.addArrangedSubview)
+    answerField.isHidden = true
+    answerButton.isHidden = true
 
     [titleLabel, keys, crumbScroll, table, useButton, statusView].forEach(addSubview)
     NSLayoutConstraint.activate([
@@ -193,10 +232,17 @@ final class MoshFolderBrowserView: UIView, UITableViewDataSource, UITableViewDel
 
   /// Connect to `hostAlias` (headless) and show its home, or `startAt` when given (an existing pick).
   func start(hostAlias: String, startAt: String? = nil) {
+    start(target: MoshroomConnectTarget(alias: hostAlias), startAt: startAt)
+  }
+
+  /// The same for any target, including a host the editor has not saved yet.
+  func start(target: MoshroomConnectTarget, startAt: String? = nil) {
     session?.stop()
     let s = MoshxploreSession()
     session = s
-    self.hostAlias = hostAlias
+    self.target = target
+    self.startAt = startAt
+    let hostAlias = target.alias
     home = nil
     folders = []
     files = []
@@ -204,11 +250,15 @@ final class MoshFolderBrowserView: UIView, UITableViewDataSource, UITableViewDel
     let gen = generation
     _status(busy: "Connecting to \(hostAlias)\u{2026}")
     _armWatchdog(generation: gen, reopenAt: startAt)
-    s.connect(hostAlias: hostAlias) { [weak self] result in
+    s.connect(target: target) { [weak self] result in
       guard let self, self.generation == gen else { return }
       self._disarmWatchdog()
       switch result {
       case .success(let home):
+        self.answerField.text = ""
+        if let password = target.answers.password, !password.isEmpty {
+          self.onPasswordAccepted?(password)
+        }
         self.home = home
         if let startAt, !startAt.isEmpty, startAt != home {
           // Open where the folder already is; if it is gone, fall back to home.
@@ -217,9 +267,46 @@ final class MoshFolderBrowserView: UIView, UITableViewDataSource, UITableViewDel
           self._load(home)
         }
       case .failure(let e):
-        self._failed(e.localizedDescription) { [weak self] in self?.start(hostAlias: hostAlias, startAt: startAt) }
+        if let need = e as? MoshroomHeadlessNeed, self._ask(need) { return }
+        self._failed(e.localizedDescription) { [weak self] in self?.start(target: target, startAt: startAt) }
       }
     }
+  }
+
+  /// The server asked something a terminal would have asked: ask it here. False when it is not a
+  /// question this place can settle (a CHANGED host key is reviewed in a terminal, on purpose).
+  private func _ask(_ need: MoshroomHeadlessNeed) -> Bool {
+    guard var target else { return false }
+    let name = target.alias
+    switch need {
+    case .hostKey(let fingerprint, let changed):
+      guard !changed else { return false }
+      _question(
+        "First connection to \(name). Its key fingerprint is\n\(fingerprint)\nTrust this server and continue?",
+        answer: "Trust and continue", field: false
+      ) { [weak self] in
+        guard let self else { return }
+        target.answers.trustedHostKey = fingerprint
+        self.start(target: target, startAt: self.startAt)
+      }
+    case .password:
+      // Only where the answer can be kept (the host editor): a password typed for a browse alone
+      // would let the user pick a folder that every later connect then fails to reach.
+      guard onPasswordAccepted != nil else { return false }
+      let retried = !(target.answers.password ?? "").isEmpty
+      _question(
+        retried ? "\(name) did not accept that password. Try again." : "\(name) asks for a password.",
+        answer: "Connect", field: true
+      ) { [weak self] in
+        guard let self else { return }
+        let password = self.answerField.text ?? ""
+        guard !password.isEmpty else { return }
+        self.answerField.resignFirstResponder()
+        target.answers.password = password
+        self.start(target: target, startAt: self.startAt)
+      }
+    }
+    return true
   }
 
   func stop() {
@@ -232,13 +319,13 @@ final class MoshFolderBrowserView: UIView, UITableViewDataSource, UITableViewDel
   private func _armWatchdog(generation gen: Int, reopenAt: String?) {
     watchdog?.cancel()
     let work = DispatchWorkItem { [weak self] in
-      guard let self, self.generation == gen, let alias = self.hostAlias else { return }
+      guard let self, self.generation == gen, let target = self.target else { return }
       // Abandon the silent session; a late answer is ignored by the generation bump. Retry dials anew.
       self.generation += 1
       self.session?.stop()
       self.session = nil
-      self._failed("\(alias) is not answering. Try again in a moment.") { [weak self] in
-        self?.start(hostAlias: alias, startAt: reopenAt)
+      self._failed("\(target.alias) is not answering. Try again in a moment.") { [weak self] in
+        self?.start(target: target, startAt: reopenAt)
       }
     }
     watchdog = work
@@ -298,15 +385,44 @@ final class MoshFolderBrowserView: UIView, UITableViewDataSource, UITableViewDel
     statusSpinner.isHidden = false
     statusLabel.text = text
     statusAction.isHidden = true
+    _hideAnswer()
     statusView.isHidden = false
     table.isHidden = true
     useButton.isEnabled = false
+  }
+
+  private func _hideAnswer() {
+    answerField.isHidden = true
+    answerButton.isHidden = true
+    answerHandler = nil
+  }
+
+  /// A question with one answer (and the usual way out under it): a host key to trust, or a password.
+  private func _question(_ message: String, answer: String, field: Bool, onAnswer: @escaping () -> Void) {
+    // The usual failure layout first (label, way out), then the answer on top of it.
+    _failed(message) { [weak self] in
+      guard let self, let target = self.target else { return }
+      self.start(target: target, startAt: self.startAt)
+    }
+    var cfg = answerButton.configuration ?? .filled()
+    var attr = AttributeContainer()
+    attr.font = UIFont.systemFont(ofSize: 16, weight: .semibold)
+    cfg.attributedTitle = AttributedString(answer, attributes: attr)
+    answerButton.configuration = cfg
+    answerButton.isHidden = false
+    answerField.text = ""
+    answerField.isHidden = !field
+    answerHandler = onAnswer
+    // The way out under a question is going back, never "Try again" (that would ask the same thing).
+    if onChangeHost == nil { statusAction.isHidden = true }
+    if field { DispatchQueue.main.async { [weak self] in self?.answerField.becomeFirstResponder() } }
   }
 
   private func _failed(_ message: String, retry: @escaping () -> Void) {
     statusSpinner.stopAnimating()
     statusSpinner.isHidden = true
     statusLabel.text = message
+    _hideAnswer()
     var cfg = statusAction.configuration ?? .plain()
     var attr = AttributeContainer()
     attr.font = UIFont.preferredFont(forTextStyle: .headline)
@@ -327,6 +443,7 @@ final class MoshFolderBrowserView: UIView, UITableViewDataSource, UITableViewDel
   private func _render() {
     statusSpinner.stopAnimating()
     statusView.isHidden = true
+    _hideAnswer()
     table.isHidden = false
     upButton.isEnabled = path != "/"
     upButton.alpha = upButton.isEnabled ? 1 : 0.4
@@ -503,15 +620,16 @@ private final class MoshFolderCell: UITableViewCell {
 /// The browser as a full-screen page of its own (presented with fullScreenCover, so its close and the
 /// browser's buttons take taps on the Mac too): the in-content header, then the browser.
 struct MoshFolderPickerScreen: View {
-  let hostAlias: String
+  let target: MoshroomConnectTarget
   var startAt: String? = nil
+  var onPasswordAccepted: ((String) -> Void)? = nil
   let onPick: (String) -> Void
   @Environment(\.dismiss) private var dismiss
 
   var body: some View {
     VStack(spacing: 0) {
       MoshSheetHeader(title: "Choose a folder", onClose: { dismiss() })
-      MoshFolderBrowserRepresentable(hostAlias: hostAlias, startAt: startAt) { path in
+      MoshFolderBrowserRepresentable(target: target, startAt: startAt, onPasswordAccepted: onPasswordAccepted) { path in
         onPick(path)
         dismiss()
       }
@@ -522,16 +640,18 @@ struct MoshFolderPickerScreen: View {
 }
 
 private struct MoshFolderBrowserRepresentable: UIViewRepresentable {
-  let hostAlias: String
+  let target: MoshroomConnectTarget
   let startAt: String?
+  let onPasswordAccepted: ((String) -> Void)?
   let onUse: (String) -> Void
 
   func makeUIView(context: Context) -> MoshFolderBrowserView {
-    let view = MoshFolderBrowserView(title: "On \(hostAlias)")
+    let view = MoshFolderBrowserView(title: "On \(target.alias)")
     // SwiftUI places a representable by its frame: Auto Layout sizing would leave it collapsed.
     view.translatesAutoresizingMaskIntoConstraints = true
     view.onUse = onUse
-    view.start(hostAlias: hostAlias, startAt: startAt)
+    view.onPasswordAccepted = onPasswordAccepted
+    view.start(target: target, startAt: startAt)
     return view
   }
 
@@ -542,6 +662,7 @@ private struct MoshFolderBrowserRepresentable: UIViewRepresentable {
 
   func updateUIView(_ view: MoshFolderBrowserView, context: Context) {
     view.onUse = onUse
+    view.onPasswordAccepted = onPasswordAccepted
   }
 
   static func dismantleUIView(_ view: MoshFolderBrowserView, coordinator: ()) {

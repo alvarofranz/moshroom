@@ -27,6 +27,7 @@ import SSH
 import Combine
 import Dispatch
 import ios_system
+import MoshroomConfig
 
 @_cdecl("moshroom_ssh_main")
 public func moshroom_ssh_main(argc: Int32, argv: Argv) -> Int32 {
@@ -264,9 +265,26 @@ public func moshroom_ssh_main(argc: Int32, argv: Argv) -> Int32 {
   /// wherever the app connects on the user's behalf.
   static func resolveTarget(hostAlias: String,
                             device: TermDevice?) throws -> (hostName: String, host: MoshSSHHost, config: SSHClientConfig) {
-    let command = try SSHCommand.parse([hostAlias])
-    let resolved = try command.resolveHost()
-    let config = try SSHClientConfigProvider.config(host: resolved.host, using: device)
+    try resolveTarget(MoshroomConnectTarget(alias: hostAlias), device: device)
+  }
+
+  /// The same for a target that may be a host the editor holds but has not saved, and may carry the
+  /// answers the user already gave (a trusted host key, a password for this connect).
+  static func resolveTarget(_ target: MoshroomConnectTarget,
+                            device: TermDevice?) throws -> (hostName: String, host: MoshSSHHost, config: SSHClientConfig) {
+    var resolved: (hostName: String, host: MoshSSHHost)
+    if let draft = target.draft {
+      // The editor's fields come first, then whatever ssh_config adds (Host * defaults, and the saved
+      // entry when the host already exists): first value wins, exactly like options on a command line.
+      let base = try MoshSSHHost(content: draft)
+      resolved = try MoshConfig().resolveHost(alias: target.alias, extending: base)
+    } else {
+      resolved = try SSHCommand.parse([target.alias]).resolveHost()
+    }
+    if let password = target.answers.password, !password.isEmpty {
+      resolved.host.password = password
+    }
+    let config = try SSHClientConfigProvider.config(host: resolved.host, using: device, answers: target.answers)
     return (resolved.hostName, resolved.host, config)
   }
 

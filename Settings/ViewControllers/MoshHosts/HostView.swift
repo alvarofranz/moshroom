@@ -334,6 +334,20 @@ struct HostView: View {
     return (user.isEmpty ? "" : user + "@") + (address.isEmpty ? "address" : address) + ":" + (port.isEmpty ? "22" : port)
   }
 
+  // What the project editor's folder browser dials: the fields on screen, saved or not, so a new host
+  // can get its projects in the same pass and an edited address is browsed as typed.
+  private var _browseTarget: MoshroomConnectTarget {
+    // An alias that is ANOTHER saved host's (Save will refuse it) must not pull that host's saved
+    // password and key into a dial to the address typed here: browse it by its address instead.
+    let alias = _cleanAlias
+    let takenByAnother = alias != _host?.host && MoshHosts.withHost(alias) != nil
+    return MoshroomConnectTarget(
+      alias: takenByAnother ? "" : alias, hostName: _hostName, port: _port, user: _user, key: _sshKeyName.first,
+      password: _password, proxyCommand: _proxyCmd, proxyJump: _proxyJump,
+      sshConfig: _sshConfigAttachment == HostView.__sshConfigAttachmentExample ? "" : _sshConfigAttachment
+    )
+  }
+
   // The session the host's own connects use (what the editor holds now, not what is saved).
   private var _hostSessionName: String {
     let name = MoshHosts.moshroomTmuxSessionName(_tmuxSession)
@@ -386,7 +400,7 @@ struct HostView: View {
       Section(
         header: Text("Projects"),
         footer: Text(_host == nil
-          ? "Save the host first, then add projects: folders on it, each with its own session and tab."
+          ? "Folders on this server, each with its own session and tab. They are saved with the host."
           : "A folder on this server with its own session: each project opens in its own tab and keeps running when you close it.")
       ) {
         ForEach(_projects) { project in
@@ -417,11 +431,10 @@ struct HostView: View {
         }
         Button { _addProject() } label: {
           Label("Add Project", systemImage: "plus.circle.fill")
-            .foregroundColor(_host == nil ? .secondary : .moshTint)
+            .foregroundColor(.moshTint)
         }
         .buttonStyle(.plain)
         .moshCatalystPlainButtons()
-        .disabled(_host == nil)
       }
 
       Section(
@@ -466,17 +479,32 @@ struct HostView: View {
     .moshDeleteConfirmation($_pendingDelete)
     .fullScreenCover(item: $_editingProject) { edit in
       MoshProjectEditor(
-        hostAlias: _host?.host ?? _cleanAlias,
+        browseTarget: _browseTarget,
         hostSession: _hostSessionName,
-        otherSessions: Set(_projects.filter { $0.id != edit.project.id }.map(\.session)),
+        projects: _projects,
         project: edit.project,
         isNew: edit.isNew,
         onSave: { _saveProject($0) },
-        onDelete: edit.isNew ? nil : { _deleteProject(edit.project) }
+        onDelete: edit.isNew ? nil : { _deleteProject(edit.project) },
+        // A password the server accepted while browsing belongs to this host: it lands in the field
+        // and is saved with the host (never on its own).
+        onPasswordAccepted: { _password = $0 }
       )
     }
     .moshHubChrome(title: _host == nil ? "New Host" : "Host", leading: {
       Button(action: {
+        // Projects added to a host that was never saved live only in this form: say so before they go.
+        if _host == nil, !_projects.isEmpty {
+          let n = _projects.count
+          _pendingDelete = MoshDeletePrompt(
+            title: "Discard the new host?",
+            message: "It is not saved, and neither \(n == 1 ? "is its project" : "are its \(n) projects").",
+            confirmTitle: "Discard"
+          ) {
+            _nav.navController.popViewController(animated: true)
+          }
+          return
+        }
         _nav.navController.popViewController(animated: true)
       }) { MoshNavLabel(title: "Discard") }
     }, trailing: {
@@ -516,12 +544,12 @@ struct HostView: View {
 
   // MARK: Projects
   //
-  // A project is saved the moment its own editor says Save (or a delete is confirmed), like a vault
-  // entry: it belongs to the saved host, whatever happens to the rest of this form. Discard only
-  // drops the host's own fields.
+  // On a saved host, a project is saved the moment its own editor says Save (or a delete is confirmed),
+  // like a vault entry: it belongs to the saved host, whatever happens to the rest of this form, and
+  // Discard only drops the host's own fields. On a host not saved yet, projects wait in this form and
+  // are saved with it (saveHost takes them), so a new host gets its projects in the same pass.
 
   private func _addProject() {
-    guard _host != nil else { return }
     _editingProject = HostProjectEdit(project: MoshProject(name: "", folder: "", command: "", session: ""), isNew: true)
   }
 
@@ -562,7 +590,7 @@ struct HostView: View {
   // is looked up by alias each time: an iCloud pull while this editor is open reloads the list with
   // new objects, and writing to the one captured at open saved nothing.
   private func _persistProjects() {
-    guard let captured = _host else { return }
+    guard let captured = _host else { return }   // a new host: saved with it
     guard let host = MoshHosts.withHost(captured.host) else {
       _errorMessage = "This host is no longer in the list: it may have been renamed or deleted on another device. Close the editor and open it again."
       return
@@ -804,34 +832,53 @@ fileprivate struct HostProjectRow: View {
 }
 
 /// A project's own editor, full screen (a sheet's toolbar takes no taps on the Mac): where it is on the
-/// server (picked by browsing, never typed), its name and the command that starts it.
+/// server (typed, or picked by browsing the server), its name and the command that starts it. A new
+/// project can be followed by another without leaving (Save and Add Another).
 struct MoshProjectEditor: View {
-  let hostAlias: String
+  /// What the folder browser dials: the host as the host editor holds it, saved or not.
+  let browseTarget: MoshroomConnectTarget
   let hostSession: String
-  let otherSessions: Set<String>
+  /// The host's projects as they are now (sessions are unique among them).
+  let projects: [MoshProject]
   @State var project: MoshProject
   let isNew: Bool
   let onSave: (MoshProject) -> Void
   let onDelete: (() -> Void)?
+  let onPasswordAccepted: ((String) -> Void)?
 
   @Environment(\.dismiss) private var dismiss
   @State private var picking = false
   @State private var pendingDelete: MoshDeletePrompt? = nil
+  // Saved from this editor with Save and Add Another: shown as done, and their sessions taken even
+  // before the host editor's list catches up.
+  @State private var added: [MoshProject] = []
 
-  init(hostAlias: String, hostSession: String, otherSessions: Set<String>, project: MoshProject,
-       isNew: Bool, onSave: @escaping (MoshProject) -> Void, onDelete: (() -> Void)?) {
-    self.hostAlias = hostAlias
+  init(browseTarget: MoshroomConnectTarget, hostSession: String, projects: [MoshProject], project: MoshProject,
+       isNew: Bool, onSave: @escaping (MoshProject) -> Void, onDelete: (() -> Void)?,
+       onPasswordAccepted: ((String) -> Void)? = nil) {
+    self.browseTarget = browseTarget
     self.hostSession = hostSession
-    self.otherSessions = otherSessions
+    self.projects = projects
     _project = State(initialValue: project)
     self.isNew = isNew
     self.onSave = onSave
     self.onDelete = onDelete
+    self.onPasswordAccepted = onPasswordAccepted
   }
+
+  private var hostAlias: String { browseTarget.alias.isEmpty ? "the server" : browseTarget.alias }
+
+  private var otherSessions: Set<String> {
+    Set((projects + added).filter { $0.id != project.id }.map(\.session))
+  }
+
+  /// The folder as it will be stored: trimmed, no trailing slash, and a relative path is taken from
+  /// the login home (`~/…`), which is where `cd` in a fresh login would start it anyway.
+  private var cleanFolder: String { MoshProject.cleanFolder(project.folder) }
 
   private var cleanName: String {
     let name = project.name.trimmingCharacters(in: .whitespacesAndNewlines)
-    return name.isEmpty && !project.folder.isEmpty ? MoshProject.folderName(project.folder) : name
+    return name.isEmpty && !cleanFolder.isEmpty ? MoshProject.folderName(cleanFolder) : name
   }
 
   // A new project's session follows its name; an existing one keeps the session it already has, so
@@ -843,38 +890,58 @@ struct MoshProjectEditor: View {
     return MoshProject.sessionName(for: cleanName, hostSession: hostSession, taken: otherSessions)
   }
 
+  private var saved: MoshProject {
+    var saved = project
+    saved.name = cleanName
+    saved.folder = cleanFolder
+    saved.command = project.trimmedCommand
+    saved.session = session
+    return saved
+  }
+
   var body: some View {
     VStack(spacing: 0) {
       MoshSheetHeader(title: isNew ? "New Project" : "Project", onClose: { dismiss() }) {
         Button {
-          var saved = project
-          saved.name = cleanName
-          saved.command = project.trimmedCommand
-          saved.session = session
           onSave(saved)
           dismiss()
         } label: { MoshNavLabel(title: "Save") }
           .buttonStyle(.plain)
-          .disabled(project.folder.isEmpty)
+          .disabled(cleanFolder.isEmpty)
+          .opacity(cleanFolder.isEmpty ? 0.45 : 1)
       }
       Form {
+        if !added.isEmpty {
+          Section {
+            ForEach(added) { done in
+              Label {
+                Text(done.name).foregroundColor(.primary)
+              } icon: {
+                Image(systemName: "checkmark.circle.fill").foregroundColor(.moshTint)
+              }
+            }
+          } header: {
+            Text("Added")
+          }
+        }
+
         Section {
+          HStack {
+            Text("Path").foregroundColor(.secondary).frame(width: 92, alignment: .leading)
+            TextField("/srv/app or ~/app", text: $project.folder)
+              .font(.system(.body, design: .monospaced))
+              .autocorrectionDisabled()
+              .textInputAutocapitalization(.never)
+              .keyboardType(.URL)
+          }
           Button { picking = true } label: {
             HStack(spacing: 12) {
               Image(systemName: "folder.fill")
                 .font(.system(size: 16, weight: .medium))
-                .foregroundColor(.moshTint)
+                .foregroundColor(browseTarget.isDialable ? .moshTint : .secondary)
                 .frame(width: 24)
-              if project.folder.isEmpty {
-                Text("Choose a folder")
-                  .foregroundColor(.moshTint)
-              } else {
-                Text(project.folder)
-                  .font(.system(.body, design: .monospaced))
-                  .foregroundColor(.primary)
-                  .lineLimit(2)
-                  .truncationMode(.head)
-              }
+              Text("Browse \(hostAlias)")
+                .foregroundColor(browseTarget.isDialable ? .moshTint : .secondary)
               Spacer(minLength: 8)
               Image(systemName: "chevron.right")
                 .font(.system(size: 13, weight: .semibold))
@@ -884,16 +951,19 @@ struct MoshProjectEditor: View {
           }
           .buttonStyle(.plain)
           .moshCatalystPlainButtons()
+          .disabled(!browseTarget.isDialable)
         } header: {
           Text("Folder")
         } footer: {
-          Text("Browse \(hostAlias) and pick it: the session starts there.")
+          Text(browseTarget.isDialable
+               ? "Type the path, or browse the server and pick it: the session starts there."
+               : "Type the path. To browse the server instead, fill in the host's address first.")
         }
 
         Section {
           HStack {
             Text("Name").foregroundColor(.secondary).frame(width: 92, alignment: .leading)
-            TextField(project.folder.isEmpty ? "The folder's name" : MoshProject.folderName(project.folder), text: $project.name)
+            TextField(cleanFolder.isEmpty ? "The folder's name" : MoshProject.folderName(cleanFolder), text: $project.name)
               .autocorrectionDisabled()
           }
           HStack {
@@ -906,9 +976,26 @@ struct MoshProjectEditor: View {
         } header: {
           Text("Project")
         } footer: {
-          Text(project.folder.isEmpty
+          Text(cleanFolder.isEmpty
                ? "The command starts once, when the project's session is new; empty means a shell in the folder."
                : "Runs in the tmux session \u{201C}\(session)\u{201D}. The command starts once, when that session is new; empty means a shell in the folder.")
+        }
+
+        if isNew {
+          Section {
+            Button {
+              let done = saved
+              onSave(done)
+              added.append(done)
+              project = MoshProject(name: "", folder: "", command: "", session: "")
+            } label: {
+              Label("Save and Add Another", systemImage: "plus.circle.fill")
+                .foregroundColor(cleanFolder.isEmpty ? .secondary : .moshTint)
+            }
+            .buttonStyle(.plain)
+            .moshCatalystPlainButtons()
+            .disabled(cleanFolder.isEmpty)
+          }
         }
 
         if let onDelete {
@@ -936,9 +1023,10 @@ struct MoshProjectEditor: View {
     .tint(.moshTint)
     .moshDeleteConfirmation($pendingDelete)
     .fullScreenCover(isPresented: $picking) {
-      MoshFolderPickerScreen(hostAlias: hostAlias, startAt: project.folder.isEmpty ? nil : project.folder) { path in
+      MoshFolderPickerScreen(target: browseTarget, startAt: cleanFolder.isEmpty ? nil : cleanFolder,
+                             onPasswordAccepted: onPasswordAccepted) { path in
         // The name follows the folder until the user gives it one of their own.
-        let previousDefault = project.folder.isEmpty ? "" : MoshProject.folderName(project.folder)
+        let previousDefault = cleanFolder.isEmpty ? "" : MoshProject.folderName(cleanFolder)
         let name = project.name.trimmingCharacters(in: .whitespacesAndNewlines)
         project.folder = path
         if name.isEmpty || name == previousDefault {

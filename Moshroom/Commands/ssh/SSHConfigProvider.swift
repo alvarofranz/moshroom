@@ -44,20 +44,31 @@ class SSHClientConfigProvider {
   /// and saved passwords work exactly as before and anything that would need an answer fails with
   /// a reason instead of hanging on a prompt nobody can see.
   let device: TermDevice?
+  /// What the user already answered for this headless connect (nothing, for a terminal's).
+  let answers: MoshroomHeadlessAnswers
+  /// Headless only: the password this connect already knows (typed in the browser, or saved), offered
+  /// ONCE to a keyboard-interactive server asking a single hidden question. A server offering only
+  /// that method (PAM setups, FreeBSD's default) would otherwise never see the password at all.
+  fileprivate var headlessPassword: String?
   let logger = PassthroughSubject<String, Never>()
   var logCancel: AnyCancellable? = nil
   let config: MoshConfig
 
-  fileprivate init(using device: TermDevice?) throws {
+  fileprivate init(using device: TermDevice?, answers: MoshroomHeadlessAnswers) throws {
     self.device = device
+    self.answers = answers
     self.config = try MoshConfig()
 
     logCancel = logger.sink { [weak self] in self?.printLn($0, err: true) }
   }
 
   // Return HostName, SSHClientConfig for the server
-  static func config(host: MoshSSHHost, using device: TermDevice?) throws -> SSHClientConfig {
-    let prov = try SSHClientConfigProvider(using: device)
+  static func config(host: MoshSSHHost, using device: TermDevice?,
+                     answers: MoshroomHeadlessAnswers = MoshroomHeadlessAnswers()) throws -> SSHClientConfig {
+    let prov = try SSHClientConfigProvider(using: device, answers: answers)
+    if device == nil, let password = answers.password ?? host.password, !password.isEmpty {
+      prov.headlessPassword = password
+    }
 
     let agent = prov.agent(for: host)
 
@@ -91,9 +102,16 @@ extension SSHClientConfigProvider {
   fileprivate func authPrompt(_ prompt: Prompt) -> AnyPublisher<[String], Error> {
     self.printLn(prompt.instruction, err: true)
 
+    if device == nil {
+      guard prompt.userPrompts.count == 1, !prompt.userPrompts[0].echo, let password = headlessPassword else {
+        return Fail(error: MoshroomHeadlessNeed.password).eraseToAnyPublisher()
+      }
+      headlessPassword = nil   // once: a wrong one ends as a question, never as a loop
+      return .just([password])
+    }
     return prompt.userPrompts.publisher.tryMap { question -> String in
       guard let device = self.device else {
-        throw CommandError(message: "This host asks for a password (or did not accept your key). Connect to it once from a terminal tab, where the password can be saved with the host.")
+        throw MoshroomHeadlessNeed.password
       }
       guard let input = device.readline(question.prompt, secure: true) else {
         throw CommandError(message: "Couldn't read input")
@@ -154,14 +172,16 @@ extension SSHClientConfigProvider {
     if case .changed = prompt { keyChanged = true } else { keyChanged = false }
 
     guard let device = self.device else {
-      // Headless: never accept a key nobody confirmed, and say why instead of a generic failure.
-      // The user connects once from a terminal tab, answers there, and every later app-side
-      // connect finds the key in known_hosts.
-      let message = keyChanged
-        ? "This host's key has changed since it was last trusted. Connect to it from a terminal tab to review the new key."
-        : "This host's key is not known on this device yet. Connect to it once from a terminal tab to confirm it."
-      printLn(message, err: true)
-      return Fail(error: CommandError(message: message)).eraseToAnyPublisher()
+      // Headless: never accept a key nobody confirmed. Whoever started the connect either reports the
+      // reason (connect once from a terminal tab) or shows the fingerprint and dials again with the
+      // user's answer: only that exact fingerprint, and only for a host seen for the first time.
+      if !keyChanged, let trusted = answers.trustedHostKey, trusted == prompt.moshroomFingerprint {
+        printLn("Trusted the host key \(trusted) for this host.", err: true)
+        return .just(.affirmative)
+      }
+      let need = MoshroomHeadlessNeed.hostKey(fingerprint: prompt.moshroomFingerprint, changed: keyChanged)
+      printLn(need.localizedDescription, err: true)
+      return Fail(error: need).eraseToAnyPublisher()
     }
 
     let readAnswer = device.readline(messageToShow, secure: false)
@@ -193,5 +213,13 @@ extension SSHClientConfigProvider {
     let line = string.appending("\r\n")
     let s = err ? device.stream.err : device.stream.out
     fwrite(line, line.lengthOfBytes(using: .utf8), 1, s)
+  }
+}
+
+private extension SSH.VerifyHost {
+  var moshroomFingerprint: String {
+    switch self {
+    case .changed(let fingerprint), .unknown(let fingerprint), .notFound(let fingerprint): return fingerprint
+    }
   }
 }

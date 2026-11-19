@@ -1306,7 +1306,8 @@ import ios_system
       default: return false
       }
     }
-    return error is CommandError
+    // A question nobody can answer headless (host key, password) does not go away by retrying.
+    return error is CommandError || error is MoshroomHeadlessNeed
   }
 
   static func _describe(_ error: Error) -> String {

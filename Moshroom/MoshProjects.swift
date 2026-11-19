@@ -87,6 +87,15 @@ struct MoshProject: Codable, Identifiable, Hashable {
     return out
   }
 
+  /// A folder as it is stored: trimmed, no trailing slash, and a relative path is taken from the login
+  /// home (`~/…`), where a fresh login's `cd` would start it anyway. The editor and Import both use it.
+  static func cleanFolder(_ raw: String) -> String {
+    var folder = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    while folder.count > 1 && folder.hasSuffix("/") { folder.removeLast() }
+    if folder.isEmpty || folder.hasPrefix("/") || folder == "~" || folder.hasPrefix("~/") { return folder }
+    return "~/" + folder
+  }
+
   /// The folder's last component, the name a new project starts with.
   static func folderName(_ path: String) -> String {
     let name = (path as NSString).lastPathComponent

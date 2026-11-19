@@ -22,6 +22,7 @@
 ////////////////////////////////////////////////////////////////////////////////
 
 import SwiftUI
+import UniformTypeIdentifiers
 
 fileprivate struct HostCard: Equatable {
   let host: MoshHosts
@@ -127,6 +128,9 @@ struct HostListView: View {
   @StateObject private var _state = HostsObservable()
   @EnvironmentObject private var _nav: Nav
   @State private var _pendingDelete: MoshDeletePrompt? = nil
+  @State private var _importing = false
+  @State private var _importPlan: MoshHostsTransfer.Plan? = nil
+  @State private var _errorMessage = ""
 
   var body: some View {
     Group {
@@ -136,7 +140,10 @@ struct HostListView: View {
           title: "Your hosts",
           message: "Save a server once (alias, address, user and key) and connect from anywhere with one tap."
         ) {
-          Button(action: _addHost) { Label("Add new Host", systemImage: "plus") }
+          VStack(spacing: 14) {
+            Button(action: _addHost) { Label("Add new Host", systemImage: "plus") }
+            Button { _importing = true } label: { Label("Import from a File", systemImage: "square.and.arrow.down") }
+          }
         }
       } else {
         // One card per host (a section each, so every host reads as its own thing), the screen's
@@ -200,6 +207,10 @@ struct HostListView: View {
                   SortButton(label: "Alias",    sortType: $_state.sortType, asc: .aliasAsc, desc: .aliasDesc)
                   SortButton(label: "HostName", sortType: $_state.sortType, asc: .hostNameAsc, desc: .hostNameDesc)
                 }
+                Section(header: Text("Hosts File")) {
+                  Button { _export() } label: { Label("Export Hosts\u{2026}", systemImage: "square.and.arrow.up") }
+                  Button { _importing = true } label: { Label("Import Hosts\u{2026}", systemImage: "square.and.arrow.down") }
+                }
               } label: {
                 Color.clear
                   .frame(width: MoshNavChip.diameter, height: MoshNavChip.diameter)
@@ -216,6 +227,96 @@ struct HostListView: View {
       _state.reloadHosts()
     }
     .moshDeleteConfirmation($_pendingDelete)
+    .fileImporter(isPresented: $_importing, allowedContentTypes: [.json, .plainText, .data], onCompletion: _readImport)
+    .alert(_importPlan.map(_importTitle) ?? "Import", isPresented: Binding(
+      get: { _importPlan != nil },
+      set: { if !$0 { _importPlan = nil } }
+    ), presenting: _importPlan) { plan in
+      if plan.existingAliases.isEmpty {
+        Button("Import") { _applyImport(plan, updateExisting: false) }
+      } else {
+        Button(plan.newAliases.isEmpty ? "Update Them" : "Add New and Update Existing") { _applyImport(plan, updateExisting: true) }
+        if !plan.newAliases.isEmpty {
+          Button("Add New Only") { _applyImport(plan, updateExisting: false) }
+        }
+      }
+      Button("Cancel", role: .cancel) { }
+    } message: { plan in
+      Text(_importMessage(plan))
+    }
+    .alert(errorMessage: $_errorMessage)
+  }
+
+  // MARK: Hosts file
+
+  private func _export() {
+    let url: URL
+    do {
+      url = try MoshHostsTransfer.exportFile()
+    } catch {
+      _errorMessage = "The hosts file could not be written: \(error.localizedDescription)"
+      return
+    }
+    let share = UIActivityViewController(activityItems: [url], applicationActivities: nil)
+    share.popoverPresentationController?.sourceView = _nav.navController.view
+    share.popoverPresentationController?.sourceRect = CGRect(x: _nav.navController.view.bounds.maxX - 60, y: 60, width: 1, height: 1)
+    share.completionWithItemsHandler = { _, _, _, _ in
+      try? FileManager.default.removeItem(at: url.deletingLastPathComponent())
+    }
+    _nav.navController.present(share, animated: true)
+  }
+
+  private func _readImport(_ result: Result<URL, Error>) {
+    switch result {
+    case .failure(let error):
+      _errorMessage = error.localizedDescription
+    case .success(let url):
+      let scoped = url.startAccessingSecurityScopedResource()
+      defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+      do {
+        let data = try Data(contentsOf: url)
+        _importPlan = try MoshHostsTransfer.plan(from: data)
+      } catch {
+        _errorMessage = error.localizedDescription
+      }
+    }
+  }
+
+  private func _importTitle(_ plan: MoshHostsTransfer.Plan) -> String {
+    let n = plan.hosts.count
+    return n == 1 ? "Import 1 host?" : "Import \(n) hosts?"
+  }
+
+  private func _importMessage(_ plan: MoshHostsTransfer.Plan) -> String {
+    var lines: [String] = []
+    let projects = plan.projectCount
+    if projects > 0 {
+      lines.append(projects == 1 ? "With 1 project." : "With \(projects) projects.")
+    }
+    if !plan.newAliases.isEmpty {
+      lines.append("New: " + plan.newAliases.joined(separator: ", ") + ".")
+    }
+    if !plan.existingAliases.isEmpty {
+      lines.append("Already here: " + plan.existingAliases.joined(separator: ", ")
+        + ". Updating keeps their password, their other projects and every field the file leaves out.")
+    }
+    if !plan.connectionChanges.isEmpty {
+      lines.append("Updating changes where they connect, and a saved password goes there too:\n"
+        + plan.connectionChanges.joined(separator: "\n"))
+    }
+    if plan.droppedLines > 0 {
+      lines.append("Lines that would change host key checking were left out.")
+    }
+    lines.append("A hosts file never holds passwords: add them in each host, or when a folder browse asks.")
+    return lines.joined(separator: "\n\n")
+  }
+
+  private func _applyImport(_ plan: MoshHostsTransfer.Plan, updateExisting: Bool) {
+    let result = MoshHostsTransfer.apply(plan, updateExisting: updateExisting)
+    _state.reloadHosts()
+    if let failure = result.failure {
+      _errorMessage = failure
+    }
   }
   
   // A deleted host is tombstoned, and the tombstone beats every other device's copy — this is the

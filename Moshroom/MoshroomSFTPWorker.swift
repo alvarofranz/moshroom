@@ -135,7 +135,16 @@ final class MoshroomSFTPWorker {
   static func connect(alias: String, timeout: TimeInterval? = nil,
                       timeoutError: @escaping () -> Error = { SSHError.connError(msg: "Timed out") })
     throws -> AnyPublisher<Translator, Error> {
-    let target = try MoshroomSSH.resolveTarget(hostAlias: alias, device: nil)
+    try connect(MoshroomConnectTarget(alias: alias), timeout: timeout, timeoutError: timeoutError)
+  }
+
+  /// The same for any target: an unsaved host from an editor, or one the user answered a question
+  /// for (a host key to trust, a password for this connect).
+  static func connect(_ connectTarget: MoshroomConnectTarget, timeout: TimeInterval? = nil,
+                      timeoutError: @escaping () -> Error = { SSHError.connError(msg: "Timed out") })
+    throws -> AnyPublisher<Translator, Error> {
+    let alias = connectTarget.alias
+    let target = try MoshroomSSH.resolveTarget(connectTarget, device: nil)
     var sftp = SSHClient.dial(target.hostName, with: target.config, withProxy: MoshroomSSH.executeProxyCommand)
       .flatMap { $0.requestSFTP() }
       .tryMap { try SFTPTranslator(on: $0) as Translator }

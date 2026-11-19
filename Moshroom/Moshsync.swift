@@ -299,11 +299,14 @@ struct MoshDeletePrompt: Identifiable {
   let id = UUID()
   let title: String
   let message: String
+  /// The destructive button's word: "Delete" everywhere, "Discard" for an unsaved form.
+  var confirmTitle = "Delete"
   let confirm: () -> Void
 
-  init(title: String, message: String, confirm: @escaping () -> Void) {
+  init(title: String, message: String, confirmTitle: String = "Delete", confirm: @escaping () -> Void) {
     self.title = title
     self.message = message
+    self.confirmTitle = confirmTitle
     self.confirm = confirm
   }
 
@@ -340,7 +343,7 @@ extension View {
       ),
       presenting: prompt.wrappedValue
     ) { pending in
-      Button("Delete", role: .destructive) { pending.confirm() }
+      Button(pending.confirmTitle, role: .destructive) { pending.confirm() }
       Button("Cancel", role: .cancel) { }
     } message: { pending in
       Text(pending.message)

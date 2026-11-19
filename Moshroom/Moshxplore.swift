@@ -299,7 +299,7 @@ final class MoshxploreSession {
   // Everything below is touched only on the worker thread.
 
   // What to dial (again). Set by connect.
-  private var hostAlias: String?
+  private var target: MoshroomConnectTarget?
   // The connected SFTP root. We always walk a CLONE so it stays a stable anchor for absolute-path
   // navigation.
   private var root: Translator?
@@ -324,10 +324,16 @@ final class MoshxploreSession {
   // Headless, like every app-initiated connect (MoshroomSFTPWorker.connect): a host that needs an
   // answer fails with a reason instead of waiting on a prompt nobody can see.
   func connect(hostAlias: String, completion: @escaping (Result<String, Error>) -> Void) {
+    connect(target: MoshroomConnectTarget(alias: hostAlias), completion: completion)
+  }
+
+  /// Any target: the folder browser dials unsaved hosts from the host editor this way, and again with
+  /// the user's answer after a host key or password question.
+  func connect(target: MoshroomConnectTarget, completion: @escaping (Result<String, Error>) -> Void) {
     start()
     onWorker { [weak self] in
       guard let self else { return }
-      self.hostAlias = hostAlias
+      self.target = target
       self.root = nil
       self.withRoot { result in
         let home = result.map { $0.current }
@@ -346,13 +352,13 @@ final class MoshxploreSession {
     root = nil
     waitingForRoot.append(body)
     guard !dialing else { return }
-    guard let alias = hostAlias else {
+    guard let target else {
       finishDial(.failure(MoshxploreError.notConnected))
       return
     }
     let sftp: AnyPublisher<Translator, Error>
     do {
-      sftp = try MoshroomSFTPWorker.connect(alias: alias)
+      sftp = try MoshroomSFTPWorker.connect(target)
     } catch {
       finishDial(.failure(error))
       return
