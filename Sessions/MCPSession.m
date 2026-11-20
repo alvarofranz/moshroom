@@ -342,6 +342,14 @@
 // The terminal view was rebuilt and shows nothing. A mosh session holds the whole screen itself, so it
 // owns the repaint: a running client redraws locally, a parked one paints everything when it wakes.
 // Answers YES when that has it covered; NO sends the caller to its resize nudge instead.
+- (void)moshroomClaimTmuxSize
+{
+  Session *child = [self _currentChild];
+  if ([child isKindOfClass:[MoshroomTmux class]]) {
+    [(MoshroomTmux *)child moshroomClaimSize];
+  }
+}
+
 - (BOOL)moshroomMoshCanRepaint
 {
   Session *child = [self _currentChild];

@@ -65,6 +65,8 @@
 - (BOOL)moshroomMoshCanRepaint;
 // Reconnect in place: let the tab's mosh session go and run `command` (e.g. `mosh <host>`).
 - (void)moshroomReconnectWith:(NSString *)command;
+// A tmux tab in front of the user takes the shared window's size back from another device.
+- (void)moshroomClaimTmuxSize;
 
 - (void)updateAllowedPaths;
 - (void)setActiveSession;

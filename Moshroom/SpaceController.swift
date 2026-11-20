@@ -366,6 +366,7 @@ class SpaceController: UIViewController {
       _ = ctrl.removeFromContainer()
     }
     current?.placeToContainer()
+    current?.moshroomClaimTmuxSize()
     // All of these are per tab, so they are re-read for the tab that just became visible.
     moshroomSyncLiveButton()
     moshroomUpdateTabLabel()
@@ -988,6 +989,7 @@ class SpaceController: UIViewController {
     // On the Mac a window that was only behind others never goes to the background, so this is the
     // only "coming back" there (see moshroomBeginCatchUp).
     currentTerm()?.moshroomBeginCatchUp()
+    currentTerm()?.moshroomClaimTmuxSize()
     // Coming back to the app (Cmd+Tab, window switch) must re-evaluate the quick-connect card:
     // it is one more idempotent reveal trigger, same contract as viewDidAppear and prompt-ready.
     if Moshroom.scratchOnly { showMoshnectorIfIdle() }

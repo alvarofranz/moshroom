@@ -858,8 +858,16 @@ import ios_system
       then?()
       return
     }
+    let reclaim = foreignSize
     sentSize = (cols, rows)
     foreignSize = false
+    if reclaim, let name = params.sessionName, !name.isEmpty {
+      // tmux sizes a shared window for its LATEST client (window-size latest, the default), and once
+      // another device has attached, neither refresh-client -C nor send-keys from this one makes it
+      // latest again: the window stays at the other device's size (measured on tmux 3.2a with two
+      // control clients). Switching this client to its own session does, without changing window.
+      gw.send("switch-client -t \(MoshProjectShell.quote("=" + name))")
+    }
     // WIDTH,HEIGHT: accepted by every tmux this connects to (measured on 3.0a and 3.4).
     gw.send("refresh-client -C \(cols),\(rows)") { reply in
       if reply.isError {
@@ -1213,6 +1221,18 @@ import ios_system
     lock.lock()
     defer { lock.unlock() }
     return isRunning && !moshroomParked && !killRequested
+  }
+
+  /// This tab is in front of the user again (shown, the app back, its window key). If another device
+  /// on the same session set the window to its own size meanwhile, take the size back now instead of
+  /// waiting for the next key: a program drawn at a phone's width on a Mac reads as broken.
+  @objc func moshroomClaimSize() {
+    guard let loop = runLoop else { return }
+    CFRunLoopPerformBlock(loop, CFRunLoopMode.defaultMode.rawValue) { [weak self] in
+      guard let self, self.live, self.attached, self.foreignSize else { return }
+      self._sendSize(force: true)
+    }
+    CFRunLoopWakeUp(loop)
   }
 
   @objc public override func sigwinch() {

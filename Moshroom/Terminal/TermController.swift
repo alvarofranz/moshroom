@@ -717,6 +717,12 @@ extension TermController: SuspendableSession {
 // MARK: - Catch-up loader
 
 extension TermController {
+  /// The tab is in front of the user again: a tmux session shared with another device takes back the
+  /// window size this terminal needs (see MoshroomTmux.moshroomClaimSize).
+  func moshroomClaimTmuxSize() {
+    (_session as? MCPSession)?.moshroomClaimTmuxSize()
+  }
+
   /// The terminal may come back blank for a moment: the app returning, a parked session waking, a
   /// relaunched tab restoring, or WebKit rebuilding a page it threw away. The rule is deliberately
   /// plain: one second after that, the terminal is asked whether it shows any text at all. If it
