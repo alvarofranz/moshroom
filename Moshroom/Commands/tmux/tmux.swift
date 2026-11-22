@@ -94,6 +94,16 @@ import ios_system
   /// Keys typed while nothing could take them, as they were written (never cut inside one).
   private var keyQueue: [[UInt8]] = []
   private var keyQueueBytes = 0
+  /// A composer send is a paste followed by a lone Enter. If the Enter reaches the pane on the heels of
+  /// the paste's last bytes (a long text over a slow link takes longer to travel than the beat the
+  /// terminal leaves after it), the agent reads it as part of the paste: a new line, not "send", and
+  /// the text just sits in its input. So the paste's send-keys are counted until tmux has run them,
+  /// and an Enter that follows waits for that, plus `enterGapAfterPaste`; whatever comes after it
+  /// waits behind it, in order.
+  private var pasteKeysInFlight = 0
+  private var pasteLandedAt: CFAbsoluteTime = 0
+  private var heldAfterPaste: [[UInt8]]?
+  private static let enterGapAfterPaste: CFAbsoluteTime = 0.3
   private var modeTracker = TmuxModeTracker()
   private var titleFilter = TmuxTitleFilter()
   private var parking = false
@@ -938,9 +948,11 @@ import ios_system
 
   private func _flushKeys() {
     guard !keyQueue.isEmpty else { return }
-    let queued = keyQueue.flatMap { $0 }
+    let queued = keyQueue
     _dropQueuedKeys()
-    _sendKeys(queued)
+    // Write by write, as they came: a composer send queued while down is a paste and then its own
+    // Enter, and the Enter must stay separate to wait for the paste (see heldAfterPaste).
+    for bytes in queued { _sendKeys(bytes) }
   }
 
   private func _sendKeys(_ bytes: [UInt8]) {
@@ -956,6 +968,18 @@ import ios_system
     if foreignSize, CFAbsoluteTimeGetCurrent() - device.moshroomLastUserInputAt < 2 {
       _sendSize(force: true)
     }
+    if heldAfterPaste != nil {
+      heldAfterPaste?.append(bytes)
+      return
+    }
+    if bytes == [0x0D],
+       pasteKeysInFlight > 0 || CFAbsoluteTimeGetCurrent() - pasteLandedAt < Self.enterGapAfterPaste {
+      heldAfterPaste = [bytes]
+      _releaseAfterPaste()
+      return
+    }
+    // A paste: its bracketed-paste end marker, or more than a person types between two reads.
+    let isPaste = bytes.count > 64 || bytes.firstRange(of: [0x1B, 0x5B, 0x32, 0x30, 0x31, 0x7E]) != nil
     // One literal byte per argument: tmux writes exactly these bytes to the pane (UTF-8, mouse
     // reports and paste markers included), with no key-name lookup in between.
     var i = 0
@@ -966,8 +990,37 @@ import ios_system
       for b in bytes[i..<end] {
         command += b < 16 ? " 0" + String(b, radix: 16) : " " + String(b, radix: 16)
       }
-      gw.send(command)
+      if isPaste {
+        pasteKeysInFlight += 1
+        gw.send(command) { [weak self] _ in
+          guard let self else { return }
+          self.pasteKeysInFlight -= 1
+          self.pasteLandedAt = CFAbsoluteTimeGetCurrent()
+          if self.pasteKeysInFlight == 0 { self._releaseAfterPaste() }
+        }
+      } else {
+        gw.send(command)
+      }
       i = end
+    }
+  }
+
+  /// Sends what waited behind a paste's Enter once the paste has landed and the gap has passed.
+  private func _releaseAfterPaste() {
+    guard heldAfterPaste != nil, pasteKeysInFlight == 0 else { return }
+    let wait = max(0.01, Self.enterGapAfterPaste - (CFAbsoluteTimeGetCurrent() - pasteLandedAt))
+    _after(wait) { [weak self] in
+      guard let self, self.pasteKeysInFlight == 0, let held = self.heldAfterPaste else { return }
+      self.heldAfterPaste = nil
+      // Backdate the landing so the Enter itself is not held again; a paste among the rest re-arms it.
+      self.pasteLandedAt = 0
+      for bytes in held {
+        if self.live, !self.resyncing, self.gateway != nil, self.outcome == nil {
+          self._sendKeys(bytes)
+        } else {
+          self._queueKeys(bytes)
+        }
+      }
     }
   }
 

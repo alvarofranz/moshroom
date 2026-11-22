@@ -913,7 +913,12 @@ struct winsize __winSizeFromJSON(NSDictionary *json) {
       }
       return;
     }
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    // An Enter that lands on the heels of its paste is read by the agent as part of it, a new line and
+    // not "send" (Codex, for one, turns an Enter within ~120 ms of pasted input into a newline), and a
+    // long text takes longer to cross the connection than a short one. tmux tabs also wait for tmux to
+    // confirm the paste (see heldAfterPaste); ssh and mosh only have this beat.
+    NSTimeInterval beat = str.length <= 256 ? 0.25 : MIN(1.2, 0.3 + str.length / 40000.0);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(beat * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
       // Part of the paste, so it is never held behind it (see TermDevice).
       id device = weakSelf.device;
       if ([device respondsToSelector:@selector(viewSendPastedString:)]) {
