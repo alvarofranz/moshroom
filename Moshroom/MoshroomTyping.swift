@@ -150,3 +150,40 @@ enum MoshroomDevelopment {
     #endif
   }
 }
+
+/// A hardware key that reached the very end of the responder chain: nothing in the app took it, which
+/// on the Mac is the system beep. Logged so a "the arrows beep and do nothing" report can be read from
+/// Export Logs. It is NOT a record of typing: only keys that carry no text (arrows, Esc, Tab, Return,
+/// Delete, page and function keys) are named, by name only; printable keys, modifier-only presses and
+/// ⌘ shortcuts are never logged. At most one line every 30 s and 20 per launch.
+@objc final class MoshroomUnhandledKeys: NSObject {
+  private static var lastLogged: Date?
+  private static var logged = 0
+  private static let names: [UIKeyboardHIDUsage: String] = [
+    .keyboardUpArrow: "Up", .keyboardDownArrow: "Down", .keyboardLeftArrow: "Left", .keyboardRightArrow: "Right",
+    .keyboardEscape: "Esc", .keyboardTab: "Tab", .keyboardReturnOrEnter: "Return", .keyboardReturn: "Return",
+    .keypadEnter: "Enter", .keyboardDeleteOrBackspace: "Delete", .keyboardDeleteForward: "Forward Delete",
+    .keyboardPageUp: "Page Up", .keyboardPageDown: "Page Down", .keyboardHome: "Home", .keyboardEnd: "End",
+    .keyboardF1: "F1", .keyboardF2: "F2", .keyboardF3: "F3", .keyboardF4: "F4", .keyboardF5: "F5", .keyboardF6: "F6",
+    .keyboardF7: "F7", .keyboardF8: "F8", .keyboardF9: "F9", .keyboardF10: "F10", .keyboardF11: "F11", .keyboardF12: "F12",
+  ]
+
+  @objc static func note(_ presses: Set<UIPress>) {
+    guard logged < 20,
+          let key = presses.compactMap(\.key).first(where: { names[$0.keyCode] != nil }),
+          !key.modifierFlags.contains(.command), let name = names[key.keyCode] else { return }
+    // A text field or editor (the composer, a search bar) takes arrows and Delete through the text
+    // system even when the press itself travels on up the chain: no beep there, nothing to report.
+    let responder = UIResponder.moshroomCurrentFirst
+    if responder is UITextInput { return }
+    let now = Date()
+    if let last = lastLogged, now.timeIntervalSince(last) < 30 { return }
+    lastLogged = now
+    logged += 1
+    let first = responder.map { String(describing: type(of: $0)) } ?? "none"
+    let window = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+      .flatMap(\.windows).first { $0.isKeyWindow }
+    let presented = window?.rootViewController?.presentedViewController.map { String(describing: type(of: $0)) } ?? "none"
+    MoshLog.log("keys", "\(name) reached no handler (first responder: \(first), key window: \(window == nil ? "none" : "yes"), presented: \(presented), typing: \(MoshroomTyping.shared.mode.rawValue))")
+  }
+}

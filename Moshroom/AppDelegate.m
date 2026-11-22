@@ -350,4 +350,11 @@ configurationForConnectingSceneSession:(UISceneSession *)connectingSceneSession
   }
 }
 
+// The end of the responder chain: a hardware key that arrives here was taken by nothing in the app
+// (on the Mac, the system beeps). MoshroomUnhandledKeys logs which non-text key it was, rate-limited.
+- (void)pressesBegan:(NSSet<UIPress *> *)presses withEvent:(UIPressesEvent *)event {
+  [MoshroomUnhandledKeys note:presses];
+  [super pressesBegan:presses withEvent:event];
+}
+
 @end
