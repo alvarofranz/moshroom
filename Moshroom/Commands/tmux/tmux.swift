@@ -948,7 +948,12 @@ import ios_system
       _queueKeys(bytes)
       return
     }
-    if foreignSize {
+    // Take the window size back only for a PERSON typing here. The terminal answers queries by itself
+    // (Codex asks for the cursor position on every redraw, focus reports, device attributes), and those
+    // bytes come through here too: with two devices on one session, each redraw made the other device
+    // answer, claim the size, resize the window and trigger the next redraw, a loop that flickered
+    // both screens between their two widths.
+    if foreignSize, CFAbsoluteTimeGetCurrent() - device.moshroomLastUserInputAt < 2 {
       _sendSize(force: true)
     }
     // One literal byte per argument: tmux writes exactly these bytes to the pane (UTF-8, mouse

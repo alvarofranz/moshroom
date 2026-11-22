@@ -73,6 +73,10 @@
 @property (nonatomic) BOOL isReady;
 @property (nonatomic) NSInteger rows;
 @property (nonatomic) NSInteger cols;
+// When the user last sent input through this device (typing, a key, a paste, a composer send), as
+// CFAbsoluteTime; 0 = never. The terminal's own automatic replies (cursor position, device attributes,
+// focus reports) do not count. tmux reads it to tell a person typing from the terminal answering.
+@property (atomic, readonly) CFAbsoluteTime moshroomLastUserInputAt;
 
 // Offer the pointer as it is a struct on itself. This is helpful because on Swift,
 // we cannot used a synthesized expression to get the UnsafeMutablePointer.

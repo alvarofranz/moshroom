@@ -233,6 +233,7 @@ static int __sizeOfIncompleteSequenceAtTheEnd(const char *buffer, size_t len) {
   // up in the scrollback, the answer to what you just sent lands off-screen and the terminal reads
   // as frozen on stale text.
   [self.view moshroomScrollToBottom];
+  _moshroomLastUserInputAt = CFAbsoluteTimeGetCurrent();
 
   // Behind a paste that has not gone out yet: wait for it, or these bytes would reach the program
   // before the text (and the Enter) that was sent first.
@@ -304,6 +305,7 @@ static int __sizeOfIncompleteSequenceAtTheEnd(const char *buffer, size_t len) {
 {
   // A paste is user input too — same reason as -write:.
   [self.view moshroomScrollToBottom];
+  _moshroomLastUserInputAt = CFAbsoluteTimeGetCurrent();
   @synchronized (self) {
     if (_pasteInFlight || _heldInput.count > 0) {
       [_heldInput addObject:@[input ?: @"", @(submit)]];
@@ -629,6 +631,7 @@ static int __sizeOfIncompleteSequenceAtTheEnd(const char *buffer, size_t len) {
 - (void)viewSendPastedString:(NSString *)data
 {
   [self.view moshroomScrollToBottom];
+  _moshroomLastUserInputAt = CFAbsoluteTimeGetCurrent();
   [self _writeInput:data];
 }
 
