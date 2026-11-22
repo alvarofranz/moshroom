@@ -69,10 +69,314 @@ func moshHostCardButton(alias: String, description: String, icon: String = "serv
   return b
 }
 
-// The quick-connect card itself. Pure presentation — SpaceController owns the lifecycle.
+// Hosts and projects this device connected to lately, newest first. Written by noteConnection (a
+// Quick Connect tap, or a typed `ssh`/`tmux`/`mosh <host> [project]`), read by Quick Connect's
+// Recent row. Device-local on purpose: what you open on the phone is not what you open on the Mac.
+enum MoshQuickRecents {
+  struct Entry: Equatable {
+    let alias: String
+    /// The project's tmux session (its stable id across renames); nil = the host's own session.
+    let session: String?
+  }
+
+  private static let key = "MoshroomQuickConnectRecents"
+  private static let separator = "\u{1F}"
+  private static let cap = 8
+
+  static func note(alias: String, session: String?) {
+    let entry = Entry(alias: alias, session: session)
+    var list = all().filter { $0 != entry }
+    list.insert(entry, at: 0)
+    UserDefaults.standard.set(list.prefix(cap).map { $0.alias + separator + ($0.session ?? "") }, forKey: key)
+  }
+
+  /// Replaces the list (used to forget entries whose host or project is gone).
+  static func keep(_ entries: [Entry]) {
+    UserDefaults.standard.set(entries.prefix(cap).map { $0.alias + separator + ($0.session ?? "") }, forKey: key)
+  }
+
+  static func all() -> [Entry] {
+    (UserDefaults.standard.stringArray(forKey: key) ?? []).compactMap { raw in
+      let parts = raw.components(separatedBy: separator)
+      guard parts.count == 2, !parts[0].isEmpty else { return nil }
+      return Entry(alias: parts[0], session: parts[1].isEmpty ? nil : parts[1])
+    }
+  }
+}
+
+/// Something Quick Connect can dial: a host's own session (project nil) or one of its projects.
+/// The header, the project tiles and the Recent tiles all carry one, so taps and the context menu
+/// read the same thing.
+protocol MoshQuickTarget: UIView {
+  var alias: String { get }
+  var project: MoshProject? { get }
+}
+
+/// Quick Connect's pressable surface: a flat fill that lightens under the pointer and under the
+/// finger. Plain UIControl (no UIButton configuration), so the Mac never swaps in its push-button look.
+class MoshQuickPressable: UIControl {
+  var restFill: UIColor = .clear { didSet { _paint() } }
+  var hoverFill: UIColor = UIColor(white: 1, alpha: 0.05)
+  var pressFill: UIColor = UIColor(white: 1, alpha: 0.10)
+  private var hovering = false
+
+  override init(frame: CGRect) {
+    super.init(frame: frame)
+    layer.cornerCurve = .continuous
+    addGestureRecognizer(UIHoverGestureRecognizer(target: self, action: #selector(_hover(_:))))
+    isAccessibilityElement = true
+    accessibilityTraits = .button
+  }
+
+  required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+  override var isHighlighted: Bool { didSet { _paint() } }
+
+  @objc private func _hover(_ g: UIHoverGestureRecognizer) {
+    hovering = g.state == .began || g.state == .changed
+    _paint()
+  }
+
+  private func _paint() {
+    backgroundColor = isHighlighted ? pressFill : (hovering ? hoverFill : restFill)
+  }
+}
+
+/// A host's header inside its folder: the server glyph on a faint mushroom tile, the alias, the
+/// optional description and `user@address` in monospace. A tap opens the host's own session.
+final class MoshQuickHostHeader: MoshQuickPressable, MoshQuickTarget {
+  let alias: String
+  let project: MoshProject? = nil
+  private let glyph = UIView()
+  private let glyphImage = UIImageView()
+  private let titleLabel = UILabel()
+  private let descriptionLabel = UILabel()
+  private let addressLabel = UILabel()
+  private let go = UIImageView()
+  private static let pad: CGFloat = 14
+  private static let glyphSide: CGFloat = 42
+
+  init(alias: String, description: String, address: String) {
+    self.alias = alias
+    super.init(frame: .zero)
+    glyph.backgroundColor = UIColor.moshroomTint.withAlphaComponent(0.18)
+    glyph.layer.cornerRadius = 11
+    glyph.layer.cornerCurve = .continuous
+    glyph.isUserInteractionEnabled = false
+    glyphImage.image = UIImage(systemName: "server.rack",
+                               withConfiguration: UIImage.SymbolConfiguration(pointSize: 17, weight: .semibold))
+    glyphImage.tintColor = .moshroomTint
+    glyphImage.contentMode = .center
+    glyph.addSubview(glyphImage)
+
+    titleLabel.text = alias
+    titleLabel.font = UIFontMetrics(forTextStyle: .headline).scaledFont(for: .systemFont(ofSize: 17, weight: .semibold), maximumPointSize: 28)
+    titleLabel.textColor = .label
+    titleLabel.lineBreakMode = .byTruncatingTail
+    descriptionLabel.text = description
+    descriptionLabel.font = UIFontMetrics(forTextStyle: .subheadline).scaledFont(for: .systemFont(ofSize: 13), maximumPointSize: 22)
+    descriptionLabel.textColor = .secondaryLabel
+    descriptionLabel.numberOfLines = 2
+    addressLabel.text = address
+    addressLabel.font = UIFontMetrics(forTextStyle: .footnote).scaledFont(for: .monospacedSystemFont(ofSize: 12, weight: .regular), maximumPointSize: 20)
+    addressLabel.textColor = .tertiaryLabel
+    addressLabel.lineBreakMode = .byTruncatingMiddle
+    go.image = UIImage(systemName: "arrow.right.circle.fill",
+                       withConfiguration: UIImage.SymbolConfiguration(pointSize: 20, weight: .regular))
+    go.tintColor = .tertiaryLabel
+    go.contentMode = .center
+    for v in [glyph, titleLabel, descriptionLabel, addressLabel, go] as [UIView] {
+      v.isUserInteractionEnabled = false
+      addSubview(v)
+    }
+    accessibilityIdentifier = alias
+    accessibilityLabel = description.isEmpty ? alias : "\(alias), \(description)"
+    accessibilityHint = "Opens the host's own session"
+  }
+
+  required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+  private var _lines: [UILabel] {
+    [titleLabel, descriptionLabel, addressLabel].filter { !($0.text ?? "").isEmpty }
+  }
+
+  /// Lays the header out at this width and returns its height.
+  @discardableResult
+  func layout(width: CGFloat) -> CGFloat {
+    let pad = Self.pad, side = Self.glyphSide
+    let goSide: CGFloat = 24
+    let textX = pad + side + 12
+    let textW = max(40, width - textX - pad - goSide - 8)
+    var y: CGFloat = 0
+    var frames: [(UILabel, CGRect)] = []
+    for (i, label) in _lines.enumerated() {
+      if i > 0 { y += label === addressLabel ? 3 : 2 }
+      let h = ceil(label.sizeThatFits(CGSize(width: textW, height: .greatestFiniteMagnitude)).height)
+      frames.append((label, CGRect(x: textX, y: y, width: textW, height: h)))
+      y += h
+    }
+    let textH = y
+    let height = max(side, textH) + pad * 2
+    let textTop = (height - textH) / 2
+    for (label, f) in frames { label.frame = f.offsetBy(dx: 0, dy: textTop) }
+    for label in [titleLabel, descriptionLabel, addressLabel] where !_lines.contains(label) { label.frame = .zero }
+    glyph.frame = CGRect(x: pad, y: (height - side) / 2, width: side, height: side)
+    glyphImage.frame = glyph.bounds
+    go.frame = CGRect(x: width - pad - goSide, y: (height - goSide) / 2, width: goSide, height: goSide)
+    return height
+  }
+}
+
+/// One tile in a grid: a project inside its host's folder, or a Recent entry (which also names the
+/// host under the project).
+final class MoshQuickTile: MoshQuickPressable, MoshQuickTarget {
+  let alias: String
+  let project: MoshProject?
+  private let icon = UIImageView()
+  private let titleLabel = UILabel()
+  private let subtitleLabel = UILabel()
+
+  init(alias: String, project: MoshProject?, title: String, subtitle: String?) {
+    self.alias = alias
+    self.project = project
+    super.init(frame: .zero)
+    layer.cornerRadius = 11
+    // Explicit whites over the folder, so a tile reads the same on every elevation and platform.
+    restFill = UIColor(white: 1, alpha: 0.07)
+    hoverFill = UIColor(white: 1, alpha: 0.12)
+    pressFill = UIColor(white: 1, alpha: 0.17)
+    icon.image = UIImage(systemName: project == nil ? "server.rack" : "folder.fill",
+                         withConfiguration: UIImage.SymbolConfiguration(pointSize: 14, weight: .semibold))
+    icon.tintColor = .moshroomTint
+    icon.contentMode = .center
+    titleLabel.text = title
+    titleLabel.font = UIFontMetrics(forTextStyle: .subheadline).scaledFont(for: .systemFont(ofSize: 15, weight: .medium), maximumPointSize: 24)
+    titleLabel.textColor = .label
+    // Project names are often one long word (`visitcarlingford`): shrink a little first, and if it
+    // still does not fit, cut the middle so the start and the end, which tell projects apart, stay.
+    titleLabel.adjustsFontSizeToFitWidth = true
+    titleLabel.minimumScaleFactor = 0.8
+    titleLabel.lineBreakMode = .byTruncatingMiddle
+    subtitleLabel.text = subtitle
+    subtitleLabel.font = UIFontMetrics(forTextStyle: .caption1).scaledFont(for: .systemFont(ofSize: 12), maximumPointSize: 20)
+    subtitleLabel.textColor = .secondaryLabel
+    subtitleLabel.lineBreakMode = .byTruncatingTail
+    subtitleLabel.isHidden = subtitle == nil
+    for v in [icon, titleLabel, subtitleLabel] as [UIView] {
+      v.isUserInteractionEnabled = false
+      addSubview(v)
+    }
+    accessibilityIdentifier = project.map { "project:" + alias + ":" + $0.id } ?? alias
+    accessibilityLabel = [title, subtitle].compactMap { $0 }.joined(separator: ", ")
+  }
+
+  required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+  /// The height every tile of a grid shares (one line, or two with a subtitle), at the current text size.
+  func preferredHeight() -> CGFloat {
+    var h = ceil(titleLabel.font.lineHeight)
+    if !subtitleLabel.isHidden { h += 2 + ceil(subtitleLabel.font.lineHeight) }
+    return max(44, h + 22)
+  }
+
+  override func layoutSubviews() {
+    super.layoutSubviews()
+    let iconW: CGFloat = 20
+    icon.frame = CGRect(x: 12, y: (bounds.height - iconW) / 2, width: iconW, height: iconW)
+    let x = icon.frame.maxX + 9
+    let w = max(10, bounds.width - x - 12)
+    let titleH = ceil(titleLabel.font.lineHeight)
+    if subtitleLabel.isHidden {
+      titleLabel.frame = CGRect(x: x, y: (bounds.height - titleH) / 2, width: w, height: titleH)
+    } else {
+      let subH = ceil(subtitleLabel.font.lineHeight)
+      let top = (bounds.height - titleH - 2 - subH) / 2
+      titleLabel.frame = CGRect(x: x, y: top, width: w, height: titleH)
+      subtitleLabel.frame = CGRect(x: x, y: top + titleH + 2, width: w, height: subH)
+    }
+  }
+}
+
+/// Lays tiles out in rows of equal columns, as many as fit `minWidth`, and returns the grid's height.
+private func moshQuickGrid(_ tiles: [MoshQuickTile], origin: CGPoint, width: CGFloat,
+                           minWidth: CGFloat, gap: CGFloat, maxColumns: Int = .max) -> CGFloat {
+  guard !tiles.isEmpty else { return 0 }
+  let columns = max(1, min(maxColumns, Int((width + gap) / (minWidth + gap))))
+  let tileW = floor((width - gap * CGFloat(columns - 1)) / CGFloat(columns))
+  let tileH = tiles.map { $0.preferredHeight() }.max() ?? 44
+  for (i, tile) in tiles.enumerated() {
+    let col = i % columns, row = i / columns
+    tile.frame = CGRect(x: origin.x + CGFloat(col) * (tileW + gap), y: origin.y + CGFloat(row) * (tileH + gap),
+                        width: tileW, height: tileH)
+  }
+  let rows = (tiles.count + columns - 1) / columns
+  return CGFloat(rows) * tileH + CGFloat(rows - 1) * gap
+}
+
+/// A host as a folder: its header on a faint mushroom wash, then its projects as a grid of tiles.
+final class MoshQuickHostCard: UIView {
+  let header: MoshQuickHostHeader
+  let tiles: [MoshQuickTile]
+  private let wash = CAGradientLayer()
+  private let divider = UIView()
+
+  init(alias: String, description: String, address: String, projects: [MoshProject]) {
+    header = MoshQuickHostHeader(alias: alias, description: description, address: address)
+    tiles = projects.map {
+      MoshQuickTile(alias: alias, project: $0, title: $0.name.isEmpty ? $0.session : $0.name, subtitle: nil)
+    }
+    super.init(frame: .zero)
+    backgroundColor = UIColor(white: 1, alpha: 0.055)
+    layer.cornerRadius = Moshstyle.cardRadius + 2
+    layer.cornerCurve = .continuous
+    layer.borderWidth = 1
+    layer.borderColor = UIColor(white: 1, alpha: 0.07).cgColor
+    clipsToBounds = true
+    // The folder's "tab": a mushroom wash fading out across the header, so each host reads as one
+    // object at a glance even in a wall of them.
+    wash.colors = [UIColor.moshroomTint.withAlphaComponent(0.22).cgColor, UIColor.moshroomTint.withAlphaComponent(0).cgColor]
+    wash.startPoint = CGPoint(x: 0, y: 0)
+    wash.endPoint = CGPoint(x: 1, y: 1)
+    layer.addSublayer(wash)
+    addSubview(header)
+    divider.backgroundColor = UIColor(white: 1, alpha: 0.08)
+    divider.isHidden = tiles.isEmpty
+    addSubview(divider)
+    tiles.forEach(addSubview)
+  }
+
+  required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+  /// Lays the folder out at this width and returns its height.
+  func layout(width: CGFloat) -> CGFloat {
+    let headerH = header.layout(width: width)
+    header.frame = CGRect(x: 0, y: 0, width: width, height: headerH)
+    CATransaction.begin()
+    CATransaction.setDisableActions(true)   // the wash moves WITH the card, never trails it
+    wash.frame = CGRect(x: 0, y: 0, width: width, height: headerH)
+    CATransaction.commit()
+    guard !tiles.isEmpty else { return headerH }
+    divider.frame = CGRect(x: 14, y: headerH, width: width - 28, height: 1 / UIScreen.main.scale)
+    let gridH = moshQuickGrid(tiles, origin: CGPoint(x: 12, y: headerH + 12), width: width - 24, minWidth: 140, gap: 8)
+    return headerH + 12 + gridH + 12
+  }
+}
+
+/// A scroll view whose pressable children never pin it: a drag that starts on a tile scrolls.
+private final class MoshQuickScrollView: UIScrollView {
+  override func touchesShouldCancel(in view: UIView) -> Bool { true }
+}
+
+// Quick Connect: the page a fresh terminal shows. Pure presentation — SpaceController owns the
+// lifecycle. It fills the whole terminal area: the SSH/Mosh switcher, a Recent row once there is
+// enough to choose from, and every saved host as a folder of its projects, in as many columns as the
+// width holds (one on a phone, up to four on a Mac), stacked like masonry so a host with many
+// projects never leaves holes next to a host with none.
 final class MoshnectorView: UIView {
   #if MOSHROOM_PUBLISHING_OPTION_DEVELOPER
   var storeProjects: [String: [MoshProject]]?
+  var storeAddresses: [String: String]?
+  var storeRecents: [MoshQuickRecents.Entry]?
   #endif
 
   /// A host (project nil: its own session) or one of its projects, in the mode to use.
@@ -82,21 +386,25 @@ final class MoshnectorView: UIView {
   private var mode: MoshnectorMode = .ssh
   private var hosts: [(alias: String, description: String)] = []
   private let modeControl = UISegmentedControl(items: ["SSH", "Mosh"])
-  private let rowsStack = UIStackView()
+  private let scroll = MoshQuickScrollView()
   private let emptyLabel = UILabel()
-  private let scroll = UIScrollView()
+  private let recentCaption = UILabel()
+  private let hostsCaption = UILabel()
+  private var cards: [MoshQuickHostCard] = []
+  private var recentTiles: [MoshQuickTile] = []
+  /// Fades the content out under the top bar once the page is scrolled (at rest nothing is faded).
+  private let topFade = CAGradientLayer()
+
+  /// Recent shows up only once there are more ways in than fit at a glance.
+  private static let recentThreshold = 6
 
   init() {
     super.init(frame: .zero)
     translatesAutoresizingMaskIntoConstraints = false
-    // The dark family (launcher cards, Moshvault, Moshxplore): a dark card over the terminal,
-    // semantic colors, the white chips staying the one bright accent.
-    backgroundColor = .systemGroupedBackground
-    layer.cornerRadius = Moshstyle.overlayRadius
-    Moshstyle.applyOverlayShadow(layer)
+    // The page sits on the backdrop (the terminal's own ground); the folders carry the colour.
+    backgroundColor = .clear
 
-    // No card title on purpose: the switcher and the host rows say what this is, and a "Quick Connect"
-    // heading over them was a label explaining the obvious. The card starts at the SSH/Mosh switcher.
+    // No title on purpose: the switcher and the folders say what this is.
     modeControl.selectedSegmentIndex = 0
     // Mushroom-red selection with white text — the house switcher, styled once for the whole
     // app in MoshstyleAppearance.install() (Moshvault's Passwords/2FA picker matches for free).
@@ -105,14 +413,20 @@ final class MoshnectorView: UIView {
       self.mode = self.modeControl.selectedSegmentIndex == 1 ? .mosh : .ssh
     }, for: .valueChanged)
 
-    rowsStack.axis = .vertical
-    rowsStack.spacing = 7
-    rowsStack.alignment = .fill
-    rowsStack.translatesAutoresizingMaskIntoConstraints = false
-
-    scroll.translatesAutoresizingMaskIntoConstraints = false
     scroll.showsHorizontalScrollIndicator = false
-    scroll.addSubview(rowsStack)
+    scroll.alwaysBounceVertical = false
+    scroll.delaysContentTouches = false
+    scroll.contentInsetAdjustmentBehavior = .never
+    scroll.delegate = self
+    topFade.colors = [UIColor.black.withAlphaComponent(0).cgColor, UIColor.black.cgColor, UIColor.black.cgColor]
+    // No edge effect: the page starts right under the top bar, which already has its own ground, and
+    // the effect drew a hairline across the switcher.
+    if #available(iOS 26.0, *) {
+      scroll.topEdgeEffect.isHidden = true
+      scroll.bottomEdgeEffect.isHidden = true
+    }
+    addSubview(scroll)
+    scroll.addSubview(modeControl)
 
     let emptyPara = NSMutableParagraphStyle()
     emptyPara.alignment = .center
@@ -120,57 +434,150 @@ final class MoshnectorView: UIView {
     emptyLabel.attributedText = NSAttributedString(
       string: "No saved hosts yet.\nAdd one in Settings › Hosts.",
       attributes: [.paragraphStyle: emptyPara,
-                   .font: UIFont.systemFont(ofSize: 13),
+                   .font: UIFont.systemFont(ofSize: 15),
                    .foregroundColor: UIColor.secondaryLabel])
     emptyLabel.numberOfLines = 0
     emptyLabel.isHidden = true
+    scroll.addSubview(emptyLabel)
 
-    let stack = UIStackView(arrangedSubviews: [modeControl, scroll, emptyLabel])
-    stack.axis = .vertical
-    stack.spacing = 12
-    stack.alignment = .fill
-    stack.translatesAutoresizingMaskIntoConstraints = false
-    addSubview(stack)
-
-    // Shrink-wrap the scroll to its content, but at a LOW priority: it must never win against the
-    // rows' compression resistance, or a list taller than the 260pt cap gets squashed into it (the
-    // top rows collapse). Low priority → rows keep full height and the list scrolls instead.
-    let scrollToContent = scroll.heightAnchor.constraint(equalTo: rowsStack.heightAnchor)
-    scrollToContent.priority = .defaultLow
-
-    NSLayoutConstraint.activate([
-      stack.topAnchor.constraint(equalTo: topAnchor, constant: 16),
-      stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
-      stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
-      stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -16),
-
-      rowsStack.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor),
-      rowsStack.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor),
-      rowsStack.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor),
-      rowsStack.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor),
-      rowsStack.widthAnchor.constraint(equalTo: scroll.frameLayoutGuide.widthAnchor),
-
-      scrollToContent,
-      scroll.heightAnchor.constraint(lessThanOrEqualToConstant: 260),
-    ])
+    for (label, text) in [(recentCaption, "RECENT"), (hostsCaption, "HOSTS")] {
+      label.attributedText = NSAttributedString(string: text, attributes: [
+        .font: UIFont.systemFont(ofSize: 12, weight: .semibold),
+        .foregroundColor: UIColor.secondaryLabel,
+        .kern: 0.8,
+      ])
+      label.isHidden = true
+      scroll.addSubview(label)
+    }
   }
 
   required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-  // Rebuild the host list: one card per saved host — alias plus its optional gray description.
-  func reload(hosts: [(alias: String, description: String)]) {
+  /// What the page was last built from. Quick Connect is re-shown on every foreground, window-key,
+  /// modal close and iCloud pass: rebuilding each time would drop a finger already on a tile, the
+  /// pointer's hover and the reader's scroll position, so the page is rebuilt only when this changes.
+  private var builtFrom: String?
+  /// The tab the page was last shown on: coming back to the same tab (a closed composer, Settings)
+  /// keeps the scroll position, another tab starts at the top.
+  var shownForTab: UUID?
+
+  /// Refresh the page: one folder per saved host, plus the Recent row. `fromTop` when the page is
+  /// coming on screen (a page that was already showing keeps where the reader was).
+  func reload(hosts: [(alias: String, description: String)], fromTop: Bool = true) {
     self.hosts = hosts
-    _rebuildRows()
-    // Always start at the first host (a rebuilt scroll can otherwise keep a stale offset).
-    scroll.setContentOffset(.zero, animated: false)
+    let signature = _signature()
+    if signature != builtFrom {
+      builtFrom = signature
+      _rebuild()
+    }
+    if fromTop { scroll.setContentOffset(.zero, animated: false) }
   }
 
-  private func _rebuildRows() {
-    rowsStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
-    let empty = hosts.isEmpty
-    emptyLabel.isHidden = !empty
-    scroll.isHidden = empty
-    for host in hosts { rowsStack.addArrangedSubview(_hostRow(host.alias, description: host.description)) }
+  override func traitCollectionDidChange(_ previous: UITraitCollection?) {
+    super.traitCollectionDidChange(previous)
+    if previous?.preferredContentSizeCategory != traitCollection.preferredContentSizeCategory { _rebuild() }
+  }
+
+  private func _signature() -> String {
+    var parts: [String] = []
+    for host in hosts {
+      parts.append([host.alias, host.description, _address(host.alias)].joined(separator: "\u{1F}"))
+      parts += _projects(host.alias).map { "\($0.id)\u{1F}\($0.name)\u{1F}\($0.session)" }
+      parts.append("\u{1E}")
+    }
+    parts += _recents().map { "\($0.alias)\u{1F}\($0.session ?? "")" }
+    return parts.joined(separator: "\n")
+  }
+
+  private func _projects(_ alias: String) -> [MoshProject] {
+    #if MOSHROOM_PUBLISHING_OPTION_DEVELOPER
+    if let storeProjects { return storeProjects[alias] ?? [] }
+    #endif
+    return MoshHosts.withHost(alias)?.moshroomProjects ?? []
+  }
+
+  private func _address(_ alias: String) -> String {
+    #if MOSHROOM_PUBLISHING_OPTION_DEVELOPER
+    if let storeAddresses { return storeAddresses[alias] ?? "" }
+    #endif
+    guard let host = MoshHosts.withHost(alias) else { return "" }
+    let name = host.hostName ?? ""
+    guard !name.isEmpty else { return "" }
+    let user = host.user ?? ""
+    return user.isEmpty ? name : "\(user)@\(name)"
+  }
+
+  private func _recents() -> [MoshQuickRecents.Entry] {
+    #if MOSHROOM_PUBLISHING_OPTION_DEVELOPER
+    if let storeRecents { return storeRecents }
+    #endif
+    return MoshQuickRecents.all()
+  }
+
+  private func _rebuild() {
+    cards.forEach { $0.removeFromSuperview() }
+    recentTiles.forEach { $0.removeFromSuperview() }
+    cards = []
+    recentTiles = []
+    emptyLabel.isHidden = !hosts.isEmpty
+
+    var projectsByHost: [String: [MoshProject]] = [:]
+    for host in hosts {
+      let projects = _projects(host.alias)
+      projectsByHost[host.alias] = projects
+      let card = MoshQuickHostCard(alias: host.alias, description: host.description,
+                                   address: _address(host.alias), projects: projects)
+      _wire(card.header)
+      card.tiles.forEach(_wire)
+      cards.append(card)
+      scroll.addSubview(card)
+    }
+
+    // Recent: only what still exists. A deleted host or project drops out, and is forgotten too, so
+    // it cannot hold a slot or come back if its alias is ever reused.
+    let recents = _recents()
+    let alive = recents.filter { entry in
+      guard let projects = projectsByHost[entry.alias] else { return false }
+      return entry.session.map { s in projects.contains { $0.session == s } } ?? true
+    }
+    #if MOSHROOM_PUBLISHING_OPTION_DEVELOPER
+    let storeData = storeRecents != nil
+    #else
+    let storeData = false
+    #endif
+    if !hosts.isEmpty, !storeData, alive.count < recents.count { MoshQuickRecents.keep(alive) }
+    let targets = hosts.count + projectsByHost.values.reduce(0) { $0 + $1.count }
+    if targets > Self.recentThreshold {
+      for entry in alive {
+        guard let projects = projectsByHost[entry.alias] else { continue }
+        if let session = entry.session {
+          guard let project = projects.first(where: { $0.session == session }) else { continue }
+          recentTiles.append(MoshQuickTile(alias: entry.alias, project: project,
+                                           title: project.name.isEmpty ? project.session : project.name,
+                                           subtitle: entry.alias))
+        } else {
+          let description = hosts.first { $0.alias == entry.alias }?.description ?? ""
+          recentTiles.append(MoshQuickTile(alias: entry.alias, project: nil, title: entry.alias,
+                                           subtitle: description.isEmpty ? "Host session" : description))
+        }
+      }
+    }
+    recentTiles.forEach { tile in
+      _wire(tile)
+      tile.accessibilityIdentifier = "recent:" + (tile.accessibilityIdentifier ?? "")
+      // Before the folders, so VoiceOver reads the page in the order it is drawn.
+      if let first = cards.first { scroll.insertSubview(tile, belowSubview: first) } else { scroll.addSubview(tile) }
+    }
+    setNeedsLayout()
+  }
+
+  private func _wire(_ control: MoshQuickPressable & MoshQuickTarget) {
+    control.addAction(UIAction { [weak self, weak control] _ in
+      guard let self, let control else { return }
+      self.onConnect?(self._tapMode(for: control.alias), control.alias, control.project)
+    }, for: .touchUpInside)
+    // A long press (a right click on the Mac) offers every way in, whatever the switcher says.
+    control.addInteraction(UIContextMenuInteraction(delegate: self))
   }
 
   // What a tap on this host runs: in SSH mode a host opens in tmux (its session lives on the server)
@@ -182,158 +589,84 @@ final class MoshnectorView: UIView {
     return mode
   }
 
-  // One saved host = one shared house card (see moshHostCardButton — the exact same card the
-  // Moshxplore host picker shows), wired to connect in the selected mode. A long press (a right
-  // click on the Mac) offers every way in, whatever the switcher says, as a one-off.
-  private func _hostRow(_ alias: String, description: String) -> UIView {
-    let b = moshHostCardButton(alias: alias, description: description)
-    b.addAction(UIAction { [weak self] _ in
-      guard let self else { return }
-      self.onConnect?(self._tapMode(for: alias), alias, nil)
-    }, for: .touchUpInside)
-    b.accessibilityIdentifier = alias
-    b.addInteraction(UIContextMenuInteraction(delegate: self))
-    // A host without projects is exactly the card it always was.
-    #if MOSHROOM_PUBLISHING_OPTION_DEVELOPER
-    let projects = storeProjects.map { $0[alias] ?? [] } ?? MoshHosts.withHost(alias)?.moshroomProjects ?? []
-    #else
-    let projects = MoshHosts.withHost(alias)?.moshroomProjects ?? []
-    #endif
-    guard !projects.isEmpty else { return b }
+  override func layoutSubviews() {
+    super.layoutSubviews()
+    scroll.frame = bounds
+    CATransaction.begin()
+    CATransaction.setDisableActions(true)
+    topFade.frame = bounds
+    topFade.locations = [0, NSNumber(value: Double(min(1, 18 / max(bounds.height, 1)))), 1]
+    CATransaction.commit()
+    let width = bounds.width
+    guard width > 0 else { return }
+    let compact = width < 560
+    let side: CGFloat = compact ? 16 : 28
+    let contentW = min(width - side * 2, 1400)
+    let x0 = floor((width - contentW) / 2)
+    let gap: CGFloat = compact ? 12 : 16
+    var y: CGFloat = compact ? 6 : 14
 
-    // With projects the card grows into a little tree: the host stays its header (same glyph, alias and
-    // description, tap = the host's own session) and its projects hang under it, one row each, joined to
-    // the server glyph by a thin line with ├ / └ branches, like a file tree.
-    var header = b.configuration ?? .filled()
-    header.background.backgroundColor = .clear
-    header.background.strokeWidth = 0
-    header.contentInsets.bottom = 10
-    b.configuration = header
-    let insets = header.contentInsets
-    let glyphWidth = header.image?.size.width ?? 20
-    let branchX = insets.leading + glyphWidth / 2          // the line drops from the glyph's centre
-    let textLeading = insets.leading + glyphWidth + header.imagePadding
+    modeControl.frame = CGRect(x: x0, y: y, width: compact ? contentW : min(280, contentW), height: 34)
+    y = modeControl.frame.maxY + (compact ? 18 : 24)
 
-    let rows = UIStackView()
-    rows.axis = .vertical
-    rows.translatesAutoresizingMaskIntoConstraints = false
-    for (index, project) in projects.enumerated() {
-      let row = MoshProjectTreeRow(title: project.name.isEmpty ? project.session : project.name,
-                                   branchX: branchX, textLeading: textLeading,
-                                   isLast: index == projects.count - 1)
-      row.button.addAction(UIAction { [weak self] _ in
-        guard let self else { return }
-        self.onConnect?(self._tapMode(for: alias), alias, project)
-      }, for: .touchUpInside)
-      row.button.accessibilityIdentifier = "project:" + alias + ":" + project.id
-      rows.addArrangedSubview(row)
+    if hosts.isEmpty {
+      recentCaption.isHidden = true
+      hostsCaption.isHidden = true
+      let h = ceil(emptyLabel.sizeThatFits(CGSize(width: contentW, height: .greatestFiniteMagnitude)).height)
+      emptyLabel.frame = CGRect(x: x0, y: y + 24, width: contentW, height: h)
+      scroll.contentSize = CGSize(width: width, height: emptyLabel.frame.maxY + 24)
+      return
     }
 
-    let card = UIView()
-    card.translatesAutoresizingMaskIntoConstraints = false
-    card.backgroundColor = .secondarySystemGroupedBackground
-    card.layer.cornerRadius = Moshstyle.cardRadius
-    card.layer.cornerCurve = .continuous
-    card.layer.borderWidth = 0.5
-    card.layer.borderColor = UIColor.separator.resolvedColor(with: traitCollection).cgColor
-    card.addSubview(b)
-    card.addSubview(rows)
-    NSLayoutConstraint.activate([
-      b.topAnchor.constraint(equalTo: card.topAnchor),
-      b.leadingAnchor.constraint(equalTo: card.leadingAnchor),
-      b.trailingAnchor.constraint(equalTo: card.trailingAnchor),
-      rows.topAnchor.constraint(equalTo: b.bottomAnchor),
-      rows.leadingAnchor.constraint(equalTo: card.leadingAnchor),
-      rows.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -8),
-      rows.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -8),
-    ])
-    card.setContentCompressionResistancePriority(.required, for: .vertical)
-    return card
+    // Masonry: as many columns as hold 300pt, each folder dropped into the shortest one, so reading
+    // order stays roughly left to right, top to bottom.
+    let hostColumns = max(1, min(4, Int((contentW + gap) / (300 + gap))))
+    let showRecent = !recentTiles.isEmpty
+    recentCaption.isHidden = !showRecent
+    hostsCaption.isHidden = !showRecent
+    if showRecent {
+      recentCaption.sizeToFit()
+      recentCaption.frame.origin = CGPoint(x: x0 + 4, y: y)
+      y = recentCaption.frame.maxY + 8
+      // Lined up with the folders' columns (two on a phone), at most two rows: Recent is a shortcut,
+      // never a second list.
+      let columns = max(2, hostColumns)
+      let shown = Array(recentTiles.prefix(columns * (columns > 2 ? 1 : 2)))
+      recentTiles.forEach { $0.isHidden = !shown.contains($0) }
+      y += moshQuickGrid(shown, origin: CGPoint(x: x0, y: y), width: contentW, minWidth: 0, gap: gap,
+                         maxColumns: columns)
+      y += compact ? 22 : 28
+      hostsCaption.sizeToFit()
+      hostsCaption.frame.origin = CGPoint(x: x0 + 4, y: y)
+      y = hostsCaption.frame.maxY + 8
+    }
+
+    let columnW = floor((contentW - gap * CGFloat(hostColumns - 1)) / CGFloat(hostColumns))
+    var bottoms = Array(repeating: y, count: hostColumns)
+    for card in cards {
+      let col = bottoms.indices.min { bottoms[$0] < bottoms[$1] } ?? 0
+      let h = card.layout(width: columnW)
+      card.frame = CGRect(x: x0 + CGFloat(col) * (columnW + gap), y: bottoms[col], width: columnW, height: h)
+      bottoms[col] = card.frame.maxY + gap
+    }
+    let bottom = (bottoms.max() ?? y) - gap + (compact ? 20 : 32)
+    scroll.contentSize = CGSize(width: width, height: bottom)
   }
 }
 
-/// One project under a host in Quick Connect: its branch of the tree (a vertical line from the host
-/// glyph, ├ for a middle row, a rounded └ for the last) and a full-width row button with a folder and
-/// the project's name, which lights up under the finger.
-final class MoshProjectTreeRow: UIView {
-  let button: UIButton
-  private let branchX: CGFloat
-  private let textLeading: CGFloat
-  private let isLast: Bool
-  private let line = CAShapeLayer()
-  private static let height: CGFloat = 40
-
-  init(title: String, branchX: CGFloat, textLeading: CGFloat, isLast: Bool) {
-    self.branchX = branchX
-    self.textLeading = textLeading
-    self.isLast = isLast
-    var cfg = UIButton.Configuration.plain()
-    cfg.image = UIImage(systemName: "folder.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: 13, weight: .semibold))?
-      .withTintColor(.moshroomTint, renderingMode: .alwaysOriginal)
-    cfg.imagePadding = 8
-    var attr = AttributeContainer()
-    attr.font = UIFont.systemFont(ofSize: 15, weight: .medium)
-    cfg.attributedTitle = AttributedString(title, attributes: attr)
-    cfg.titleLineBreakMode = .byTruncatingTail
-    cfg.baseForegroundColor = .label
-    cfg.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 8)
-    cfg.background.cornerRadius = Moshstyle.rowRadius - 2
-    button = UIButton(configuration: cfg)
-    button.configurationUpdateHandler = { b in
-      b.configuration?.background.backgroundColor = b.isHighlighted ? .tertiarySystemFill : .clear
-    }
-    #if targetEnvironment(macCatalyst)
-    button.preferredBehavioralStyle = .pad   // our row, never the native Mac push-button
-    #endif
-    button.contentHorizontalAlignment = .leading
-    button.translatesAutoresizingMaskIntoConstraints = false
-    super.init(frame: .zero)
-    translatesAutoresizingMaskIntoConstraints = false
-    // Opaque with square ends: where two rows meet, the trunk must not double up into a darker dot.
-    line.strokeColor = UIColor.systemGray3.resolvedColor(with: traitCollection).cgColor
-    line.fillColor = nil
-    line.lineWidth = 1.5
-    line.lineCap = .butt
-    layer.addSublayer(line)
-    addSubview(button)
-    NSLayoutConstraint.activate([
-      heightAnchor.constraint(equalToConstant: Self.height),
-      // The folder lines up with the host's alias above it (the button's own leading inset is 8).
-      button.leadingAnchor.constraint(equalTo: leadingAnchor, constant: textLeading - 8),
-      button.trailingAnchor.constraint(equalTo: trailingAnchor),
-      button.topAnchor.constraint(equalTo: topAnchor, constant: 2),
-      button.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -2),
-    ])
-  }
-
-  required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-
-  override func layoutSubviews() {
-    super.layoutSubviews()
-    let mid = bounds.midY
-    let end = textLeading - 12
-    let radius: CGFloat = 6
-    let path = UIBezierPath()
-    path.move(to: CGPoint(x: branchX, y: 0))
-    if isLast {
-      // └ with a soft corner.
-      path.addLine(to: CGPoint(x: branchX, y: mid - radius))
-      path.addQuadCurve(to: CGPoint(x: branchX + radius, y: mid), controlPoint: CGPoint(x: branchX, y: mid))
-    } else {
-      // ├: the trunk runs on to the next row, the branch leaves from the middle.
-      path.addLine(to: CGPoint(x: branchX, y: bounds.height))
-      path.move(to: CGPoint(x: branchX, y: mid))
-    }
-    path.addLine(to: CGPoint(x: end, y: mid))
-    line.frame = bounds
-    line.path = path.cgPath
+extension MoshnectorView: UIScrollViewDelegate {
+  func scrollViewDidScroll(_ scrollView: UIScrollView) {
+    let faded = scrollView.contentOffset.y > 1
+    if faded != (layer.mask != nil) { layer.mask = faded ? topFade : nil }
   }
 }
 
 extension MoshnectorView: UIContextMenuInteractionDelegate {
   func contextMenuInteraction(_ interaction: UIContextMenuInteraction,
                               configurationForMenuAtLocation location: CGPoint) -> UIContextMenuConfiguration? {
-    guard let alias = interaction.view?.accessibilityIdentifier, !alias.isEmpty else { return nil }
+    guard let target = interaction.view as? MoshQuickTarget else { return nil }
+    let alias = target.alias
+    let tapped = target.project
     return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
       let ways: (MoshProject?) -> [UIAction] = { project in
         let item: (String, String, MoshnectorMode) -> UIAction = { title, icon, mode in
@@ -347,8 +680,12 @@ extension MoshnectorView: UIContextMenuInteractionDelegate {
           item("Connect (Mosh)", "antenna.radiowaves.left.and.right", .mosh),
         ]
       }
-      // The host's own session first, then each project with the same three ways in.
-      let projects = (MoshHosts.withHost(alias)?.moshroomProjects ?? []).map { project in
+      // A project tile: that project's three ways in.
+      if let tapped {
+        return UIMenu(title: "\(alias) · \(tapped.name.isEmpty ? tapped.session : tapped.name)", children: ways(tapped))
+      }
+      // The host: its own session first, then each project with the same three ways in.
+      let projects = (self?._projects(alias) ?? []).map { project in
         UIMenu(title: project.name.isEmpty ? project.session : project.name,
                image: UIImage(systemName: "folder"), children: ways(project))
       }
@@ -514,21 +851,12 @@ enum Moshnector {
     }
 
     NSLayoutConstraint.activate([
-      // Pin near the top — just below the Tabs/Settings bar, at the terminal-body top — so opening the
-      // Tabs or keys pads never collides with it. Full width minus a comfortable margin on the phone
-      // (the 750-priority fill binds there); on big screens (iPad / Mac) a centered 640pt column,
-      // exactly matching Moshxplore.
-      card.topAnchor.constraint(equalTo: sc.view.safeAreaLayoutGuide.topAnchor, constant: 76),
-      card.centerXAnchor.constraint(equalTo: sc.view.safeAreaLayoutGuide.centerXAnchor),
-      card.leadingAnchor.constraint(greaterThanOrEqualTo: sc.view.safeAreaLayoutGuide.leadingAnchor, constant: 16),
-      {
-        let fill = card.leadingAnchor.constraint(equalTo: sc.view.safeAreaLayoutGuide.leadingAnchor, constant: 16)
-        fill.priority = .init(750)
-        return fill
-      }(),
-      card.widthAnchor.constraint(lessThanOrEqualToConstant: 640),
-      // Never past the bottom bar, whatever the host list grows to.
-      card.bottomAnchor.constraint(lessThanOrEqualTo: sc.view.safeAreaLayoutGuide.bottomAnchor, constant: -72),
+      // The whole terminal area, exactly what the backdrop covers: below the Tabs/Settings bar, above
+      // the iOS quick keys, edge to edge. The page lays its folders out in as many columns as fit.
+      card.topAnchor.constraint(equalTo: sc.moshroomTerminalArea.topAnchor),
+      card.bottomAnchor.constraint(equalTo: sc.moshroomTerminalArea.bottomAnchor),
+      card.leadingAnchor.constraint(equalTo: sc.moshroomTerminalArea.leadingAnchor),
+      card.trailingAnchor.constraint(equalTo: sc.moshroomTerminalArea.trailingAnchor),
     ])
 
     // The first-run onboarding — same spot as Quick Connect, shown only when there are no hosts AND
@@ -584,7 +912,9 @@ extension SpaceController {
   func showMoshnector() {
     guard let card = view.subviews.compactMap({ $0 as? MoshnectorView }).first else { return }
     view.subviews.compactMap({ $0 as? MoshonboardView }).first?.isHidden = true   // mutually exclusive
-    card.reload(hosts: moshroomSavedHostCards)
+    let tab = currentTerm()?.meta.key
+    card.reload(hosts: moshroomSavedHostCards, fromTop: card.shownForTab != tab)
+    card.shownForTab = tab
     card.isHidden = false
     view.bringSubviewToFront(card)
     _moshroomSyncFreshOverlayPage()
@@ -695,6 +1025,7 @@ extension SpaceController {
   // `project` is the project's session name when the connection is to one of the host's projects.
   func noteConnection(toHost alias: String, project: String? = nil) {
     if moshroomSavedHostAliases.contains(alias) {
+      MoshQuickRecents.note(alias: alias, session: project)
       let term = currentTerm()
       term?.moshroomConnectedHost = alias
       term?.meta.connectedHost = alias          // persisted → the tab name survives an app relaunch
@@ -715,6 +1046,13 @@ extension SpaceController {
     guard let verb = words.first, verb == "ssh" || verb == "mosh" || verb == "tmux" else { return }
     guard let index = words.indices.dropFirst().first(where: { moshroomSavedHostAliases.contains(words[$0]) }) else { return }
     let alias = words[index]
+    // Quick Connect already recorded this connect (host AND project) moments ago and is now seeing its
+    // own `ssh <host>` come back as a typed line: a plain-SSH project connect would otherwise be
+    // re-recorded as the bare host, in Recent and in the tab's name.
+    if let term = currentTerm(), term.moshroomConnectedHost == alias,
+       let at = term.moshroomConnectedHostSetAt, Date().timeIntervalSince(at) < 3 {
+      return
+    }
     // `tmux <host> <project>` / `mosh <host> <project>`: the words after the host name a project.
     var project: String? = nil
     if verb != "ssh", index + 1 < words.count {

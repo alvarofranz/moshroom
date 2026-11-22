@@ -137,14 +137,41 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
     UIFontMetrics(forTextStyle: .body).scaledFont(for: .monospacedSystemFont(ofSize: 17, weight: .regular), maximumPointSize: 40)
   }
 
-  private static var _placeholderText: String {
+  private static let _placeholderPrompt = "Write a command or a prompt…"
+
+  /// The keys line under the prompt, only where a hardware keyboard is there to use it.
+  private static var _placeholderHint: String? {
     #if targetEnvironment(macCatalyst)
-    return "Write a command or a prompt…\nReturn adds a line. ⌘+Return or Ctrl+Return sends. Esc closes."
+    return "Return adds a line. ⌘+Return or Ctrl+Return sends. Esc closes."
     #else
     return MoshroomTyping.shared.hardwareKeyboard
-      ? "Write a command or a prompt…\nReturn adds a line. Ctrl+Return or ⌘+Return sends. Esc closes."
-      : "Write a command or a prompt…"
+      ? "Return adds a line. Ctrl+Return or ⌘+Return sends. Esc closes."
+      : nil
     #endif
+  }
+
+  private static var _placeholderText: String {
+    [_placeholderPrompt, _placeholderHint].compactMap { $0 }.joined(separator: " ")
+  }
+
+  /// The prompt at the editor's own size, where the first typed line will sit; the keys hint a step
+  /// smaller and set apart below it, so the two read as a title and its note, not one crowded block.
+  private static var _placeholderAttributed: NSAttributedString {
+    let text = NSMutableAttributedString(string: _placeholderPrompt, attributes: [
+      .font: UIFontMetrics(forTextStyle: .body).scaledFont(for: .systemFont(ofSize: 17), maximumPointSize: 40),
+      .foregroundColor: UIColor.tertiaryLabel,
+    ])
+    if let hint = _placeholderHint {
+      let para = NSMutableParagraphStyle()
+      para.paragraphSpacingBefore = 10
+      para.lineSpacing = 3
+      text.append(NSAttributedString(string: "\n" + hint, attributes: [
+        .font: UIFontMetrics(forTextStyle: .subheadline).scaledFont(for: .systemFont(ofSize: 14), maximumPointSize: 32),
+        .foregroundColor: UIColor.tertiaryLabel,
+        .paragraphStyle: para,
+      ]))
+    }
+    return text
   }
 
   private func _refreshPlaceholder() {
@@ -179,15 +206,13 @@ final class MoshkitorComposer: UIViewController, UITextViewDelegate {
     textView.translatesAutoresizingMaskIntoConstraints = false
     view.addSubview(textView)
 
-    placeholder.text = Self._placeholderText
-    placeholder.font = UIFontMetrics(forTextStyle: .body).scaledFont(for: .systemFont(ofSize: 17), maximumPointSize: 40)
-    placeholder.textColor = .tertiaryLabel
+    placeholder.attributedText = Self._placeholderAttributed
     placeholder.numberOfLines = 0
     placeholder.isAccessibilityElement = false
     placeholder.isUserInteractionEnabled = false
     placeholder.translatesAutoresizingMaskIntoConstraints = false
     view.addSubview(placeholder)
-    textView.accessibilityHint = Self._placeholderText.replacingOccurrences(of: "\n", with: " ")
+    textView.accessibilityHint = Self._placeholderText
 
     suggestionsScroll.translatesAutoresizingMaskIntoConstraints = false
     suggestionsScroll.showsHorizontalScrollIndicator = false

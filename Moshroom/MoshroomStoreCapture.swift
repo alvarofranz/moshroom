@@ -34,19 +34,10 @@ final class MoshroomStoreCaptureController: UIViewController {
     if sceneName == "composer" || sceneName == "tools" || sceneName == "typing" { return }
     let area = installChrome(terminal: sceneName == "terminal")
     if sceneName == "connect" {
-      let card = MoshnectorView()
-      card.storeProjects = ["atlas": [
-        MoshProject(name: "Orbit", folder: "~/projects/orbit", command: "opencode", session: "orbit"),
-        MoshProject(name: "Website", folder: "~/projects/website", command: "", session: "website")
-      ]]
-      card.reload(hosts: [("atlas", "Development · projects & agents"), ("studio", "Creative tools & media")])
+      let card = Self.connectCatalog()
       card.isUserInteractionEnabled = false
-      view.addSubview(card)
-      let width = card.widthAnchor.constraint(equalTo: area.widthAnchor, constant: -28)
-      width.priority = .defaultHigh
-      NSLayoutConstraint.activate([card.centerXAnchor.constraint(equalTo: area.centerXAnchor),
-        card.centerYAnchor.constraint(equalTo: area.centerYAnchor), width,
-        card.widthAnchor.constraint(lessThanOrEqualToConstant: 480)])
+      area.addSubview(card)
+      pin(card, in: area)
     } else if sceneName == "files" {
       let files = MoshxploreView()
       area.addSubview(files)
@@ -88,6 +79,24 @@ final class MoshroomStoreCaptureController: UIViewController {
       model.step = 3
       embed(MoshtourController(model: model))
     }
+  }
+
+  /// Quick Connect filled with made-up hosts and projects (nothing is read from this device).
+  static func connectCatalog() -> MoshnectorView {
+    let card = MoshnectorView()
+    let p = { (name: String) in MoshProject(name: name, folder: "~/projects/" + name.lowercased(), command: "opencode", session: name.lowercased()) }
+    card.storeProjects = [
+      "atlas": ["Orbit", "Website", "Dashboard", "Billing", "Docs", "Mobile"].map(p),
+      "studio": ["Renders", "Audio"].map(p),
+      "lab": ["Experiments", "Models", "Datasets", "Notebooks"].map(p),
+    ]
+    card.storeAddresses = ["atlas": "dev@atlas.example.com", "studio": "me@studio.local",
+                           "lab": "root@10.0.4.12", "backup": "backup@nas.local", "demo": "demo@203.0.113.7"]
+    card.storeRecents = [.init(alias: "atlas", session: "orbit"), .init(alias: "lab", session: "models"),
+                         .init(alias: "studio", session: nil), .init(alias: "atlas", session: "website")]
+    card.reload(hosts: [("atlas", "Development · projects & agents"), ("studio", "Creative tools & media"),
+                        ("lab", "GPU box"), ("backup", ""), ("demo", "A demo host for reviews")])
+    return card
   }
 
   private func embed(_ controller: UIViewController) {
