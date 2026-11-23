@@ -979,7 +979,11 @@ import ios_system
       return
     }
     // A paste: its bracketed-paste end marker, or more than a person types between two reads.
-    let isPaste = bytes.count > 64 || bytes.firstRange(of: [0x1B, 0x5B, 0x32, 0x30, 0x31, 0x7E]) != nil
+    let isPaste = bytes.count > 64 || bytes.firstRange(of: Self.pasteEnd) != nil
+    if isPaste {
+      _sendPaste(bytes, gateway: gw, pane: pane)
+      return
+    }
     // One literal byte per argument: tmux writes exactly these bytes to the pane (UTF-8, mouse
     // reports and paste markers included), with no key-name lookup in between.
     var i = 0
@@ -990,19 +994,101 @@ import ios_system
       for b in bytes[i..<end] {
         command += b < 16 ? " 0" + String(b, radix: 16) : " " + String(b, radix: 16)
       }
-      if isPaste {
-        pasteKeysInFlight += 1
-        gw.send(command) { [weak self] _ in
-          guard let self else { return }
-          self.pasteKeysInFlight -= 1
-          self.pasteLandedAt = CFAbsoluteTimeGetCurrent()
-          if self.pasteKeysInFlight == 0 { self._releaseAfterPaste() }
+      gw.send(command)
+      i = end
+    }
+  }
+
+  private static let pasteStart: [UInt8] = [0x1B, 0x5B, 0x32, 0x30, 0x30, 0x7E]   // ESC [ 200 ~
+  private static let pasteEnd: [UInt8] = [0x1B, 0x5B, 0x32, 0x30, 0x31, 0x7E]     // ESC [ 201 ~
+  private var pasteCounter = 0
+
+  /// A paste goes in through tmux's own paste (`set-buffer` + `paste-buffer -p`), not as keys. tmux
+  /// knows whether the program in the pane asked for bracketed paste, which this tab cannot when it
+  /// attached to a program already running (tmux has no format for it): typed as keys, an agent
+  /// got the text as a burst of keystrokes, which Codex folds into "[Pasted Content …]" chunks while
+  /// holding the tail back until the next key, and that next key was our Enter, spent on releasing the
+  /// tail instead of sending. Through paste-buffer the program gets one real paste, then the Enter.
+  /// The bracket markers the page may have added are dropped (tmux adds them when they belong). If
+  /// tmux refuses any step, the bytes go in as keys after all, so nothing is ever lost.
+  private func _sendPaste(_ bytes: [UInt8], gateway gw: TmuxGateway, pane: Int) {
+    var content = bytes
+    for marker in [Self.pasteStart, Self.pasteEnd] {
+      while let range = content.firstRange(of: marker) { content.removeSubrange(range) }
+    }
+    guard !content.isEmpty else { return }
+    pasteCounter += 1
+    let buffer = "moshroom-paste-\(getpid())-\(pasteCounter)"
+    // ~2 KB of text per command, cut only between UTF-8 characters.
+    var commands: [String] = []
+    var start = 0
+    while start < content.count {
+      var end = min(start + 2048, content.count)
+      while end < content.count, content[end] & 0xC0 == 0x80 { end -= 1 }
+      let quoted = Self.tmuxQuoted(content[start..<end])
+      commands.append(start == 0 ? "set-buffer -b \(buffer) -- \(quoted)" : "set-buffer -a -b \(buffer) -- \(quoted)")
+      start = end
+    }
+    commands.append("paste-buffer -p -r -d -b \(buffer) -t %\(pane)")
+    var failed = false
+    for (index, command) in commands.enumerated() {
+      let last = index == commands.count - 1
+      pasteKeysInFlight += 1
+      gw.send(command) { [weak self] reply in
+        guard let self else { return }
+        if reply.isError { failed = true }
+        if last, failed {
+          MoshLog.log("tmux", "paste-buffer refused (\(reply.text)): sending the paste as keys")
+          self.gateway?.send("delete-buffer -b \(buffer)")
+          self._sendPasteAsKeys(bytes, pane: pane)
         }
-      } else {
-        gw.send(command)
+        self.pasteKeysInFlight -= 1
+        self.pasteLandedAt = CFAbsoluteTimeGetCurrent()
+        if self.pasteKeysInFlight == 0 { self._releaseAfterPaste() }
+      }
+    }
+  }
+
+  /// The old way, kept as the fallback: the paste typed as keys, counted like a paste.
+  private func _sendPasteAsKeys(_ bytes: [UInt8], pane: Int) {
+    guard let gw = gateway else { return _queueKeys(bytes) }
+    var i = 0
+    while i < bytes.count {
+      let end = min(i + Self.keyChunk, bytes.count)
+      var command = "send-keys -t %\(pane) -H"
+      for b in bytes[i..<end] {
+        command += b < 16 ? " 0" + String(b, radix: 16) : " " + String(b, radix: 16)
+      }
+      pasteKeysInFlight += 1
+      gw.send(command) { [weak self] _ in
+        guard let self else { return }
+        self.pasteKeysInFlight -= 1
+        self.pasteLandedAt = CFAbsoluteTimeGetCurrent()
+        if self.pasteKeysInFlight == 0 { self._releaseAfterPaste() }
       }
       i = end
     }
+  }
+
+  /// Bytes as a tmux double-quoted string: quotes, backslash, $ and control bytes escaped, UTF-8 as is.
+  static func tmuxQuoted(_ bytes: ArraySlice<UInt8>) -> String {
+    var out: [UInt8] = [0x22]
+    out.reserveCapacity(bytes.count + 16)
+    for b in bytes {
+      switch b {
+      case 0x5C: out += [0x5C, 0x5C]                 // \\
+      case 0x22: out += [0x5C, 0x22]                 // \"
+      case 0x24: out += [0x5C, 0x24]                 // \$
+      case 0x0A: out += Array("\\n".utf8)
+      case 0x0D: out += Array("\\r".utf8)
+      case 0x09: out += Array("\\t".utf8)
+      case 0x1B: out += Array("\\e".utf8)
+      case 0x00..<0x20, 0x7F: out += Array(String(format: "\\%03o", b).utf8)
+      default: out.append(b)
+      }
+    }
+    out.append(0x22)
+    return String(decoding: out, as: UTF8.self)
   }
 
   /// Sends what waited behind a paste's Enter once the paste has landed and the gap has passed.
