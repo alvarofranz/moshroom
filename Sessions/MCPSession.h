@@ -67,6 +67,9 @@
 - (void)moshroomReconnectWith:(NSString *)command;
 // A tmux tab in front of the user takes the shared window's size back from another device.
 - (void)moshroomClaimTmuxSize;
+// A composer send into a tmux tab goes through tmux's own paste (see MoshroomTmux moshroomPaste).
+// NO when the current child is not a running tmux session: the caller sends it through the page.
+- (BOOL)moshroomTmuxPaste:(NSString *)text submit:(BOOL)submit completion:(void (^)(void))completion;
 
 - (void)updateAllowedPaths;
 - (void)setActiveSession;

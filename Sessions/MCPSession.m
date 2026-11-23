@@ -350,6 +350,15 @@
   }
 }
 
+- (BOOL)moshroomTmuxPaste:(NSString *)text submit:(BOOL)submit completion:(void (^)(void))completion
+{
+  Session *child = [self _currentChild];
+  if ([child isKindOfClass:[MoshroomTmux class]]) {
+    return [(MoshroomTmux *)child moshroomPaste:text submit:submit completion:completion];
+  }
+  return NO;
+}
+
 - (BOOL)moshroomMoshCanRepaint
 {
   Session *child = [self _currentChild];

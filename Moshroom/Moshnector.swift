@@ -362,6 +362,63 @@ final class MoshQuickHostCard: UIView {
   }
 }
 
+/// What a connection that ended right away printed last, shown at the top of Quick Connect: the
+/// terminal is wiped when a connection ends (the page comes back clean), and without this a failed
+/// connect read as "tap, flash, back where I was" with the reason gone.
+final class MoshQuickNotice: UIView {
+  let close = MoshQuickPressable()
+  private let title = UILabel()
+  private let body = UILabel()
+  private let closeImage = UIImageView(image: UIImage(systemName: "xmark",
+    withConfiguration: UIImage.SymbolConfiguration(pointSize: 12, weight: .bold)))
+
+  init(host: String, lines: [String]) {
+    super.init(frame: .zero)
+    backgroundColor = UIColor.moshroomTint.withAlphaComponent(0.12)
+    layer.cornerRadius = Moshstyle.cardRadius
+    layer.cornerCurve = .continuous
+    layer.borderWidth = 1
+    layer.borderColor = UIColor.moshroomTint.withAlphaComponent(0.4).cgColor
+    title.text = "The connection to \(host) ended"
+    title.font = UIFontMetrics(forTextStyle: .subheadline).scaledFont(for: .systemFont(ofSize: 15, weight: .semibold), maximumPointSize: 24)
+    title.textColor = .label
+    title.numberOfLines = 0
+    body.text = lines.joined(separator: "\n")
+    body.font = UIFontMetrics(forTextStyle: .footnote).scaledFont(for: .monospacedSystemFont(ofSize: 12, weight: .regular), maximumPointSize: 20)
+    body.textColor = .secondaryLabel
+    body.numberOfLines = 0
+    closeImage.tintColor = .secondaryLabel
+    closeImage.contentMode = .center
+    closeImage.isUserInteractionEnabled = false
+    close.layer.cornerRadius = 14
+    close.accessibilityLabel = "Dismiss"
+    close.addSubview(closeImage)
+    [title, body, close].forEach(addSubview)
+    isAccessibilityElement = false
+    accessibilityElements = [title, body, close]
+  }
+
+  required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+  func layout(width: CGFloat) -> CGFloat {
+    let pad: CGFloat = 14
+    let textW = max(40, width - pad * 2 - 32)
+    let titleH = ceil(title.sizeThatFits(CGSize(width: textW, height: .greatestFiniteMagnitude)).height)
+    title.frame = CGRect(x: pad, y: pad, width: textW, height: titleH)
+    var y = title.frame.maxY
+    if !(body.text ?? "").isEmpty {
+      let bodyH = ceil(body.sizeThatFits(CGSize(width: width - pad * 2, height: .greatestFiniteMagnitude)).height)
+      body.frame = CGRect(x: pad, y: y + 6, width: width - pad * 2, height: bodyH)
+      y = body.frame.maxY
+    } else {
+      body.frame = .zero
+    }
+    close.frame = CGRect(x: width - pad - 24, y: pad - 4, width: 28, height: 28)
+    closeImage.frame = close.bounds
+    return y + pad
+  }
+}
+
 /// A scroll view whose pressable children never pin it: a drag that starts on a tile scrolls.
 private final class MoshQuickScrollView: UIScrollView {
   override func touchesShouldCancel(in view: UIView) -> Bool { true }
@@ -460,6 +517,24 @@ final class MoshnectorView: UIView {
   /// The tab the page was last shown on: coming back to the same tab (a closed composer, Settings)
   /// keeps the scroll position, another tab starts at the top.
   var shownForTab: UUID?
+  /// The tab a notice belongs to, and the notice (see MoshQuickNotice).
+  private var notice: (tab: UUID?, view: MoshQuickNotice)?
+
+  /// What the connection that just ended on `tab` printed last; shown while that tab is on screen.
+  func showNotice(host: String, lines: [String], tab: UUID?) {
+    notice?.view.removeFromSuperview()
+    let view = MoshQuickNotice(host: host, lines: lines)
+    view.close.addAction(UIAction { [weak self] _ in self?.clearNotice() }, for: .touchUpInside)
+    scroll.addSubview(view)
+    notice = (tab, view)
+    setNeedsLayout()
+  }
+
+  func clearNotice() {
+    notice?.view.removeFromSuperview()
+    notice = nil
+    setNeedsLayout()
+  }
 
   /// Refresh the page: one folder per saved host, plus the Recent row. `fromTop` when the page is
   /// coming on screen (a page that was already showing keeps where the reader was).
@@ -574,6 +649,7 @@ final class MoshnectorView: UIView {
   private func _wire(_ control: MoshQuickPressable & MoshQuickTarget) {
     control.addAction(UIAction { [weak self, weak control] _ in
       guard let self, let control else { return }
+      self.clearNotice()
       self.onConnect?(self._tapMode(for: control.alias), control.alias, control.project)
     }, for: .touchUpInside)
     // A long press (a right click on the Mac) offers every way in, whatever the switcher says.
@@ -608,6 +684,15 @@ final class MoshnectorView: UIView {
 
     modeControl.frame = CGRect(x: x0, y: y, width: compact ? contentW : min(280, contentW), height: 34)
     y = modeControl.frame.maxY + (compact ? 18 : 24)
+
+    if let notice, notice.tab == shownForTab {
+      notice.view.isHidden = false
+      let h = notice.view.layout(width: min(contentW, 720))
+      notice.view.frame = CGRect(x: x0, y: y, width: min(contentW, 720), height: h)
+      y = notice.view.frame.maxY + (compact ? 18 : 24)
+    } else {
+      notice?.view.isHidden = true
+    }
 
     if hosts.isEmpty {
       recentCaption.isHidden = true
@@ -651,6 +736,10 @@ final class MoshnectorView: UIView {
     }
     let bottom = (bottoms.max() ?? y) - gap + (compact ? 20 : 32)
     scroll.contentSize = CGSize(width: width, height: bottom)
+    // A page that shrank under a reader scrolled down (a host deleted elsewhere) must not leave them
+    // looking at empty space past its end.
+    let maxOffset = max(0, bottom - scroll.bounds.height)
+    if scroll.contentOffset.y > maxOffset { scroll.contentOffset.y = maxOffset }
   }
 }
 
@@ -821,6 +910,8 @@ enum Moshnector {
     card.isHidden = true
     card.onConnect = { [weak sc] mode, alias, project in
       guard let sc, let device = sc.currentDevice else { return }
+      // A new try: the notice about the previous one has said what it had to say.
+      sc.view.subviews.compactMap { $0 as? MoshnectorView }.first?.clearNotice()
       if let project {
         if mode == .ssh {
           // Plain SSH has no session to keep: into the folder, then the command, typed once it is up.
@@ -992,9 +1083,21 @@ extension SpaceController {
         // fresh-start look — wipe the dead connect transcript (the same full reset the `clear`
         // builtin prints) and let Quick Connect come back — instead of stranding the user on
         // stale "Connecting to…" scrollback with nothing tappable.
-        if term?.moshroomConnectedHost != nil {
-          term?.termView.write("\u{1B}c\u{1B}[H\u{1B}[2J\u{1B}[0m")
-          term?.moshroomUserHasInteracted = false
+        if let ended = term, let host = ended.moshroomConnectedHost {
+          let wipe = { [weak ended] in ended?.termView.write("\u{1B}c\u{1B}[H\u{1B}[2J\u{1B}[0m") }
+          // Ended within 15 s of starting: most likely it never really worked (a refused key, a host
+          // that is down, a startup command that fails). Keep what it printed last, for the page.
+          if let started = ended.moshroomConnectedHostSetAt, Date().timeIntervalSince(started) < 15 {
+            let tab = ended.meta.key
+            ended.termView.webView.evaluateJavaScript(Self.moshroomNoticeScript) { [weak self] value, _ in
+              let lines = Self.moshroomNoticeLines((value as? String) ?? "")
+              self?.view.subviews.compactMap { $0 as? MoshnectorView }.first?.showNotice(host: host, lines: lines, tab: tab)
+              wipe()
+            }
+          } else {
+            wipe()
+          }
+          ended.moshroomUserHasInteracted = false
         }
         term?.moshroomConnectedHost = nil
         // The persisted name goes too, or the Tabs list keeps naming a host this tab left.
@@ -1018,6 +1121,32 @@ extension SpaceController {
       if moshroomFreshOverlayIsVisible { MoshLog.log("quick", "hidden: \(term == nil ? "no terminal on screen" : "not a fresh shell")") }
       dismissMoshnector()
     }
+  }
+
+  /// The text of both screens, alternate first: what a mosh session printed (a mosh-server that
+  /// could not start, say) lives on the alternate screen, which the normal screen hides again as soon
+  /// as mosh exits. Rows are hterm records (`nodes[].txt`, the same shape term.js's selection reads).
+  static let moshroomNoticeScript = #"""
+  (function () {
+    function text(rec) { var s = '', n = rec && rec.nodes; if (!n) return ''; for (var i = 0; i < n.length; i++) s += (n[i].txt || ''); return s; }
+    var out = [];
+    try { if (t.alternateScreen_ && t.alternateScreen_ !== t.screen_) out = out.concat(t.alternateScreen_.rowsArray.map(text)); } catch (e) {}
+    try { out = out.concat(t.screen_.rowsArray.map(text)); } catch (e) {}
+    return out.join('\n');
+  })()
+  """#
+
+  /// The last few meaningful lines (blank lines, invisible joiners, our own "Connecting to …" line
+  /// and the connect command itself left out).
+  static func moshroomNoticeLines(_ text: String) -> [String] {
+    let lines = text.replacingOccurrences(of: "\u{2060}", with: "")
+      .components(separatedBy: .newlines)
+      .map { $0.trimmingCharacters(in: .whitespaces) }
+      .filter { line in
+        !line.isEmpty && !line.hasPrefix("Connecting to ")
+          && !["ssh ", "mosh ", "tmux "].contains { line.hasPrefix($0) && !line.contains(":") }
+      }
+    return Array(lines.suffix(4)).map { $0.count > 220 ? String($0.prefix(220)) + "…" : $0 }
   }
 
   // The single place a connection's host is recorded as Moshdrop's upload target. Only saved hosts

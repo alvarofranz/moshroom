@@ -94,16 +94,12 @@ import ios_system
   /// Keys typed while nothing could take them, as they were written (never cut inside one).
   private var keyQueue: [[UInt8]] = []
   private var keyQueueBytes = 0
-  /// A composer send is a paste followed by a lone Enter. If the Enter reaches the pane on the heels of
-  /// the paste's last bytes (a long text over a slow link takes longer to travel than the beat the
-  /// terminal leaves after it), the agent reads it as part of the paste: a new line, not "send", and
-  /// the text just sits in its input. So the paste's send-keys are counted until tmux has run them,
-  /// and an Enter that follows waits for that, plus `enterGapAfterPaste`; whatever comes after it
-  /// waits behind it, in order.
-  private var pasteKeysInFlight = 0
-  private var pasteLandedAt: CFAbsoluteTime = 0
+  /// While a composer paste is on its way (see moshroomPaste), keys that arrive meanwhile wait here and
+  /// follow it, in order, once its Enter has gone out. nil = nothing in flight.
   private var heldAfterPaste: [[UInt8]]?
-  private static let enterGapAfterPaste: CFAbsoluteTime = 0.3
+  /// The gap between a paste landing in the pane and its Enter: an agent reads an Enter that arrives on
+  /// the heels of pasted text as part of it (Codex makes it a newline within ~120 ms).
+  private static let enterGapAfterPaste: TimeInterval = 0.3
   private var modeTracker = TmuxModeTracker()
   private var titleFilter = TmuxTitleFilter()
   private var parking = false
@@ -231,6 +227,17 @@ import ios_system
     if !resuming {
       freshCommand = true
       _say("Connecting to \(host)...")
+    }
+
+    if resuming {
+      // A tab coming back by itself (the app reopened, a parked session waking) keeps showing the
+      // session as it was while it re-attaches, so nothing said it was not live yet; on a slow network
+      // that read as a frozen terminal, and "Reconnecting" only ever appeared after a FAILED try. If
+      // the re-attach has not answered within a second, say so now; attaching takes it away.
+      _after(1.0) { [weak self] in
+        guard let self, !self.live, !self._killRequested, !self._parkWanted else { return }
+        self._setReconnecting(true)
+      }
     }
 
     var interactive = !resuming
@@ -950,14 +957,17 @@ import ios_system
     guard !keyQueue.isEmpty else { return }
     let queued = keyQueue
     _dropQueuedKeys()
-    // Write by write, as they came: a composer send queued while down is a paste and then its own
-    // Enter, and the Enter must stay separate to wait for the paste (see heldAfterPaste).
     for bytes in queued { _sendKeys(bytes) }
   }
 
   private func _sendKeys(_ bytes: [UInt8]) {
-    guard let gw = gateway, let pane = renderedPane, !bytes.isEmpty else {
+    guard let gw = gateway, !gw.isClosed, let pane = renderedPane, !bytes.isEmpty else {
       _queueKeys(bytes)
+      return
+    }
+    // Behind a composer paste still on its way: wait for it and its Enter.
+    if heldAfterPaste != nil {
+      heldAfterPaste?.append(bytes)
       return
     }
     // Take the window size back only for a PERSON typing here. The terminal answers queries by itself
@@ -968,24 +978,12 @@ import ios_system
     if foreignSize, CFAbsoluteTimeGetCurrent() - device.moshroomLastUserInputAt < 2 {
       _sendSize(force: true)
     }
-    if heldAfterPaste != nil {
-      heldAfterPaste?.append(bytes)
-      return
-    }
-    if bytes == [0x0D],
-       pasteKeysInFlight > 0 || CFAbsoluteTimeGetCurrent() - pasteLandedAt < Self.enterGapAfterPaste {
-      heldAfterPaste = [bytes]
-      _releaseAfterPaste()
-      return
-    }
-    // A paste: its bracketed-paste end marker, or more than a person types between two reads.
-    let isPaste = bytes.count > 64 || bytes.firstRange(of: Self.pasteEnd) != nil
-    if isPaste {
-      _sendPaste(bytes, gateway: gw, pane: pane)
-      return
-    }
-    // One literal byte per argument: tmux writes exactly these bytes to the pane (UTF-8, mouse
-    // reports and paste markers included), with no key-name lookup in between.
+    _writeKeys(bytes, gateway: gw, pane: pane)
+  }
+
+  /// One literal byte per argument: tmux writes exactly these bytes to the pane (UTF-8, mouse reports
+  /// and paste markers included), with no key-name lookup in between.
+  private func _writeKeys(_ bytes: [UInt8], gateway gw: TmuxGateway, pane: Int, then: ((TmuxReply) -> Void)? = nil) {
     var i = 0
     while i < bytes.count {
       let end = min(i + Self.keyChunk, bytes.count)
@@ -994,120 +992,149 @@ import ios_system
       for b in bytes[i..<end] {
         command += b < 16 ? " 0" + String(b, radix: 16) : " " + String(b, radix: 16)
       }
-      gw.send(command)
+      gw.send(command, end == bytes.count ? then : nil)
       i = end
     }
   }
 
-  private static let pasteStart: [UInt8] = [0x1B, 0x5B, 0x32, 0x30, 0x30, 0x7E]   // ESC [ 200 ~
-  private static let pasteEnd: [UInt8] = [0x1B, 0x5B, 0x32, 0x30, 0x31, 0x7E]     // ESC [ 201 ~
-  private var pasteCounter = 0
+  // MARK: - Composer paste
 
-  /// A paste goes in through tmux's own paste (`set-buffer` + `paste-buffer -p`), not as keys. tmux
-  /// knows whether the program in the pane asked for bracketed paste, which this tab cannot when it
-  /// attached to a program already running (tmux has no format for it): typed as keys, an agent
-  /// got the text as a burst of keystrokes, which Codex folds into "[Pasted Content …]" chunks while
-  /// holding the tail back until the next key, and that next key was our Enter, spent on releasing the
-  /// tail instead of sending. Through paste-buffer the program gets one real paste, then the Enter.
-  /// The bracket markers the page may have added are dropped (tmux adds them when they belong). If
-  /// tmux refuses any step, the bytes go in as keys after all, so nothing is ever lost.
-  private func _sendPaste(_ bytes: [UInt8], gateway gw: TmuxGateway, pane: Int) {
-    var content = bytes
-    for marker in [Self.pasteStart, Self.pasteEnd] {
-      while let range = content.firstRange(of: marker) { content.removeSubrange(range) }
+  /// The composer's own way into the pane (TermDevice -> TermController -> MCPSession), instead of the
+  /// keystroke pipe: through tmux's paste (`set-buffer` + `paste-buffer -p`), then its Enter.
+  ///
+  /// Why: a tab that attached to an agent already running cannot know whether the agent turned
+  /// bracketed paste on (tmux has no format for it), so a composer send typed as keys reached it as a
+  /// burst of keystrokes; Codex folds such a burst into "[Pasted Content …]" chunks and holds the tail
+  /// until the next key, and that key was our Enter, spent releasing the tail: long texts sat unsent.
+  /// tmux knows the pane's real mode and brackets the text when the program asked for it. The Enter
+  /// leaves once tmux has run the paste plus `enterGapAfterPaste`, and keys that arrive meanwhile wait
+  /// behind it. `completion` runs on the main queue once all of that is out (or given up).
+  /// Returns false when this session cannot take it (not running): the caller sends it the old way.
+  @objc func moshroomPaste(_ text: String, submit: Bool, completion: @escaping () -> Void) -> Bool {
+    guard let loop = runLoop else { return false }
+    lock.lock()
+    let running = isRunning && !killRequested
+    lock.unlock()
+    guard running else { return false }
+    let bytes = Array(text.utf8).filter { $0 != 0 }
+    CFRunLoopPerformBlock(loop, CFRunLoopMode.defaultMode.rawValue) { [weak self] in
+      guard let self else { return DispatchQueue.main.async(execute: completion) }
+      self._composerPaste(bytes, submit: submit, completion: completion)
     }
-    guard !content.isEmpty else { return }
-    pasteCounter += 1
-    let buffer = "moshroom-paste-\(getpid())-\(pasteCounter)"
-    // ~2 KB of text per command, cut only between UTF-8 characters.
-    var commands: [String] = []
+    CFRunLoopWakeUp(loop)
+    return true
+  }
+
+  private func _composerPaste(_ text: [UInt8], submit: Bool, completion: @escaping () -> Void) {
+    let done = { DispatchQueue.main.async(execute: completion) }
+    if heldAfterPaste != nil, live, outcome == nil {
+      // Another paste is still on its way (the terminal stops waiting for one after 5 s): this one
+      // goes after it, never around it.
+      _after(0.2) { [weak self] in
+        guard let self else { return done() }
+        self._composerPaste(text, submit: submit, completion: completion)
+      }
+      return
+    }
+    guard live, !resyncing, outcome == nil, heldAfterPaste == nil,
+          let gw = gateway, !gw.isClosed, let pane = renderedPane, !text.isEmpty else {
+      // Not attached right now (or nothing to paste): typed when it is back, as a terminal would.
+      let typed = text.map { $0 == 0x0A ? 0x0D : $0 }
+      _queueKeys(typed)
+      if submit { _queueKeys([0x0D]) }
+      return done()
+    }
+    heldAfterPaste = []
+    let buffer = "moshroom-" + UUID().uuidString.prefix(13).lowercased()
+    // ~2 KB per set-buffer, cut only between UTF-8 characters, ALL on one line with the paste: tmux
+    // skips the rest of a line after a failing command, so a partial buffer can never be pasted.
+    var steps: [String] = []
     var start = 0
-    while start < content.count {
-      var end = min(start + 2048, content.count)
-      while end < content.count, content[end] & 0xC0 == 0x80 { end -= 1 }
-      let quoted = Self.tmuxQuoted(content[start..<end])
-      commands.append(start == 0 ? "set-buffer -b \(buffer) -- \(quoted)" : "set-buffer -a -b \(buffer) -- \(quoted)")
+    while start < text.count {
+      var end = min(start + 2048, text.count)
+      while end < text.count, end > start, text[end] & 0xC0 == 0x80 { end -= 1 }
+      if end == start { end = min(start + 2048, text.count) }
+      let quoted = Self.tmuxQuoted(text[start..<end])
+      steps.append(start == 0 ? "set-buffer -b \(buffer) -- \(quoted)" : "set-buffer -a -b \(buffer) -- \(quoted)")
       start = end
     }
-    commands.append("paste-buffer -p -r -d -b \(buffer) -t %\(pane)")
-    var failed = false
-    for (index, command) in commands.enumerated() {
-      let last = index == commands.count - 1
-      pasteKeysInFlight += 1
-      gw.send(command) { [weak self] reply in
-        guard let self else { return }
-        if reply.isError { failed = true }
-        if last, failed {
-          MoshLog.log("tmux", "paste-buffer refused (\(reply.text)): sending the paste as keys")
-          self.gateway?.send("delete-buffer -b \(buffer)")
-          self._sendPasteAsKeys(bytes, pane: pane)
+    // -p: bracketed when the program asked for it. No -r: line feeds become carriage returns, the
+    // Enter a terminal sends for a new line, exactly what a paste typed as keys did.
+    steps.append("paste-buffer -p -d -b \(buffer) -t %\(pane)")
+    var refused = false
+    var commands: [(String, TmuxGateway.Completion?)] = steps.dropLast().map { step in
+      (step, { reply in if reply.isError && !reply.skipped { refused = true } })
+    }
+    commands.append((steps.last!, { [weak self] reply in
+      guard let self else { return done() }
+      if !reply.isError {
+        self._afterPaste(submit: submit, gateway: gw, pane: pane, done: done)
+      } else if refused || !reply.skipped {
+        // tmux said no (not the connection): type it instead, as before, so the text is never lost.
+        MoshLog.log("tmux", "paste-buffer refused (\(reply.text)): sending the text as keys")
+        gw.send("delete-buffer -b \(buffer)")
+        let typed = text.map { $0 == 0x0A ? 0x0D : $0 }
+        self._writeKeys(typed, gateway: gw, pane: pane) { [weak self] _ in
+          self?._afterPaste(submit: submit, gateway: gw, pane: pane, done: done)
         }
-        self.pasteKeysInFlight -= 1
-        self.pasteLandedAt = CFAbsoluteTimeGetCurrent()
-        if self.pasteKeysInFlight == 0 { self._releaseAfterPaste() }
+      } else {
+        // The connection went away under it: whether tmux ran the paste is unknown, so neither type it
+        // again (it could land twice) nor send its Enter (it could submit something else).
+        MoshLog.log("tmux", "connection lost during a composer paste: its Enter is not sent")
+        self._releaseHeld(sendEnter: false)
+        done()
       }
+    }))
+    gw.send(commands)
+  }
+
+  /// The paste is in: its Enter after the gap, then whatever waited behind it.
+  private func _afterPaste(submit: Bool, gateway gw: TmuxGateway, pane: Int, done: @escaping () -> Void) {
+    guard submit else {
+      _releaseHeld(sendEnter: false)
+      return done()
+    }
+    _after(Self.enterGapAfterPaste) { [weak self] in
+      guard let self else { return done() }
+      self._releaseHeld(sendEnter: true)
+      done()
     }
   }
 
-  /// The old way, kept as the fallback: the paste typed as keys, counted like a paste.
-  private func _sendPasteAsKeys(_ bytes: [UInt8], pane: Int) {
-    guard let gw = gateway else { return _queueKeys(bytes) }
-    var i = 0
-    while i < bytes.count {
-      let end = min(i + Self.keyChunk, bytes.count)
-      var command = "send-keys -t %\(pane) -H"
-      for b in bytes[i..<end] {
-        command += b < 16 ? " 0" + String(b, radix: 16) : " " + String(b, radix: 16)
-      }
-      pasteKeysInFlight += 1
-      gw.send(command) { [weak self] _ in
-        guard let self else { return }
-        self.pasteKeysInFlight -= 1
-        self.pasteLandedAt = CFAbsoluteTimeGetCurrent()
-        if self.pasteKeysInFlight == 0 { self._releaseAfterPaste() }
-      }
-      i = end
+  private func _releaseHeld(sendEnter: Bool) {
+    let held = heldAfterPaste ?? []
+    heldAfterPaste = nil
+    let writes = (sendEnter ? [[UInt8(0x0D)]] : []) + held
+    if live, !resyncing, outcome == nil, let gw = gateway, !gw.isClosed, let pane = renderedPane {
+      for bytes in writes { _writeKeys(bytes, gateway: gw, pane: pane) }
+    } else {
+      // Not attached: ahead of anything queued since, in their order.
+      keyQueue.insert(contentsOf: writes, at: 0)
+      keyQueueBytes += writes.reduce(0) { $0 + $1.count }
     }
   }
 
-  /// Bytes as a tmux double-quoted string: quotes, backslash, $ and control bytes escaped, UTF-8 as is.
+  /// Bytes as a tmux double-quoted string: quotes, backslash, $ and control bytes escaped, UTF-8 as is
+  /// (the caller cuts between characters). Round trip verified byte for byte on tmux 3.4.
   static func tmuxQuoted(_ bytes: ArraySlice<UInt8>) -> String {
     var out: [UInt8] = [0x22]
     out.reserveCapacity(bytes.count + 16)
     for b in bytes {
       switch b {
-      case 0x5C: out += [0x5C, 0x5C]                 // \\
-      case 0x22: out += [0x5C, 0x22]                 // \"
-      case 0x24: out += [0x5C, 0x24]                 // \$
+      case 0x5C: out += [0x5C, 0x5C]
+      case 0x22: out += [0x5C, 0x22]
+      case 0x24: out += [0x5C, 0x24]
       case 0x0A: out += Array("\\n".utf8)
       case 0x0D: out += Array("\\r".utf8)
       case 0x09: out += Array("\\t".utf8)
       case 0x1B: out += Array("\\e".utf8)
-      case 0x00..<0x20, 0x7F: out += Array(String(format: "\\%03o", b).utf8)
+      case 0x00: break
+      case 0x01..<0x20, 0x7F: out += Array(String(format: "\\%03o", b).utf8)
       default: out.append(b)
       }
     }
     out.append(0x22)
     return String(decoding: out, as: UTF8.self)
-  }
-
-  /// Sends what waited behind a paste's Enter once the paste has landed and the gap has passed.
-  private func _releaseAfterPaste() {
-    guard heldAfterPaste != nil, pasteKeysInFlight == 0 else { return }
-    let wait = max(0.01, Self.enterGapAfterPaste - (CFAbsoluteTimeGetCurrent() - pasteLandedAt))
-    _after(wait) { [weak self] in
-      guard let self, self.pasteKeysInFlight == 0, let held = self.heldAfterPaste else { return }
-      self.heldAfterPaste = nil
-      // Backdate the landing so the Enter itself is not held again; a paste among the rest re-arms it.
-      self.pasteLandedAt = 0
-      for bytes in held {
-        if self.live, !self.resyncing, self.gateway != nil, self.outcome == nil {
-          self._sendKeys(bytes)
-        } else {
-          self._queueKeys(bytes)
-        }
-      }
-    }
   }
 
   // MARK: - Heartbeat, network

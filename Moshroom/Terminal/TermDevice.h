@@ -54,6 +54,12 @@
 - (void)viewDidReceiveBellRing;
 - (UIViewController *)viewController;
 
+@optional
+// A paste (a composer send) that the session can deliver itself, without the page: tmux tabs do, so the
+// program gets a real paste whatever mode this terminal believes it is in. YES = taken; `completion`
+// runs on the main queue once the text (and its Enter, when `submit`) has gone out.
+- (BOOL)deviceSendsPaste:(NSString *)text submit:(BOOL)submit completion:(void (^)(void))completion;
+
 @end
 
 @interface TermDevice : NSObject {

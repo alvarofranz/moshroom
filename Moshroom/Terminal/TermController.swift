@@ -402,6 +402,10 @@ extension TermController: TermDeviceDelegate {
             receiveValue: { termView?.apiResponse(api, response: $0) })
   }
 
+  public func deviceSendsPaste(_ text: String, submit: Bool, completion: @escaping () -> Void) -> Bool {
+    (_session as? MCPSession)?.moshroomTmuxPaste(text, submit: submit, completion: completion) ?? false
+  }
+
   public func deviceIsReady() {
     if _sessionPayload != nil {
       _startSession()

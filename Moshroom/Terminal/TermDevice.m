@@ -327,6 +327,13 @@ static int __sizeOfIncompleteSequenceAtTheEnd(const char *buffer, size_t len) {
   dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
     [weakSelf _pasteDidGoOut:generation];
   });
+  id delegate = self.delegate;
+  if ([delegate respondsToSelector:@selector(deviceSendsPaste:submit:completion:)] &&
+      [delegate deviceSendsPaste:input ?: @"" submit:submit completion:^{
+        [weakSelf _pasteDidGoOut:generation];
+      }]) {
+    return;
+  }
   [self.view pasteString:input submit:submit completion:^{
     [weakSelf _pasteDidGoOut:generation];
   }];
